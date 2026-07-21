@@ -1,0 +1,25 @@
+{
+  "name": "precision-lighting-ai-receptionist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI receptionist for Precision Lighting using Twilio ConversationRelay and OpenAI.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.2",
+    "@fastify/websocket": "^11.0.2",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "nodemailer": "^6.10.0",
+    "openai": "^4.89.0",
+    "twilio": "^5.5.2"
+  }
+}

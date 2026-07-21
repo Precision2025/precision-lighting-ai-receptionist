@@ -1,0 +1,23 @@
+PRECISION LIGHTING — GO-LIVE CHECKLIST
+
+[ ] Create or open Twilio account
+[ ] Obtain a voice-capable Twilio phone number
+[ ] Enable Twilio ConversationRelay / accept Voice AI addendum
+[ ] Obtain OpenAI API key
+[ ] Upload this project to a private GitHub repository
+[ ] Deploy it to Render
+[ ] Add all required environment variables
+[ ] Put the final Render URL in PUBLIC_BASE_URL
+[ ] Set Twilio inbound Voice webhook to https://YOUR-HOST/voice
+[ ] Call the Twilio number and test:
+    [ ] New residential lead
+    [ ] Commercial work order
+    [ ] Price question
+    [ ] Appointment request
+    [ ] Caller asking for Travis
+    [ ] Smoke/sparking emergency language
+    [ ] Complaint
+[ ] Confirm call summary reaches Dispatch@theprecisionlighting.com
+[ ] Confirm transfer number does not forward back to Faith
+[ ] Enable conditional forwarding from the existing Precision Lighting line
+[ ] Test unanswered-call forwarding from a different phone
