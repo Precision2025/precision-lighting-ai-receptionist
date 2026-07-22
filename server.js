@@ -193,7 +193,7 @@ async function notifyTeam(session) {
 
 app.get("/", async () => ({
   name: "Precision Lighting AI Receptionist",
-  receptionist: "Faith",
+  receptionist: "Joshua",
   status: "online"
 }));
 
@@ -215,7 +215,7 @@ app.all("/voice", async (request, reply) => {
   <Connect action="${publicBaseUrl}/connect-action" method="POST">
     <ConversationRelay
       url="${wsBaseUrl}/ws"
-      welcomeGreeting="Thank you for calling Precision Lighting. This is Faith, the company&apos;s virtual receptionist. How may I help you today?"
+      welcomeGreeting="Thank you for calling Precision Lighting. This is Joshua, your virtual service coordinator. How can I help you today?"
       welcomeGreetingInterruptible="any"
       language="en-US"
       ttsProvider="${ttsProvider}"
