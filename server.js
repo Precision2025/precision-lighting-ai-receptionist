@@ -205,7 +205,7 @@ app.all("/voice", async (request, reply) => {
     return reply.code(403).send("Invalid Twilio signature");
   }
 
-  const voice = xmlEscape(process.env.TTS_VOICE || "en-US-Journey-O");
+  const voice = xmlEscape(process.env.TTS_VOICE || "en-US-Wavenet-D");
   const ttsProvider = xmlEscape(process.env.TTS_PROVIDER || "Google");
   const transcriptionProvider = xmlEscape(process.env.TRANSCRIPTION_PROVIDER || "Deepgram");
   const speechModel = xmlEscape(process.env.SPEECH_MODEL || "nova-3-general");
