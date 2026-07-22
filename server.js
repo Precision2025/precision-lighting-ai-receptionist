@@ -352,7 +352,10 @@ if (wantsTransfer(callerText)) {
 
   if (
     request.includes("shellie") ||
-    request.includes("accounting") ||
+request.includes("shelly") ||
+request.includes("shelley") ||
+request.includes("shelia") ||
+request.includes("accounting") ||
     request.includes("billing") ||
     request.includes("invoice") ||
     request.includes("payment") ||
