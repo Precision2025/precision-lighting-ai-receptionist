@@ -395,7 +395,7 @@ if (wantsTransfer(callerText)) {
 
   return;
 }
-      }
+      
 
       try {
         const answer = await aiReply(session);
