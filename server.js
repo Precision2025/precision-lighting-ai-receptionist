@@ -24,6 +24,14 @@ const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const publicBaseUrl = process.env.PUBLIC_BASE_URL.replace(/\/$/, "");
 const wsBaseUrl = publicBaseUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
 const transferNumber = process.env.LIVE_TRANSFER_NUMBER || "+12142435649";
+const travisTransferNumber =
+  process.env.TRAVIS_TRANSFER_NUMBER || "+12142435649";
+
+const accountingTransferNumber =
+  process.env.ACCOUNTING_TRANSFER_NUMBER || "+19729044735";
+
+const arianaTransferNumber =
+  process.env.ARIANA_TRANSFER_NUMBER || "+19729044736";
 const shouldValidate = (process.env.VALIDATE_TWILIO_SIGNATURE || "true").toLowerCase() === "true";
 
 const twilioClient =
@@ -232,7 +240,7 @@ const ttsProvider = xmlEscape(process.env.TTS_PROVIDER || "ElevenLabs");
   return reply.type("text/xml").send(twiml);
 });
 
-// ConversationRelay returns here after Faith requests a live-agent handoff.
+// ConversationRelay returns here after Joshua requests a live-agent handoff.
 app.post("/connect-action", async (request, reply) => {
   if (!validateHttpRequest(request)) {
     return reply.code(403).send("Invalid Twilio signature");
@@ -245,16 +253,45 @@ app.post("/connect-action", async (request, reply) => {
   }
 
   if (handoff.reasonCode === "live-agent-handoff") {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Please hold while I connect you.</Say>
-  <Dial timeout="25" answerOnBridge="true">
+  const department = String(handoff.department || handoff.person || "")
+    .trim()
+    .toLowerCase();
+
+  let destinationName = "our team";
+  let dialBlock = `<Dial timeout="25" answerOnBridge="true">
     <Number>${xmlEscape(transferNumber)}</Number>
-  </Dial>
+  </Dial>`;
+
+  if (department === "travis") {
+    destinationName = "Travis";
+    dialBlock = `<Dial timeout="25" answerOnBridge="true">
+      <Number>${xmlEscape(travisTransferNumber)}</Number>
+    </Dial>`;
+  } else if (department === "accounting" || department === "shellie") {
+    destinationName = "Shellie in accounting";
+    dialBlock = `<Dial timeout="25" answerOnBridge="true">
+      <Number>${xmlEscape(accountingTransferNumber)}</Number>
+    </Dial>
+    <Say voice="Polly.Joanna-Neural">Shellie is unavailable. I will try Ariana.</Say>
+    <Dial timeout="25" answerOnBridge="true">
+      <Number>${xmlEscape(arianaTransferNumber)}</Number>
+    </Dial>`;
+  } else if (department === "ariana" || department === "operations") {
+    destinationName = "Ariana";
+    dialBlock = `<Dial timeout="25" answerOnBridge="true">
+      <Number>${xmlEscape(arianaTransferNumber)}</Number>
+    </Dial>`;
+  }
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna-Neural">Please hold while I connect you with ${xmlEscape(destinationName)}.</Say>
+  ${dialBlock}
   <Say voice="Polly.Joanna-Neural">I was not able to reach anyone. Your call details have been sent to the Precision Lighting team.</Say>
 </Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
+
+  return reply.type("text/xml").send(twiml);
+}
 
   return reply.type("text/xml").send(
     `<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`
