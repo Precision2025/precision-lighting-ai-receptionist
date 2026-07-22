@@ -96,13 +96,14 @@ function sendText(socket, token, last = true) {
   }
 }
 
-function endForTransfer(socket, reason) {
+function endForTransfer(socket, reason, department = "") {
   if (socket.readyState === 1) {
     socket.send(JSON.stringify({
       type: "end",
       handoffData: JSON.stringify({
         reasonCode: "live-agent-handoff",
-        reason
+        reason,
+        department
       })
     }));
   }
@@ -343,13 +344,57 @@ app.get("/ws", { websocket: true }, (socket, request) => {
         setTimeout(() => endForTransfer(socket, "Electrical or life-safety emergency"), 5200);
         return;
       }
+if (wantsTransfer(callerText)) {
+  const request = callerText.toLowerCase();
 
-      if (wantsTransfer(callerText)) {
-        const transferLine = "Certainly. I’ll try to connect you with the Precision Lighting team now.";
-        session.messages.push({ role: "assistant", content: transferLine });
-        sendText(socket, transferLine);
-        setTimeout(() => endForTransfer(socket, "Caller requested a live person"), 2600);
-        return;
+  let department = "travis";
+  let destinationName = "Travis";
+
+  if (
+    request.includes("shellie") ||
+    request.includes("accounting") ||
+    request.includes("billing") ||
+    request.includes("invoice") ||
+    request.includes("payment") ||
+    request.includes("accounts payable") ||
+    request.includes("accounts receivable")
+  ) {
+    department = "accounting";
+    destinationName = "Shellie in accounting";
+  } else if (
+    request.includes("ariana") ||
+    request.includes("operations")
+  ) {
+    department = "ariana";
+    destinationName = "Ariana";
+  } else if (
+    request.includes("travis") ||
+    request.includes("owner") ||
+    request.includes("president") ||
+    request.includes("management")
+  ) {
+    department = "travis";
+    destinationName = "Travis";
+  }
+
+  const transferLine =
+    `Certainly. I'll try to connect you with ${destinationName} now.`;
+
+  session.messages.push({ role: "assistant", content: transferLine });
+  sendText(socket, transferLine);
+
+  setTimeout(
+    () =>
+      endForTransfer(
+        socket,
+        `Caller requested ${destinationName}`,
+        department
+      ),
+    2600
+  );
+
+  return;
+}
       }
 
       try {
