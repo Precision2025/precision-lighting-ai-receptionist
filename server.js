@@ -28,6 +28,7 @@ const defaultTransferNumber = process.env.LIVE_TRANSFER_NUMBER || "+12142435649"
 const travisTransferNumber = process.env.TRAVIS_TRANSFER_NUMBER || "+12142435649";
 const accountingTransferNumber = process.env.ACCOUNTING_TRANSFER_NUMBER || "+19729044735";
 const arianaTransferNumber = process.env.ARIANA_TRANSFER_NUMBER || "+19729044736";
+const businessTimeZone = process.env.BUSINESS_TIME_ZONE || "America/Chicago";
 const shouldValidate =
   (process.env.VALIDATE_TWILIO_SIGNATURE || "true").toLowerCase() === "true";
 
@@ -88,15 +89,35 @@ function validateWsRequest(request) {
   );
 }
 
-function wantsTransfer(text = "") {
-  return /\b(real person|live person|human|operator|transfer me|speak (to|with)|talk (to|with)|travis|owner|president|management|manager|supervisor|leadership|dispatch|shellie|shelly|shelley|shelia|accounting|billing|invoice|invoices|payment|payments|accounts payable|accounts receivable|ariana|operations)\b/i.test(
+function isThursday() {
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: businessTimeZone,
+    weekday: "long"
+  }).format(new Date());
+
+  return weekday === "Thursday";
+}
+
+function isJobUpdateRequest(text = "") {
+  return /\b(job update|job status|service update|service status|work order update|work order status|appointment update|appointment status|schedule update|scheduled service|technician update|technician status|technician arrival|technician eta|tech arrival|tech eta|when (is|will) (the )?(technician|tech)|where is (the )?(technician|tech)|existing job|current job|ongoing job|check on (my|our|the) job|follow up on (my|our|the) job)\b/i.test(
     text
+  );
+}
+
+function wantsTransfer(text = "") {
+  return (
+    isJobUpdateRequest(text) ||
+    /\b(real person|live person|human|operator|transfer me|speak (to|with)|talk (to|with)|travis|owner|president|management|manager|supervisor|leadership|dispatch|shellie|shelly|shelley|shelia|accounting|billing|invoice|invoices|payment|payments|accounts payable|accounts receivable|ariana|operations)\b/i.test(
+      text
+    )
   );
 }
 
 function identifyDepartment(text = "") {
   const request = String(text).toLowerCase();
 
+  // Accounting, billing, payment, and direct requests for Shellie always go
+  // to Shellie first, including Thursdays.
   if (
     request.includes("shellie") ||
     request.includes("shelly") ||
@@ -110,6 +131,22 @@ function identifyDepartment(text = "") {
     request.includes("accounts receivable")
   ) {
     return { department: "accounting", destinationName: "Shellie in accounting" };
+  }
+
+  // Travis is off on Thursdays. All other live-transfer requests go to
+  // Ariana first, with Shellie used as the backup if Ariana is unavailable.
+  if (isThursday()) {
+    return {
+      department: "ariana",
+      destinationName: "Ariana in Operations"
+    };
+  }
+
+  if (isJobUpdateRequest(request)) {
+    return {
+      department: "ariana",
+      destinationName: "Ariana in Operations"
+    };
   }
 
   if (request.includes("ariana") || request.includes("operations")) {
@@ -473,15 +510,19 @@ app.post("/screen-transfer", async (request, reply) => {
     return reply.code(403).send("Invalid Twilio signature");
   }
 
+  const department = String(request.query?.department || "default").toLowerCase();
+  const stage = String(request.query?.stage || "default").toLowerCase();
   const answeredBy = String(request.body?.AnsweredBy || "unknown").toLowerCase();
 
   app.log.info(
     {
+      department,
+      stage,
       answeredBy,
       callSid: request.body?.CallSid,
       parentCallSid: request.body?.ParentCallSid
     },
-    "Travis transfer answering-machine result"
+    "Answering machine detection result"
   );
 
   if (answeredBy === "human") {
@@ -515,13 +556,25 @@ app.post("/dial-result", async (request, reply) => {
     "Transfer result"
   );
 
-  if (
-    (dialStatus === "completed" || dialStatus === "answered") &&
-    String(request.body?.DialBridged || "false").toLowerCase() === "true"
-  ) {
+  if (dialStatus === "completed" || dialStatus === "answered") {
     return reply
       .type("text/xml")
       .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
+
+  if (department === "ariana" && stage === "ariana" && isThursday()) {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna-Neural">Ariana is unavailable. I will try Shellie.</Say>
+  <Dial
+    timeout="25"
+    answerOnBridge="true"
+    action="${publicBaseUrl}/dial-result?department=ariana&amp;stage=shellie"
+    method="POST">
+    <Number>${xmlEscape(accountingTransferNumber)}</Number>
+  </Dial>
+</Response>`;
+    return reply.type("text/xml").send(twiml);
   }
 
   if (department === "accounting" && stage === "shellie") {
@@ -592,13 +645,22 @@ app.get("/ws", { websocket: true }, (socket, request) => {
       session.messages.push({ role: "user", content: callerText });
 
       if (isImmediateEmergency(callerText)) {
-        session.requestedDepartment = "travis";
+        const emergencyDepartment = isThursday() ? "ariana" : "travis";
+        const emergencyDestination = isThursday()
+          ? "Ariana in Operations"
+          : "Travis";
+        session.requestedDepartment = emergencyDepartment;
         const warning =
-          "Please move away from the affected equipment and do not touch it. If there is smoke, fire, an active electrical hazard, or anyone is injured, call 911 immediately. I will also try to connect you with Travis.";
+          `Please move away from the affected equipment and do not touch it. If there is smoke, fire, an active electrical hazard, or anyone is injured, call 911 immediately. I will also try to connect you with ${emergencyDestination}.`;
         session.messages.push({ role: "assistant", content: warning });
         sendText(socket, warning);
         setTimeout(
-          () => endForTransfer(socket, "Electrical or life-safety emergency", "travis"),
+          () =>
+            endForTransfer(
+              socket,
+              "Electrical or life-safety emergency",
+              emergencyDepartment
+            ),
           5200
         );
         return;
