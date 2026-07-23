@@ -450,11 +450,49 @@ app.post("/connect-action", async (request, reply) => {
     answerOnBridge="true"
     action="${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}"
     method="POST">
-    <Number>${xmlEscape(destinationNumber)}</Number>
+    ${
+      department === "travis"
+        ? `<Number
+      url="${publicBaseUrl}/screen-transfer?department=travis&amp;stage=travis"
+      method="POST"
+      machineDetection="Enable"
+      machineDetectionTimeout="30"
+      machineDetectionSpeechThreshold="1800"
+      machineDetectionSpeechEndThreshold="2000"
+      machineDetectionSilenceTimeout="6000">${xmlEscape(destinationNumber)}</Number>`
+        : `<Number>${xmlEscape(destinationNumber)}</Number>`
+    }
   </Dial>
 </Response>`;
 
   return reply.type("text/xml").send(twiml);
+});
+
+app.post("/screen-transfer", async (request, reply) => {
+  if (!validateHttpRequest(request)) {
+    return reply.code(403).send("Invalid Twilio signature");
+  }
+
+  const answeredBy = String(request.body?.AnsweredBy || "unknown").toLowerCase();
+
+  app.log.info(
+    {
+      answeredBy,
+      callSid: request.body?.CallSid,
+      parentCallSid: request.body?.ParentCallSid
+    },
+    "Travis transfer answering-machine result"
+  );
+
+  if (answeredBy === "human") {
+    return reply
+      .type("text/xml")
+      .send(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
+  }
+
+  return reply
+    .type("text/xml")
+    .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
 });
 
 app.post("/dial-result", async (request, reply) => {
@@ -477,7 +515,10 @@ app.post("/dial-result", async (request, reply) => {
     "Transfer result"
   );
 
-  if (dialStatus === "completed" || dialStatus === "answered") {
+  if (
+    (dialStatus === "completed" || dialStatus === "answered") &&
+    String(request.body?.DialBridged || "false").toLowerCase() === "true"
+  ) {
     return reply
       .type("text/xml")
       .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
