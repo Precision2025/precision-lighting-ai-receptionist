@@ -477,18 +477,19 @@ async function sendEmail({ to, bcc, subject, text }) {
 }
 
 async function sendOwnerSms(body) {
-  if (
-    !twilioClient ||
-    !process.env.OWNER_SMS_NUMBER ||
-    !process.env.TWILIO_SMS_FROM
-  ) {
+  const smsFrom =
+    process.env.TWILIO_SMS_FROM ||
+    process.env.SERVICECHANNEL_VOICE_FROM ||
+    process.env.TWILIO_VOICE_FROM;
+
+  if (!twilioClient || !process.env.OWNER_SMS_NUMBER || !smsFrom) {
     return false;
   }
 
   try {
     const compact = body.length > 1400 ? `${body.slice(0, 1397)}...` : body;
     await twilioClient.messages.create({
-      from: process.env.TWILIO_SMS_FROM,
+      from: smsFrom,
       to: process.env.OWNER_SMS_NUMBER,
       body: compact
     });
@@ -818,12 +819,29 @@ function serviceChannelDigits(action) {
 }
 
 async function sendSmsTo(to, body) {
-  if (!twilioClient || !process.env.TWILIO_SMS_FROM) return false;
+  if (!twilioClient) {
+    throw new Error("Twilio client is not configured");
+  }
+
+  // Use the dedicated SMS sender when configured. Otherwise use Joshua's
+  // voice/SMS-capable Twilio number, which is already stored in Render.
+  const smsFrom =
+    process.env.TWILIO_SMS_FROM ||
+    process.env.SERVICECHANNEL_VOICE_FROM ||
+    process.env.TWILIO_VOICE_FROM;
+
+  if (!smsFrom) {
+    throw new Error(
+      "No Twilio sender is configured. Set TWILIO_SMS_FROM or SERVICECHANNEL_VOICE_FROM."
+    );
+  }
+
   await twilioClient.messages.create({
-    from: process.env.TWILIO_SMS_FROM,
+    from: smsFrom,
     to,
     body
   });
+
   return true;
 }
 
