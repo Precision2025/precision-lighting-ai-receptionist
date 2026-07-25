@@ -860,61 +860,78 @@ app.post("/sms", async (request, reply) => {
 
   const from = normalizePhone(request.body?.From || "");
   const incoming = String(request.body?.Body || "").trim();
-  const response = new twilio.twiml.MessagingResponse();
+
+  // Use an explicit outbound SMS instead of relying on TwiML auto-replies.
+  // This is more dependable when the phone number belongs to a Messaging Service.
+  async function answer(message) {
+    try {
+      await sendSmsTo(from, message);
+    } catch (error) {
+      app.log.error(error, "Could not send ServiceChannel SMS reply");
+      await sendOwnerSms(
+        `SERVICECHANNEL SMS REPLY FAILURE\nTo: ${from}\nMessage: ${message}\n${error.message}`
+      );
+    }
+    return reply.type("text/xml").send(
+      '<?xml version="1.0" encoding="UTF-8"?><Response/>'
+    );
+  }
 
   if (
     serviceChannelAuthorizedNumbers.size &&
     !serviceChannelAuthorizedNumbers.has(from)
   ) {
-    response.message("This number is not authorized to request ServiceChannel IVR calls.");
-    return reply.type("text/xml").send(response.toString());
+    return answer("This number is not authorized to request ServiceChannel IVR calls.");
   }
 
   const pending = pendingServiceChannelActions.get(from);
+
   if (/^(cancel|no|stop)$/i.test(incoming)) {
     pendingServiceChannelActions.delete(from);
-    response.message("Canceled. No ServiceChannel call was placed.");
-    return reply.type("text/xml").send(response.toString());
+    return answer("Canceled. No ServiceChannel call was placed.");
   }
 
   if (/^(yes|y|confirm|proceed)$/i.test(incoming)) {
     if (!pending) {
-      response.message("There is no pending ServiceChannel request. Text IN or OUT with the required details.");
-      return reply.type("text/xml").send(response.toString());
+      return answer(
+        "There is no pending ServiceChannel request. Text IN or OUT with the required details."
+      );
     }
 
     pendingServiceChannelActions.delete(from);
+
     try {
       const call = await startServiceChannelIvr(pending, from);
-      response.message(
+      return answer(
         `Joshua started the ServiceChannel ${pending.type === "checkin" ? "check-in" : "checkout"} call.` +
         `\nTracking: ${pending.trackingNumber}\nCall reference: ${call.sid.slice(-8)}`
       );
     } catch (error) {
       app.log.error(error, "Could not start ServiceChannel IVR call");
-      response.message("The ServiceChannel IVR call could not be started. The office has been notified.");
       await sendOwnerSms(
         `SERVICECHANNEL IVR FAILURE\nRequester: ${from}\nTracking: ${pending.trackingNumber}\n${error.message}`
       );
+      return answer(
+        "The ServiceChannel IVR call could not be started. The office has been notified."
+      );
     }
-    return reply.type("text/xml").send(response.toString());
   }
 
   const parsed = parseServiceChannelText(incoming);
+
   if (parsed.error) {
-    response.message(parsed.error);
-    return reply.type("text/xml").send(response.toString());
+    return answer(parsed.error);
   }
 
   pendingServiceChannelActions.set(from, parsed);
+
   setTimeout(() => {
     if (pendingServiceChannelActions.get(from) === parsed) {
       pendingServiceChannelActions.delete(from);
     }
   }, 10 * 60 * 1000).unref?.();
 
-  response.message(serviceChannelConfirmation(parsed));
-  return reply.type("text/xml").send(response.toString());
+  return answer(serviceChannelConfirmation(parsed));
 });
 
 app.post("/servicechannel/status", async (request, reply) => {
