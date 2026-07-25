@@ -1,0 +1,18 @@
+TWILIO SETUP
+
+1. Open Joshua's Twilio number.
+2. Under Messaging Configuration, set “A MESSAGE COMES IN” to:
+   https://YOUR-RENDER-DOMAIN/sms
+   Method: HTTP POST
+3. Confirm SERVICECHANNEL_VOICE_FROM is a voice-capable Twilio number.
+4. Add SERVICECHANNEL-ENV.txt variables to Render.
+5. Redeploy and test with a real tracking number.
+
+IVR sequences:
+Check in: 1# → 2300050# → tracking#
+Check out: 1# → 2300050# → tracking# → status# → tech count#
+
+1 Job Complete
+2 Requires Authorization
+3 Parts Needed
+4 Return Trip Needed
