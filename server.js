@@ -477,25 +477,16 @@ async function sendEmail({ to, bcc, subject, text }) {
 }
 
 async function sendOwnerSms(body) {
-  const smsFrom =
-    process.env.TWILIO_SMS_FROM ||
-    process.env.SERVICECHANNEL_VOICE_FROM ||
-    process.env.TWILIO_VOICE_FROM;
-
-  if (!twilioClient || !process.env.OWNER_SMS_NUMBER || !smsFrom) {
+  if (!process.env.OWNER_SMS_NUMBER) {
     return false;
   }
 
   try {
     const compact = body.length > 1400 ? `${body.slice(0, 1397)}...` : body;
-    await twilioClient.messages.create({
-      from: smsFrom,
-      to: process.env.OWNER_SMS_NUMBER,
-      body: compact
-    });
+    await sendSmsTo(process.env.OWNER_SMS_NUMBER, compact);
     return true;
   } catch (error) {
-    app.log.error(error, "Could not text owner");
+    app.log.error(error, "Could not send owner SMS");
     return false;
   }
 }
@@ -823,26 +814,48 @@ async function sendSmsTo(to, body) {
     throw new Error("Twilio client is not configured");
   }
 
-  // Use the dedicated SMS sender when configured. Otherwise use Joshua's
-  // voice/SMS-capable Twilio number, which is already stored in Render.
+  const messagingServiceSid = String(
+    process.env.TWILIO_MESSAGING_SERVICE_SID || ""
+  ).trim();
+
   const smsFrom =
     process.env.TWILIO_SMS_FROM ||
     process.env.SERVICECHANNEL_VOICE_FROM ||
     process.env.TWILIO_VOICE_FROM;
 
-  if (!smsFrom) {
+  if (!messagingServiceSid && !smsFrom) {
     throw new Error(
-      "No Twilio sender is configured. Set TWILIO_SMS_FROM or SERVICECHANNEL_VOICE_FROM."
+      "No Twilio SMS sender is configured. Set TWILIO_MESSAGING_SERVICE_SID or TWILIO_SMS_FROM."
     );
   }
 
-  await twilioClient.messages.create({
-    from: smsFrom,
+  const payload = {
     to,
     body
-  });
+  };
 
-  return true;
+  // Because Joshua's number belongs to a Twilio Messaging Service, send through
+  // that service when its SID is configured. This lets Twilio select the sender
+  // already attached to the service and avoids number-level routing conflicts.
+  if (messagingServiceSid) {
+    payload.messagingServiceSid = messagingServiceSid;
+  } else {
+    payload.from = smsFrom;
+  }
+
+  const sent = await twilioClient.messages.create(payload);
+
+  app.log.info(
+    {
+      messageSid: sent.sid,
+      messageStatus: sent.status,
+      to,
+      senderMode: messagingServiceSid ? "messaging-service" : "phone-number"
+    },
+    "ServiceChannel SMS submitted to Twilio"
+  );
+
+  return sent;
 }
 
 async function startServiceChannelIvr(action, requester) {
