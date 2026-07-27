@@ -16,3 +16,27 @@ Check out: 1# → 2300050# → tracking# → status# → tech count#
 2 Requires Authorization
 3 Parts Needed
 4 Return Trip Needed
+
+INBOUND SMS / ADVANCED OPT-OUT
+------------------------------
+The /sms webhook now separates internal ServiceChannel commands from normal customer texts.
+
+Messaging Service webhook:
+https://precision-lighting-ai-receptionist.onrender.com/sms
+Method: POST
+
+In Twilio Console, open:
+Messaging > Services > Precision Lighting Joshua SMS > Opt-Out Management
+
+Set the HELP response to:
+Precision Lighting: For assistance, call 855-533-4437 or reply to this message. Reply STOP to unsubscribe. Msg & data rates may apply.
+
+Twilio may process HELP, STOP, and START before sending them to the webhook. The same HELP/START language is also implemented in server.js as a fallback.
+
+Customer SMS routing:
+- Accounting, billing, invoice, payment -> Accounting notification
+- Job status, ETA, appointment, reschedule, service update -> Operations notification
+- Travis, management, rentals, pool-light installation -> Management notification
+- Other messages -> General office notification
+
+Internal ServiceChannel commands remain restricted to SERVICECHANNEL_AUTHORIZED_NUMBERS.

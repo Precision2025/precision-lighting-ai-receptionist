@@ -703,7 +703,7 @@ const serviceChannelVoiceFrom =
 const serviceChannelAuthorizedNumbers = new Set(
   String(process.env.SERVICECHANNEL_AUTHORIZED_NUMBERS || process.env.OWNER_SMS_NUMBER || "")
     .split(",")
-    .map(value => value.trim())
+    .map(value => normalizePhone(value.trim()))
     .filter(Boolean)
 );
 const pendingServiceChannelActions = new Map();
@@ -884,6 +884,66 @@ async function startServiceChannelIvr(action, requester) {
   });
 }
 
+function smsDepartmentForMessage(text = "") {
+  if (isRentalRequest(text) || isPoolLightInstallRequest(text)) return "travis";
+  if (/\b(accounting|billing|invoice|payment|accounts payable|accounts receivable)\b/i.test(text)) {
+    return "accounting";
+  }
+  if (isJobUpdateRequest(text) || /\b(reschedule|schedule|appointment|technician|eta|work order|service status)\b/i.test(text)) {
+    return "ariana";
+  }
+  if (/\b(travis|owner|president|manager|management|supervisor)\b/i.test(text)) {
+    return "travis";
+  }
+  return "default";
+}
+
+function smsAcknowledgement(department = "default") {
+  if (department === "accounting") {
+    return "Precision Lighting: Thank you. Your accounting message has been sent to the office. A team member will follow up as soon as possible. Reply STOP to opt out.";
+  }
+  if (department === "ariana") {
+    return "Precision Lighting: Thank you. Your service or job-update message has been sent to Operations. A team member will follow up as soon as possible. Reply STOP to opt out.";
+  }
+  if (department === "travis") {
+    return "Precision Lighting: Thank you. Your message has been sent for management review. We will follow up as soon as possible. Reply STOP to opt out.";
+  }
+  return "Precision Lighting: Thank you. We received your message and sent it to the appropriate team member. We will follow up as soon as possible. Reply STOP to opt out.";
+}
+
+async function notifyInboundSms({ from, incoming, department, contact }) {
+  const contactName = contact?.first_name || contact?.firstName || "Not confirmed";
+  const banner = department === "accounting"
+    ? "ACCOUNTING TEXT — RESPONSE NEEDED"
+    : department === "ariana"
+      ? "JOB / SERVICE TEXT — RESPONSE NEEDED"
+      : department === "travis"
+        ? "MANAGEMENT TEXT — RESPONSE NEEDED"
+        : "CUSTOMER TEXT — RESPONSE NEEDED";
+
+  const text = [
+    banner,
+    "",
+    `From: ${from || "Unknown"}`,
+    `Confirmed contact: ${contactName}`,
+    `Department: ${department}`,
+    "",
+    "MESSAGE:",
+    incoming || "(blank message)"
+  ].join("\n");
+
+  const recipients = emailRecipientsForDepartment(department);
+  await Promise.allSettled([
+    sendEmail({
+      to: recipients,
+      bcc: process.env.OWNER_EMAIL,
+      subject: `${banner} — ${from || "Unknown"}`,
+      text
+    }),
+    sendOwnerSms(text)
+  ]);
+}
+
 app.post("/sms", async (request, reply) => {
   if (!validateHttpRequest(request)) {
     return reply.code(403).send("Invalid Twilio signature");
@@ -891,16 +951,18 @@ app.post("/sms", async (request, reply) => {
 
   const from = normalizePhone(request.body?.From || "");
   const incoming = String(request.body?.Body || "").trim();
+  const normalizedCommand = incoming.toUpperCase();
+  const isAuthorizedServiceChannelUser =
+    serviceChannelAuthorizedNumbers.size > 0 &&
+    serviceChannelAuthorizedNumbers.has(from);
 
-  // Use an explicit outbound SMS instead of relying on TwiML auto-replies.
-  // This is more dependable when the phone number belongs to a Messaging Service.
   async function answer(message) {
     try {
       await sendSmsTo(from, message);
     } catch (error) {
-      app.log.error(error, "Could not send ServiceChannel SMS reply");
+      app.log.error(error, "Could not send inbound SMS reply");
       await sendOwnerSms(
-        `SERVICECHANNEL SMS REPLY FAILURE\nTo: ${from}\nMessage: ${message}\n${error.message}`
+        `SMS REPLY FAILURE\nTo: ${from}\nMessage: ${message}\n${error.message}`
       );
     }
     return reply.type("text/xml").send(
@@ -908,61 +970,83 @@ app.post("/sms", async (request, reply) => {
     );
   }
 
-  if (
-    serviceChannelAuthorizedNumbers.size &&
-    !serviceChannelAuthorizedNumbers.has(from)
-  ) {
-    return answer("This number is not authorized to request ServiceChannel IVR calls.");
+  // Twilio may intercept HELP/STOP/START through Advanced Opt-Out before the
+  // webhook runs. These replies are kept here as a safe fallback.
+  if (/^(HELP|INFO)$/i.test(incoming)) {
+    return answer(
+      "Precision Lighting: For assistance, call 855-533-4437 or reply to this message. Reply STOP to unsubscribe. Msg & data rates may apply."
+    );
   }
 
-  const pending = pendingServiceChannelActions.get(from);
-
-  if (/^(cancel|no|stop)$/i.test(incoming)) {
-    pendingServiceChannelActions.delete(from);
-    return answer("Canceled. No ServiceChannel call was placed.");
+  if (/^(START|YES|UNSTOP)$/i.test(incoming) && !pendingServiceChannelActions.has(from)) {
+    return answer(
+      "Precision Lighting: You are subscribed to receive service-related text updates. Message frequency varies. Msg & data rates may apply. Reply HELP for help or STOP to opt out."
+    );
   }
 
-  if (/^(yes|y|confirm|proceed)$/i.test(incoming)) {
-    if (!pending) {
-      return answer(
-        "There is no pending ServiceChannel request. Text IN or OUT with the required details."
-      );
+  // ServiceChannel commands are available only to authorized internal numbers.
+  const looksLikeServiceChannelCommand =
+    /^(IN|CHECK\s*IN|CHECKIN|OUT|CHECK\s*OUT|CHECKOUT)\b/i.test(incoming) ||
+    (/^(YES|Y|CONFIRM|PROCEED|CANCEL|NO)$/i.test(incoming) &&
+      pendingServiceChannelActions.has(from));
+
+  if (looksLikeServiceChannelCommand) {
+    if (!isAuthorizedServiceChannelUser) {
+      return answer("This number is not authorized to request ServiceChannel IVR calls.");
     }
 
-    pendingServiceChannelActions.delete(from);
+    const pending = pendingServiceChannelActions.get(from);
 
-    try {
-      const call = await startServiceChannelIvr(pending, from);
-      return answer(
-        `Joshua started the ServiceChannel ${pending.type === "checkin" ? "check-in" : "checkout"} call.` +
-        `\nTracking: ${pending.trackingNumber}\nCall reference: ${call.sid.slice(-8)}`
-      );
-    } catch (error) {
-      app.log.error(error, "Could not start ServiceChannel IVR call");
-      await sendOwnerSms(
-        `SERVICECHANNEL IVR FAILURE\nRequester: ${from}\nTracking: ${pending.trackingNumber}\n${error.message}`
-      );
-      return answer(
-        "The ServiceChannel IVR call could not be started. The office has been notified."
-      );
-    }
-  }
-
-  const parsed = parseServiceChannelText(incoming);
-
-  if (parsed.error) {
-    return answer(parsed.error);
-  }
-
-  pendingServiceChannelActions.set(from, parsed);
-
-  setTimeout(() => {
-    if (pendingServiceChannelActions.get(from) === parsed) {
+    if (/^(CANCEL|NO)$/i.test(incoming)) {
       pendingServiceChannelActions.delete(from);
+      return answer("Canceled. No ServiceChannel call was placed.");
     }
-  }, 10 * 60 * 1000).unref?.();
 
-  return answer(serviceChannelConfirmation(parsed));
+    if (/^(YES|Y|CONFIRM|PROCEED)$/i.test(incoming)) {
+      if (!pending) {
+        return answer(
+          "There is no pending ServiceChannel request. Text IN or OUT with the required details."
+        );
+      }
+
+      pendingServiceChannelActions.delete(from);
+
+      try {
+        const call = await startServiceChannelIvr(pending, from);
+        return answer(
+          `Joshua started the ServiceChannel ${pending.type === "checkin" ? "check-in" : "checkout"} call.` +
+          `\nTracking: ${pending.trackingNumber}\nCall reference: ${call.sid.slice(-8)}`
+        );
+      } catch (error) {
+        app.log.error(error, "Could not start ServiceChannel IVR call");
+        await sendOwnerSms(
+          `SERVICECHANNEL IVR FAILURE\nRequester: ${from}\nTracking: ${pending.trackingNumber}\n${error.message}`
+        );
+        return answer(
+          "The ServiceChannel IVR call could not be started. The office has been notified."
+        );
+      }
+    }
+
+    const parsed = parseServiceChannelText(incoming);
+    if (parsed.error) return answer(parsed.error);
+
+    pendingServiceChannelActions.set(from, parsed);
+    setTimeout(() => {
+      if (pendingServiceChannelActions.get(from) === parsed) {
+        pendingServiceChannelActions.delete(from);
+      }
+    }, 10 * 60 * 1000).unref?.();
+
+    return answer(serviceChannelConfirmation(parsed));
+  }
+
+  // All other inbound messages are treated as customer/office messages and
+  // routed without exposing internal names or phone numbers to the sender.
+  const department = smsDepartmentForMessage(incoming);
+  const contact = findSavedContact(from);
+  await notifyInboundSms({ from, incoming, department, contact });
+  return answer(smsAcknowledgement(department));
 });
 
 app.post("/servicechannel/status", async (request, reply) => {
