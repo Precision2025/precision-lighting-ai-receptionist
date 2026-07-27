@@ -950,22 +950,27 @@ function inferProjectSize(details = "") {
     .filter(Number.isFinite);
   const largest = numericMatches.length ? Math.max(...numericMatches) : 0;
 
-  if (largest >= 50) return "Large commercial project";
-  if (largest >= 10) return "Medium commercial project";
-  if (largest > 0) return "Small project";
+  if (largest >= 50) return `Large commercial project — approximately ${largest} units`;
+  if (largest >= 10) return `Medium commercial project — approximately ${largest} units`;
+  if (largest > 0) return `Small project — approximately ${largest} units`;
+
+  if (/parking lot|commercial|pole light|site lighting/i.test(text)) {
+    return "Commercial lighting project — field verification required";
+  }
+
   return "Project size requires review";
 }
 
 function suggestedNextStep(intake) {
   const combined = `${intake.initialRequest || ""} ${intake.projectType || ""}`.toLowerCase();
   if (combined.includes("parking lot")) {
-    return "Schedule a site visit to verify pole locations, power, fixture count, mounting height, and lighting requirements.";
+    return "Schedule a site visit, preferably near dusk or after dark. Verify pole count, fixture wattage, mounting height, circuit condition, power availability, access requirements, and whether a photometric lighting plan is needed.";
   }
   if (combined.includes("new installation")) {
-    return "Schedule a site visit and confirm scope, power availability, fixture selection, and installation access.";
+    return "Schedule a site visit and confirm scope, power availability, fixture selection, controls, mounting conditions, access, and permit requirements.";
   }
   if (combined.includes("repair")) {
-    return "Schedule troubleshooting and request clear photos of the affected fixtures, controls, and electrical area.";
+    return "Schedule troubleshooting and request clear photos of the affected fixtures, controls, pole/base condition, and electrical equipment.";
   }
   return "Review the scope and contact the customer to schedule the appropriate next step.";
 }
@@ -1031,7 +1036,7 @@ async function downloadQuoteMedia(mediaUrls = []) {
   return attachments;
 }
 
-function quoteReadyHtml(intake, contact) {
+function quoteReadyHtml(intake, contact, estimateResult = null) {
   const reference = quoteReference(intake);
   const confirmed = displayContactForQuote(contact, intake.from);
   const address = extractAddressFromCustomerDetails(intake.customerDetails);
@@ -1063,6 +1068,13 @@ function quoteReadyHtml(intake, contact) {
         <tr><td style="padding:7px;font-weight:700;">Project size</td><td style="padding:7px;">${htmlEscape(projectSize)}</td></tr>
         <tr><td style="padding:7px;font-weight:700;">Preferred appointment</td><td style="padding:7px;">${htmlEscape(intake.scheduling || "(not provided)")}</td></tr>
         <tr><td style="padding:7px;font-weight:700;">Photos</td><td style="padding:7px;">${photoCount} attached</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">QuickBooks estimate</td><td style="padding:7px;">${
+          estimateResult?.created
+            ? `Draft submitted${estimateResult.estimateNumber ? ` — ${htmlEscape(estimateResult.estimateNumber)}` : ""}`
+            : estimateResult?.configured
+              ? `Failed — ${htmlEscape(estimateResult.message || "Review Render logs")}`
+              : "Pending webhook setup"
+        }</td></tr>
       </table>
 
       <div style="margin-top:22px;padding:16px;background:#f3f4f6;border-left:5px solid #1d4ed8;">
@@ -1089,12 +1101,127 @@ function quoteReadyHtml(intake, contact) {
   </div>`;
 }
 
-function quoteReadySummary(intake, contact) {
+
+function parseCustomerNameAndAddress(details = "") {
+  const parts = String(details).split(",").map((part) => part.trim()).filter(Boolean);
+  return {
+    customerName: parts[0] || "",
+    serviceAddress: parts.length > 1 ? parts.slice(1).join(", ") : ""
+  };
+}
+
+function extractEstimatedQuantity(details = "") {
+  const matches = [...String(details).matchAll(/\b(\d{1,4})\b/g)]
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  return matches.length ? Math.max(...matches) : 1;
+}
+
+function quickBooksEstimatePayload(intake, contact) {
+  const parsed = parseCustomerNameAndAddress(intake.customerDetails);
+  const reference = quoteReference(intake);
+  const confirmedContact = displayContactForQuote(contact, intake.from);
+  const quantity = extractEstimatedQuantity(intake.projectType);
+
+  return {
+    event: "precision_lighting.quote_intake_completed",
+    reference,
+    estimate_status: "DRAFT_REVIEW_REQUIRED",
+    source: "Joshua SMS",
+    customer: {
+      display_name: parsed.customerName || confirmedContact || intake.from,
+      phone: intake.from || "",
+      service_address: parsed.serviceAddress,
+      confirmed_contact: confirmedContact
+    },
+    estimate: {
+      customer_memo: `Joshua quote request ${reference}`,
+      private_note: [
+        `Original request: ${intake.initialRequest || "(not provided)"}`,
+        `Project details: ${intake.projectType || "(not provided)"}`,
+        `Preferred appointment/deadline: ${intake.scheduling || "(not provided)"}`,
+        `Suggested next step: ${suggestedNextStep(intake)}`,
+        `Photos received: ${intake.mediaUrls.length}`
+      ].join("\n"),
+      line_items: [
+        {
+          description: intake.projectType || intake.initialRequest || "Lighting service estimate",
+          quantity,
+          rate: null,
+          amount: null
+        }
+      ],
+      photo_urls: intake.mediaUrls
+    }
+  };
+}
+
+async function createQuickBooksEstimateDraft(intake, contact) {
+  const webhookUrl = String(process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_URL || "").trim();
+  if (!webhookUrl) {
+    return {
+      configured: false,
+      created: false,
+      status: "NOT_CONFIGURED",
+      message: "QUICKBOOKS_ESTIMATE_WEBHOOK_URL is not configured."
+    };
+  }
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_SECRET
+          ? { "x-joshua-webhook-secret": process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_SECRET }
+          : {})
+      },
+      body: JSON.stringify(quickBooksEstimatePayload(intake, contact))
+    });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(`Estimate webhook returned ${response.status}: ${responseText.slice(0, 500)}`);
+    }
+
+    let result = {};
+    try {
+      result = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      result = { response: responseText };
+    }
+
+    return {
+      configured: true,
+      created: true,
+      status: "SUBMITTED",
+      estimateId: result.estimate_id || result.estimateId || result.id || "",
+      estimateNumber: result.estimate_number || result.estimateNumber || result.doc_number || "",
+      result
+    };
+  } catch (error) {
+    app.log.error(error, "Could not create QuickBooks estimate draft");
+    return {
+      configured: true,
+      created: false,
+      status: "FAILED",
+      message: error.message
+    };
+  }
+}
+
+function quoteReadySummary(intake, contact, estimateResult = null) {
   const reference = quoteReference(intake);
   const contactName = displayContactForQuote(contact, intake.from);
+  const estimateLine = !estimateResult
+    ? "QuickBooks estimate: Not attempted"
+    : estimateResult.created
+      ? `QuickBooks estimate: Draft submitted${estimateResult.estimateNumber ? ` — ${estimateResult.estimateNumber}` : ""}`
+      : `QuickBooks estimate: ${estimateResult.status}${estimateResult.message ? ` — ${estimateResult.message}` : ""}`;
   return [
     "QUOTE REQUEST — READY FOR REVIEW",
     `Reference: ${reference}`,
+    estimateLine,
     "",
     `From: ${intake.from || "Unknown"}`,
     `Confirmed contact: ${contactName}`,
@@ -1119,8 +1246,9 @@ function quoteReadySummary(intake, contact) {
 }
 
 async function notifyCompletedQuote(intake, contact) {
-  const text = quoteReadySummary(intake, contact);
-  const html = quoteReadyHtml(intake, contact);
+  const estimateResult = await createQuickBooksEstimateDraft(intake, contact);
+  const text = quoteReadySummary(intake, contact, estimateResult);
+  const html = quoteReadyHtml(intake, contact, estimateResult);
   const attachments = await downloadQuoteMedia(intake.mediaUrls);
   const reference = quoteReference(intake);
 
@@ -1135,6 +1263,8 @@ async function notifyCompletedQuote(intake, contact) {
     }),
     sendOwnerSms(text)
   ]);
+
+  return estimateResult;
 }
 
 async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer }) {
@@ -1203,10 +1333,14 @@ async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer })
   intake.scheduling = incoming;
   quoteIntakes.delete(from);
   const reference = quoteReference(intake);
-  await notifyCompletedQuote(intake, contact);
+  const estimateResult = await notifyCompletedQuote(intake, contact);
+
+  const estimateMessage = estimateResult.created
+    ? " A draft estimate has also been started."
+    : "";
 
   return answer(
-    `Precision Lighting: Thank you. Your quote request is complete and has been sent for review. Reference ${reference}. A team member will contact you shortly. Reply STOP to opt out.`
+    `Precision Lighting: Thank you. Your quote request is complete and has been sent for review. Reference ${reference}.${estimateMessage} A team member will contact you shortly. Reply STOP to opt out.`
   );
 }
 
