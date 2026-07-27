@@ -5,7 +5,6 @@ import formbody from "@fastify/formbody";
 import OpenAI from "openai";
 import twilio from "twilio";
 import nodemailer from "nodemailer";
-import { readFileSync } from "node:fs";
 import { SYSTEM_PROMPT, SUMMARY_PROMPT } from "./prompt.js";
 
 const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"];
@@ -27,31 +26,11 @@ const wsBaseUrl = publicBaseUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws
 
 const defaultTransferNumber = process.env.LIVE_TRANSFER_NUMBER || "+12142435649";
 const travisTransferNumber = process.env.TRAVIS_TRANSFER_NUMBER || "+12142435649";
-const travisThursdayDayOffNumber =
-  process.env.TRAVIS_THURSDAY_DAY_OFF_NUMBER || "+14698662986";
 const accountingTransferNumber = process.env.ACCOUNTING_TRANSFER_NUMBER || "+19729044735";
 const arianaTransferNumber = process.env.ARIANA_TRANSFER_NUMBER || "+19729044736";
-const businessTimeZone = process.env.BUSINESS_TIME_ZONE || "America/Chicago";
+const clockSharkZapierWebhookUrl =
+  process.env.CLOCKSHARK_ZAPIER_WEBHOOK_URL || "";
 
-let contactDirectory = { contactsByPhone: {} };
-try {
-  contactDirectory = JSON.parse(
-    readFileSync(new URL("./contacts.json", import.meta.url), "utf8")
-  );
-} catch (error) {
-  console.warn("contacts.json could not be loaded; caller recognition is disabled.", error);
-}
-
-function normalizePhoneNumber(value = "") {
-  const digits = String(value).replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return digits ? `+${digits}` : "";
-}
-
-function findSavedContact(value = "") {
-  return contactDirectory.contactsByPhone?.[normalizePhoneNumber(value)] || null;
-}
 const shouldValidate =
   (process.env.VALIDATE_TWILIO_SIGNATURE || "true").toLowerCase() === "true";
 
@@ -86,6 +65,10 @@ function xmlEscape(value = "") {
     .replaceAll("'", "&apos;");
 }
 
+function clean(value = "") {
+  return String(value ?? "").trim();
+}
+
 function validateHttpRequest(request) {
   if (!shouldValidate) return true;
   const signature = request.headers["x-twilio-signature"];
@@ -112,169 +95,14 @@ function validateWsRequest(request) {
   );
 }
 
-function centralTimeParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: businessTimeZone,
-    weekday: "long",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(date);
-
-  return Object.fromEntries(parts.map(part => [part.type, part.value]));
-}
-
-function isThursday() {
-  return centralTimeParts().weekday === "Thursday";
-}
-
-function isThursdayAfterFive() {
-  const parts = centralTimeParts();
-  return parts.weekday === "Thursday" && Number(parts.hour || 0) >= 17;
-}
-
-function isPoolLightInstallRequest(text = "") {
-  return /\b(pool light install|pool light installation|install pool light|install a pool light|new pool light|replace pool light|pool lighting install|pool lighting installation|underwater light install|underwater pool light|spa light install|hot tub light install)\b/i.test(
-    text
-  );
-}
-
-function isRentalRequest(text = "") {
-  return /\b(pool rental|rent the pool|swimply|swimming pool rental|pool booking|book the pool|car rental|vehicle rental|rental car|rent a car|rent the car|turo|cybertruck rental|model x rental|qx60 rental|qx80 rental|tahoe rental)\b/i.test(
-    text
-  );
-}
-
-function isJobUpdateRequest(text = "") {
-  return /\b(job update|job status|service update|service status|work order update|work order status|appointment update|appointment status|schedule update|scheduled service|technician update|technician status|technician arrival|technician eta|tech arrival|tech eta|when (is|will) (the )?(technician|tech)|where is (the )?(technician|tech)|existing job|current job|ongoing job|check on (my|our|the) job|follow up on (my|our|the) job)\b/i.test(
-    text
-  );
-}
-
-function isObviousSolicitation(text = "") {
-  return /\b(telemarketer|telemarketing|sales call|solicitation|soliciting|cold call|marketing services?|digital marketing|internet marketing|lead generation|more leads|qualified leads|seo services?|search engine optimization|google listing|google business profile|google maps listing|verify your business|yelp advertising|homeadvisor|angi(?:'s)?|merchant services?|credit card processing|payment processing|business funding|business loan|working capital|line of credit|equipment financing|debt relief|tax relief|insurance quote|health insurance|final expense|extended warranty|vehicle warranty|solar panels?|energy savings?|utility savings?|office supplies|website design|website services?|social media marketing|reputation management|review generation|appointment setter|outsourcing services?|staffing services?|recruiting services?|sponsorship opportunity|advertising opportunity|promotional products?)\b/i.test(
-    text
-  );
-}
-
-function isObviousAutomatedCaller(text = "") {
-  return /\b(this is (an |a )?(automated|recorded) (call|message)|automated assistant|virtual assistant calling|ai assistant calling|artificial intelligence assistant|press (one|1)|do not hang up|please stay on the line|your business may qualify|you have been selected|congratulations|urgent notice|final notice|we have been trying to reach you|can you hear me|hello\? hello\?|respond with yes|say yes)\b/i.test(
-    text
-  );
-}
-
-function hasConcreteLegitimateReason(text = "") {
-  return (
-    isImmediateEmergency(text) ||
-    isJobUpdateRequest(text) ||
-    /\b(existing customer|current customer|property manager|facility manager|servicechannel|work order|purchase order|po number|invoice number|account number|estimate|proposal|schedule service|service request|repair request|lighting repair|electrical repair|sign repair|parking lot light|landscape lighting|technician|delivery|supplier|vendor|inspection|permit|appointment|callback|returning your call|missed call|project update|jobsite|job site|store number|location number)\b/i.test(
-      text
-    )
-  );
-}
-
-function endBlockedCall(socket, reason = "Blocked suspected solicitation or automated caller") {
-  if (socket.readyState === 1) {
-    socket.send(
-      JSON.stringify({
-        type: "end",
-        handoffData: JSON.stringify({
-          reasonCode: "blocked-caller",
-          reason
-        })
-      })
-    );
-  }
-}
-
-async function classifyTransferScreening(session, callerText) {
-  if (isObviousSolicitation(callerText) || isObviousAutomatedCaller(callerText)) {
-    return "blocked";
-  }
-
-  if (hasConcreteLegitimateReason(callerText)) {
-    return "legitimate";
-  }
-
-  const recentTranscript = session.messages
-    .slice(-6)
-    .map(message => `${message.role === "user" ? "Caller" : "Joshua"}: ${message.content}`)
-    .join("\n");
-
-  try {
-    const response = await openai.chat.completions.create({
-      model,
-      temperature: 0,
-      max_tokens: 12,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You screen calls for Precision Lighting. Classify the caller as LEGITIMATE, BLOCKED, or UNCERTAIN. BLOCKED includes telemarketing, sales pitches, lead generation, SEO, financing, insurance, merchant services, robocalls, recorded calls, and AI agents calling for solicitation. LEGITIMATE requires a concrete customer, property, work-order, technician, vendor, billing, emergency, or service reason. A caller merely asking for the owner, manager, operator, or a live person is UNCERTAIN. Return only one word."
-        },
-        {
-          role: "user",
-          content: `Transcript:\n${recentTranscript}\n\nLatest screening response:\n${callerText}`
-        }
-      ]
-    });
-
-    const result = String(response.choices[0]?.message?.content || "")
-      .trim()
-      .toUpperCase();
-
-    if (result.includes("BLOCKED")) return "blocked";
-    if (result.includes("LEGITIMATE")) return "legitimate";
-    return "uncertain";
-  } catch (error) {
-    app.log.error(error, "Caller screening classification failed");
-    return hasConcreteLegitimateReason(callerText) ? "legitimate" : "uncertain";
-  }
-}
-
 function wantsTransfer(text = "") {
-  return (
-    isPoolLightInstallRequest(text) ||
-    isRentalRequest(text) ||
-    isJobUpdateRequest(text) ||
-    /\b(real person|live person|human|operator|transfer me|speak (to|with)|talk (to|with)|travis|owner|president|management|manager|supervisor|leadership|dispatch|shellie|shelly|shelley|shelia|accounting|billing|invoice|invoices|payment|payments|accounts payable|accounts receivable|ariana|operations)\b/i.test(
-      text
-    )
+  return /\b(real person|live person|human|operator|transfer me|speak (to|with)|talk (to|with)|travis|owner|president|management|manager|supervisor|leadership|dispatch|shellie|shelly|shelley|shelia|accounting|billing|invoice|invoices|payment|payments|accounts payable|accounts receivable|ariana|operations)\b/i.test(
+    text
   );
 }
 
 function identifyDepartment(text = "") {
   const request = String(text).toLowerCase();
-
-  // Pool-light installation calls go to Travis first, then Ariana,
-  // then Shellie as the final backup.
-  if (isPoolLightInstallRequest(request)) {
-    return {
-      department: "pool-light-install",
-      destinationName: "Travis",
-      transferReason: "Pool light installation"
-    };
-  }
-
-  // Pool rentals, car rentals, and vehicle rentals always go to Travis,
-  // including Thursdays and Thursday evenings.
-  if (isRentalRequest(request)) {
-    return {
-      department: "travis-rental",
-      destinationName: isThursday() ? "Travis on his day-off phone" : "Travis",
-      transferReason: "Rental inquiry"
-    };
-  }
-
-  // After 5:00 PM Central on Thursday, every non-rental live transfer
-  // goes directly to Shellie.
-  if (isThursdayAfterFive()) {
-    return {
-      department: "accounting",
-      destinationName: "Shellie",
-      transferReason: "Thursday after-hours routing"
-    };
-  }
 
   if (
     request.includes("shellie") ||
@@ -288,37 +116,11 @@ function identifyDepartment(text = "") {
     request.includes("accounts payable") ||
     request.includes("accounts receivable")
   ) {
-    return {
-      department: "accounting",
-      destinationName: "Shellie in accounting",
-      transferReason: "Accounting"
-    };
-  }
-
-  // Before 5:00 PM Central on Thursday, non-accounting live transfers
-  // go to Ariana first, then Shellie.
-  if (isThursday()) {
-    return {
-      department: "ariana",
-      destinationName: "Ariana in Operations",
-      transferReason: "Thursday daytime routing"
-    };
-  }
-
-  if (isJobUpdateRequest(request)) {
-    return {
-      department: "ariana",
-      destinationName: "Ariana in Operations",
-      transferReason: "Job update"
-    };
+    return { department: "accounting", destinationName: "Shellie in accounting" };
   }
 
   if (request.includes("ariana") || request.includes("operations")) {
-    return {
-      department: "ariana",
-      destinationName: "Ariana",
-      transferReason: "Operations"
-    };
+    return { department: "ariana", destinationName: "Ariana" };
   }
 
   if (
@@ -331,18 +133,10 @@ function identifyDepartment(text = "") {
     request.includes("leadership") ||
     request.includes("dispatch")
   ) {
-    return {
-      department: "travis",
-      destinationName: "Travis",
-      transferReason: "Management"
-    };
+    return { department: "travis", destinationName: "Travis" };
   }
 
-  return {
-    department: "default",
-    destinationName: "the Precision Lighting team",
-    transferReason: "General"
-  };
+  return { department: "default", destinationName: "the Precision Lighting team" };
 }
 
 function isImmediateEmergency(text = "") {
@@ -443,16 +237,137 @@ async function makeSummary(session, transferResult = null) {
   return response.choices[0]?.message?.content?.trim() || transcript;
 }
 
-function emailRecipientsForDepartment(_department = "") {
-  // The user requested that Operations and Accounting email recipients be removed.
-  // Keep all Joshua notification emails on Travis's configured summary/owner address.
-  return [process.env.SUMMARY_EMAIL_TO, process.env.OWNER_EMAIL]
+async function extractClockSharkJob(session) {
+  const transcript = session.messages
+    .map(message => `${message.role === "user" ? "Caller" : "Joshua"}: ${message.content}`)
+    .join("\n");
+
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0,
+    max_tokens: 550,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: `Extract a potential ClockShark job from a Precision Lighting phone call.
+Return JSON only with these keys:
+should_create_job (boolean),
+name,
+job_number,
+description,
+street1,
+street2,
+city,
+state,
+postal_code,
+country,
+customer_name,
+caller_name,
+caller_phone.
+
+Set should_create_job=true only when the caller is requesting new service, repair, installation, maintenance, an estimate requiring a site visit, or scheduling work. Do not create jobs for job-status calls, accounting, billing, vendor calls, solicitations, general questions, or calls that only request a transfer.
+
+Use only facts stated in the transcript or metadata. Never invent an address, name, job number, or description. Use country "US" when a U.S. address is clearly involved. If no job number was supplied, return an empty string.`
+      },
+      {
+        role: "user",
+        content: `Caller phone: ${session.from || ""}\nCall ID: ${session.callSid || ""}\n\nTranscript:\n${transcript}`
+      }
+    ]
+  });
+
+  const raw = response.choices[0]?.message?.content || "{}";
+  const job = JSON.parse(raw);
+
+  return {
+    should_create_job: job.should_create_job === true,
+    name: clean(job.name),
+    job_number: clean(job.job_number),
+    description: clean(job.description),
+    street1: clean(job.street1),
+    street2: clean(job.street2),
+    city: clean(job.city),
+    state: clean(job.state),
+    postal_code: clean(job.postal_code),
+    country: clean(job.country || "US"),
+    customer_name: clean(job.customer_name),
+    caller_name: clean(job.caller_name),
+    caller_phone: clean(job.caller_phone || session.from),
+    call_sid: clean(session.callSid),
+    source: "Joshua AI Assistant"
+  };
+}
+
+async function sendJobToClockShark(session) {
+  if (!clockSharkZapierWebhookUrl || session.clockSharkSent) return false;
+
+  let job;
+  try {
+    job = await extractClockSharkJob(session);
+  } catch (error) {
+    app.log.error(error, "Could not extract ClockShark job");
+    return false;
+  }
+
+  if (!job.should_create_job || !job.description) {
+    app.log.info(
+      { callSid: session.callSid, shouldCreateJob: job.should_create_job },
+      "ClockShark job not required"
+    );
+    return false;
+  }
+
+  if (!job.name) {
+    job.name =
+      [job.customer_name, job.description].filter(Boolean).join(" — ") ||
+      "Precision Lighting Service Job";
+  }
+
+  if (!job.job_number) {
+    const suffix = clean(session.callSid).slice(-8) || Date.now().toString().slice(-8);
+    job.job_number = `JOSHUA-${suffix}`;
+  }
+
+  const response = await fetch(clockSharkZapierWebhookUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(job)
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Zapier ClockShark webhook failed (${response.status}): ${responseText.slice(0, 500)}`
+    );
+  }
+
+  session.clockSharkSent = true;
+  app.log.info({ job, responseText }, "ClockShark job sent to Zapier");
+  return true;
+}
+
+function emailRecipientsForDepartment(department = "") {
+  if (department === "accounting" || department === "ariana") {
+    return [process.env.ACCOUNTING_EMAIL, process.env.OPERATIONS_EMAIL]
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  return [
+    process.env.SUMMARY_EMAIL_TO,
+    process.env.OPERATIONS_EMAIL,
+    process.env.ACCOUNTING_EMAIL
+  ]
     .filter(Boolean)
-    .filter((value, index, values) => values.indexOf(value) === index)
     .join(", ");
 }
 
-async function sendEmail({ to, bcc, subject, text, html, attachments }) {
+async function sendEmail({ to, bcc, subject, text }) {
   if (!mailTransport || !to) return false;
   try {
     await mailTransport.sendMail({
@@ -460,9 +375,7 @@ async function sendEmail({ to, bcc, subject, text, html, attachments }) {
       to,
       bcc: bcc || undefined,
       subject,
-      text,
-      html: html || undefined,
-      attachments: attachments?.length ? attachments : undefined
+      text
     });
     return true;
   } catch (error) {
@@ -472,135 +385,26 @@ async function sendEmail({ to, bcc, subject, text, html, attachments }) {
 }
 
 async function sendOwnerSms(body) {
-  if (!process.env.OWNER_SMS_NUMBER) {
+  if (
+    !twilioClient ||
+    !process.env.OWNER_SMS_NUMBER ||
+    !process.env.TWILIO_SMS_FROM
+  ) {
     return false;
   }
 
   try {
     const compact = body.length > 1400 ? `${body.slice(0, 1397)}...` : body;
-    await sendSmsTo(process.env.OWNER_SMS_NUMBER, compact);
+    await twilioClient.messages.create({
+      from: process.env.TWILIO_SMS_FROM,
+      to: process.env.OWNER_SMS_NUMBER,
+      body: compact
+    });
     return true;
   } catch (error) {
-    app.log.error(error, "Could not send owner SMS");
+    app.log.error(error, "Could not text owner");
     return false;
   }
-}
-
-function stageDisplayName(stage = "") {
-  const names = {
-    ariana: "Ariana",
-    shellie: "Shellie",
-    travis: "Travis",
-    "travis-day-off": "Travis (Thursday day-off phone)",
-    default: "Precision Lighting team"
-  };
-  return names[String(stage).toLowerCase()] || stage || "Unknown";
-}
-
-function humanDialStatus(status = "") {
-  const normalized = String(status).toLowerCase();
-  const labels = {
-    completed: "Answered",
-    answered: "Answered",
-    "no-answer": "No Answer",
-    busy: "Busy",
-    failed: "Failed",
-    canceled: "Canceled",
-    unknown: "Result Not Provided"
-  };
-  return labels[normalized] || normalized.replaceAll("-", " ") || "Unknown";
-}
-
-function recordTransferAttempt(session, stage, status, durationSeconds = null) {
-  if (!session) return;
-  session.transferAttempts ||= [];
-  const existing = session.transferAttempts.find(
-    attempt => attempt.stage === stage && !attempt.status
-  );
-  const record = existing || {
-    stage,
-    person: stageDisplayName(stage),
-    startedAt: new Date().toISOString()
-  };
-  record.status = status;
-  record.result = humanDialStatus(status);
-  if (durationSeconds !== null && Number.isFinite(Number(durationSeconds))) {
-    record.ringSeconds = Number(durationSeconds);
-  }
-  record.completedAt = new Date().toISOString();
-  if (!existing) session.transferAttempts.push(record);
-}
-
-function routingRuleLabel() {
-  if (isThursdayAfterFive()) return "Thursday After 5:00 PM CT";
-  if (isThursday()) return "Thursday Daytime";
-  return "Standard Routing";
-}
-
-function formatRoutingSummary(session, department, finalStatus) {
-  const attempts = session?.transferAttempts || [];
-  const answered = [...attempts].reverse().find(
-    attempt => ["completed", "answered"].includes(String(attempt.status).toLowerCase())
-  );
-  const totalRingTime = attempts.reduce(
-    (sum, attempt) => sum + (Number(attempt.ringSeconds) || 0),
-    0
-  );
-
-  const lines = [
-    "CALL ROUTING",
-    `Routing rule used: ${session?.routingRule || routingRuleLabel()}`,
-    `Requested department: ${department || session?.requestedDepartment || "General"}`,
-    `Transfer reason: ${session?.transferReason || "Not specified"}`,
-    `Requested person: ${session?.requestedPerson || "Not specified"}`,
-    "",
-    "Routing path:",
-    "✅ Joshua — Answered incoming call"
-  ];
-
-  if (attempts.length) {
-    for (const attempt of attempts) {
-      const answeredAttempt = ["completed", "answered"].includes(
-        String(attempt.status).toLowerCase()
-      );
-      const icon = answeredAttempt ? "✅" : "❌";
-      const time = Number.isFinite(Number(attempt.ringSeconds))
-        ? ` (${attempt.ringSeconds} sec)`
-        : "";
-      lines.push(`${icon} ${attempt.person} — ${attempt.result}${time}`);
-    }
-  } else {
-    lines.push("Transfer result: No callback data received from Twilio");
-  }
-
-  lines.push(
-    "",
-    `Who answered: ${answered?.person || "No one"}`,
-    `Total transfer attempts: ${attempts.length}`,
-    `Total ring time: ${totalRingTime || "Not provided"}${totalRingTime ? " seconds" : ""}`,
-    `Final call status: ${finalStatus}`,
-    `Caller hung up during transfer: ${finalStatus === "Caller hung up" ? "Yes" : "No"}`
-  );
-
-  return lines.join("\n");
-}
-
-async function notifyTransferOutcome({ request, department, finalStatus }) {
-  const session = getSessionForTwilioRequest(request);
-  const callerNumber =
-    session?.from || request.body?.From || request.body?.Caller || "Unknown caller";
-  const routing = formatRoutingSummary(session, department, finalStatus);
-  const recipients = emailRecipientsForDepartment(department);
-
-  await Promise.allSettled([
-    sendEmail({
-      to: recipients,
-      bcc: process.env.OWNER_EMAIL,
-      subject: `Joshua transfer result — ${callerNumber}`,
-      text: routing
-    }),
-    sendOwnerSms(routing)
-  ]);
 }
 
 async function notifyTeam(session) {
@@ -680,1299 +484,9 @@ async function notifyMissedTransfer({ request, department, stage, status }) {
 app.get("/", async () => ({
   name: "Precision Lighting AI Receptionist",
   receptionist: "Joshua",
-  status: "online"
+  status: "online",
+  clockSharkWebhookConfigured: Boolean(clockSharkZapierWebhookUrl)
 }));
-
-
-// =========================
-// SERVICECHANNEL IVR BY TEXT
-// =========================
-const serviceChannelIvrNumber =
-  process.env.SERVICECHANNEL_IVR_NUMBER || "+15165007776";
-const serviceChannelPin =
-  process.env.SERVICECHANNEL_PIN || "2300050";
-const serviceChannelVoiceFrom =
-  process.env.SERVICECHANNEL_VOICE_FROM ||
-  process.env.TWILIO_VOICE_FROM ||
-  process.env.TWILIO_SMS_FROM;
-const serviceChannelAuthorizedNumbers = new Set(
-  String(process.env.SERVICECHANNEL_AUTHORIZED_NUMBERS || process.env.OWNER_SMS_NUMBER || "")
-    .split(",")
-    .map(value => normalizePhone(value.trim()))
-    .filter(Boolean)
-);
-const pendingServiceChannelActions = new Map();
-
-// Temporary multi-step quote intake sessions, keyed by caller number.
-const quoteIntakes = new Map();
-
-// Staff Command Center
-// Only explicitly authorized staff phone numbers can enter management mode.
-// Configure the regular Travis, Ariana, and Shellie numbers in Render.
-// Travis's Thursday number is included as a safe default.
-const staffAuthorizedNumbers = new Map(
-  [
-    [process.env.TRAVIS_STAFF_NUMBER, { name: "Travis", role: "Owner" }],
-    [process.env.TRAVIS_THURSDAY_NUMBER || "+14698662986", { name: "Travis", role: "Owner" }],
-    [process.env.ARIANA_STAFF_NUMBER, { name: "Ariana", role: "Operations" }],
-    [process.env.SHELLIE_STAFF_NUMBER, { name: "Shellie", role: "Accounting" }]
-  ]
-    .filter(([number]) => Boolean(number))
-    .map(([number, profile]) => [normalizePhone(number), profile])
-);
-
-const pendingStaffActions = new Map();
-
-const SERVICECHANNEL_STATUS_NAMES = {
-  "1": "Job Complete",
-  "2": "Requires Authorization",
-  "3": "Parts Needed",
-  "4": "Return Trip Needed"
-};
-
-function normalizePhone(value = "") {
-  const digits = String(value).replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return String(value).trim();
-}
-
-function serviceChannelStatusNumber(value = "") {
-  const status = String(value).trim().toLowerCase();
-  if (["1", "complete", "completed", "job complete", "done"].includes(status)) return "1";
-  if (["2", "authorization", "requires authorization", "auth"].includes(status)) return "2";
-  if (["3", "parts", "parts needed", "need parts"].includes(status)) return "3";
-  if (["4", "return", "return trip", "return trip needed", "callback"].includes(status)) return "4";
-  return "";
-}
-
-function parseServiceChannelText(body = "") {
-  const cleaned = String(body).trim().replace(/\s+/g, " ");
-  const trackingMatch = cleaned.match(/\b(\d{5,})\b/);
-  const trackingNumber = trackingMatch?.[1] || "";
-
-  if (/^(in|check\s*in|checkin)\b/i.test(cleaned)) {
-    return trackingNumber
-      ? { type: "checkin", trackingNumber }
-      : { error: "Please include the tracking number. Example: IN 123456789" };
-  }
-
-  if (/^(out|check\s*out|checkout)\b/i.test(cleaned)) {
-    if (!trackingNumber) {
-      return { error: "Please include the tracking number. Example: OUT 123456789 COMPLETE 2" };
-    }
-
-    const afterTracking = cleaned.slice(cleaned.indexOf(trackingNumber) + trackingNumber.length).trim();
-    const techMatch = afterTracking.match(/(?:techs?|technicians?)?\s*(\d+)\s*$/i);
-    const techCount = techMatch?.[1] || "";
-    const statusText = techMatch
-      ? afterTracking.slice(0, techMatch.index).trim()
-      : afterTracking;
-    const status = serviceChannelStatusNumber(statusText);
-
-    if (!status) {
-      return {
-        error:
-          "Please include the checkout status: COMPLETE, AUTHORIZATION, PARTS, or RETURN."
-      };
-    }
-    if (!techCount || Number(techCount) < 1 || Number(techCount) > 25) {
-      return { error: "Please include the number of technicians. Example: OUT 123456789 COMPLETE 2" };
-    }
-
-    return { type: "checkout", trackingNumber, status, techCount };
-  }
-
-  return {
-    error:
-      "Text IN plus the tracking number, or OUT plus tracking number, status, and technician count.\nExamples:\nIN 123456789\nOUT 123456789 COMPLETE 2"
-  };
-}
-
-function serviceChannelConfirmation(action) {
-  if (action.type === "checkin") {
-    return [
-      "Confirm ServiceChannel CHECK IN",
-      `Tracking: ${action.trackingNumber}`,
-      "",
-      "Reply YES to place the IVR call or CANCEL."
-    ].join("\n");
-  }
-
-  return [
-    "Confirm ServiceChannel CHECK OUT",
-    `Tracking: ${action.trackingNumber}`,
-    `Status: ${SERVICECHANNEL_STATUS_NAMES[action.status]}`,
-    `Technicians: ${action.techCount}`,
-    "",
-    "Reply YES to place the IVR call or CANCEL."
-  ].join("\n");
-}
-
-function serviceChannelDigits(action) {
-  // Twilio 'w' pauses for about 0.5 seconds. These pauses allow each IVR prompt to finish.
-  const languagePause = process.env.SERVICECHANNEL_LANGUAGE_PAUSE || "wwww";
-  const pinPause = process.env.SERVICECHANNEL_PIN_PAUSE || "wwwwww";
-  const trackingPause = process.env.SERVICECHANNEL_TRACKING_PAUSE || "wwwwww";
-  const statusPause = process.env.SERVICECHANNEL_STATUS_PAUSE || "wwww";
-  const techPause = process.env.SERVICECHANNEL_TECH_PAUSE || "wwww";
-
-  let digits = `${languagePause}1#${pinPause}${serviceChannelPin}#${trackingPause}${action.trackingNumber}#`;
-  if (action.type === "checkout") {
-    digits += `${statusPause}${action.status}#${techPause}${action.techCount}#`;
-  }
-  return digits;
-}
-
-async function sendSmsTo(to, body) {
-  if (!twilioClient) {
-    throw new Error("Twilio client is not configured");
-  }
-
-  const messagingServiceSid = String(
-    process.env.TWILIO_MESSAGING_SERVICE_SID || ""
-  ).trim();
-
-  const smsFrom =
-    process.env.TWILIO_SMS_FROM ||
-    process.env.SERVICECHANNEL_VOICE_FROM ||
-    process.env.TWILIO_VOICE_FROM;
-
-  if (!messagingServiceSid && !smsFrom) {
-    throw new Error(
-      "No Twilio SMS sender is configured. Set TWILIO_MESSAGING_SERVICE_SID or TWILIO_SMS_FROM."
-    );
-  }
-
-  const payload = {
-    to,
-    body
-  };
-
-  // Because Joshua's number belongs to a Twilio Messaging Service, send through
-  // that service when its SID is configured. This lets Twilio select the sender
-  // already attached to the service and avoids number-level routing conflicts.
-  if (messagingServiceSid) {
-    payload.messagingServiceSid = messagingServiceSid;
-  } else {
-    payload.from = smsFrom;
-  }
-
-  const sent = await twilioClient.messages.create(payload);
-
-  app.log.info(
-    {
-      messageSid: sent.sid,
-      messageStatus: sent.status,
-      to,
-      senderMode: messagingServiceSid ? "messaging-service" : "phone-number"
-    },
-    "ServiceChannel SMS submitted to Twilio"
-  );
-
-  return sent;
-}
-
-async function startServiceChannelIvr(action, requester) {
-  if (!twilioClient) throw new Error("Twilio client is not configured");
-  if (!serviceChannelVoiceFrom) throw new Error("SERVICECHANNEL_VOICE_FROM is not configured");
-
-  const digits = serviceChannelDigits(action);
-  const actionJson = Buffer.from(JSON.stringify(action)).toString("base64url");
-
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Pause length="1"/>
-  <Play digits="${xmlEscape(digits)}"/>
-  <Pause length="35"/>
-</Response>`;
-
-  return twilioClient.calls.create({
-    to: serviceChannelIvrNumber,
-    from: serviceChannelVoiceFrom,
-    twiml,
-    statusCallback:
-      `${publicBaseUrl}/servicechannel/status?requester=${encodeURIComponent(requester)}` +
-      `&amp;action=${encodeURIComponent(actionJson)}`,
-    statusCallbackMethod: "POST",
-    statusCallbackEvent: ["completed"]
-  });
-}
-
-
-function isQuoteRequest(text = "") {
-  return /\b(quote|quotation|estimate|pricing|price|proposal|bid|new project|new service|parking lot lighting)\b/i.test(text);
-}
-
-function extractMmsUrls(body = {}) {
-  const count = Math.max(0, Number.parseInt(body.NumMedia || "0", 10) || 0);
-  const urls = [];
-  for (let index = 0; index < count; index += 1) {
-    const url = String(body[`MediaUrl${index}`] || "").trim();
-    if (url) urls.push(url);
-  }
-  return urls;
-}
-
-function createQuoteIntake(from, incoming, mediaUrls = []) {
-  const intake = {
-    from,
-    startedAt: new Date().toISOString(),
-    step: 1,
-    initialRequest: incoming,
-    customerDetails: "",
-    projectType: "",
-    scheduling: "",
-    mediaUrls: [...mediaUrls]
-  };
-  quoteIntakes.set(from, intake);
-  return intake;
-}
-
-
-function quoteReference(intake) {
-  const seed = `${intake.from || ""}|${intake.startedAt || ""}`;
-  let hash = 0;
-  for (const char of seed) {
-    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
-  }
-  return `PL-${String(Math.abs(hash) % 100000).padStart(5, "0")}`;
-}
-
-function displayContactForQuote(contact, from) {
-  const normalizedFrom = normalizePhoneNumber(from);
-  const ownerNumbers = [
-    process.env.OWNER_SMS_NUMBER,
-    process.env.TRAVIS_TRANSFER_NUMBER,
-    travisTransferNumber
-  ].map(normalizePhoneNumber).filter(Boolean);
-
-  if (ownerNumbers.includes(normalizedFrom)) {
-    return "Owner — Travis Jackson";
-  }
-
-  return safeContactFirstName(contact);
-}
-
-function extractAddressFromCustomerDetails(details = "") {
-  const parts = String(details).split(",").map((part) => part.trim()).filter(Boolean);
-  if (parts.length < 2) return "";
-  return parts.slice(1).join(", ");
-}
-
-function inferProjectSize(details = "") {
-  const text = String(details);
-  const numericMatches = [...text.matchAll(/\b(\d{1,4})\b/g)]
-    .map((match) => Number(match[1]))
-    .filter(Number.isFinite);
-  const largest = numericMatches.length ? Math.max(...numericMatches) : 0;
-
-  if (largest >= 50) return `Large commercial project — approximately ${largest} units`;
-  if (largest >= 10) return `Medium commercial project — approximately ${largest} units`;
-  if (largest > 0) return `Small project — approximately ${largest} units`;
-
-  if (/parking lot|commercial|pole light|site lighting/i.test(text)) {
-    return "Commercial lighting project — field verification required";
-  }
-
-  return "Project size requires review";
-}
-
-function suggestedNextStep(intake) {
-  const combined = `${intake.initialRequest || ""} ${intake.projectType || ""}`.toLowerCase();
-  if (combined.includes("parking lot")) {
-    return "Schedule a site visit, preferably near dusk or after dark. Verify pole count, fixture wattage, mounting height, circuit condition, power availability, access requirements, and whether a photometric lighting plan is needed.";
-  }
-  if (combined.includes("new installation")) {
-    return "Schedule a site visit and confirm scope, power availability, fixture selection, controls, mounting conditions, access, and permit requirements.";
-  }
-  if (combined.includes("repair")) {
-    return "Schedule troubleshooting and request clear photos of the affected fixtures, controls, pole/base condition, and electrical equipment.";
-  }
-  return "Review the scope and contact the customer to schedule the appropriate next step.";
-}
-
-function htmlEscape(value = "") {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function phoneHref(value = "") {
-  return `tel:${normalizePhoneNumber(value)}`;
-}
-
-function smsHref(value = "") {
-  return `sms:${normalizePhoneNumber(value)}`;
-}
-
-function mapsHref(address = "") {
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
-}
-
-async function downloadQuoteMedia(mediaUrls = []) {
-  if (!mediaUrls.length || !process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-    return [];
-  }
-
-  const auth = Buffer.from(
-    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-  ).toString("base64");
-
-  const attachments = [];
-  for (let index = 0; index < mediaUrls.length; index += 1) {
-    try {
-      const response = await fetch(mediaUrls[index], {
-        headers: { Authorization: `Basic ${auth}` }
-      });
-      if (!response.ok) {
-        app.log.warn({ status: response.status, url: mediaUrls[index] }, "Could not download quote photo");
-        continue;
-      }
-
-      const contentType = response.headers.get("content-type") || "application/octet-stream";
-      const extension =
-        contentType.includes("jpeg") ? "jpg" :
-        contentType.includes("png") ? "png" :
-        contentType.includes("gif") ? "gif" :
-        contentType.includes("webp") ? "webp" : "bin";
-
-      attachments.push({
-        filename: `quote-photo-${index + 1}.${extension}`,
-        content: Buffer.from(await response.arrayBuffer()),
-        contentType
-      });
-    } catch (error) {
-      app.log.error(error, "Could not download quote media");
-    }
-  }
-
-  return attachments;
-}
-
-function quoteReadyHtml(intake, contact, estimateResult = null) {
-  const reference = quoteReference(intake);
-  const confirmed = displayContactForQuote(contact, intake.from);
-  const address = extractAddressFromCustomerDetails(intake.customerDetails);
-  const photoCount = intake.mediaUrls.length;
-  const projectSize = inferProjectSize(intake.projectType);
-  const nextStep = suggestedNextStep(intake);
-
-  const actionButtons = [
-    `<a href="${phoneHref(intake.from)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#111827;color:#fff;text-decoration:none;border-radius:6px;">Call Customer</a>`,
-    `<a href="${smsHref(intake.from)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:6px;">Text Customer</a>`,
-    address
-      ? `<a href="${mapsHref(address)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#047857;color:#fff;text-decoration:none;border-radius:6px;">Open Address in Maps</a>`
-      : ""
-  ].join("");
-
-  return `
-  <div style="font-family:Arial,sans-serif;max-width:720px;margin:auto;color:#111827;">
-    <div style="background:#111827;color:#fff;padding:22px;border-radius:8px 8px 0 0;">
-      <div style="font-size:24px;font-weight:700;">QUOTE REQUEST — READY FOR REVIEW</div>
-      <div style="margin-top:8px;font-size:16px;">Reference: <strong>${htmlEscape(reference)}</strong></div>
-    </div>
-
-    <div style="border:1px solid #d1d5db;padding:22px;">
-      <table style="width:100%;border-collapse:collapse;">
-        <tr><td style="padding:7px;font-weight:700;">Customer</td><td style="padding:7px;">${htmlEscape(intake.customerDetails || confirmed)}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Phone</td><td style="padding:7px;">${htmlEscape(intake.from || "Unknown")}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Confirmed contact</td><td style="padding:7px;">${htmlEscape(confirmed)}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Job type/details</td><td style="padding:7px;">${htmlEscape(intake.projectType || "(not provided)")}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Project size</td><td style="padding:7px;">${htmlEscape(projectSize)}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Preferred appointment</td><td style="padding:7px;">${htmlEscape(intake.scheduling || "(not provided)")}</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">Photos</td><td style="padding:7px;">${photoCount} attached</td></tr>
-        <tr><td style="padding:7px;font-weight:700;">QuickBooks estimate</td><td style="padding:7px;">${
-          estimateResult?.created
-            ? `Draft submitted${estimateResult.estimateNumber ? ` — ${htmlEscape(estimateResult.estimateNumber)}` : ""}`
-            : estimateResult?.configured
-              ? `Failed — ${htmlEscape(estimateResult.message || "Review Render logs")}`
-              : "Pending webhook setup"
-        }</td></tr>
-      </table>
-
-      <div style="margin-top:22px;padding:16px;background:#f3f4f6;border-left:5px solid #1d4ed8;">
-        <strong>Suggested next step</strong><br>
-        ${htmlEscape(nextStep)}
-      </div>
-
-      <div style="margin-top:22px;">${actionButtons}</div>
-
-      <hr style="margin:26px 0;border:none;border-top:1px solid #d1d5db;">
-
-      <h3>Original request</h3>
-      <p>${htmlEscape(intake.initialRequest || "(not provided)")}</p>
-
-      <h3>Customer name / service address</h3>
-      <p>${htmlEscape(intake.customerDetails || "(not provided)")}</p>
-
-      <h3>Project type / details</h3>
-      <p>${htmlEscape(intake.projectType || "(not provided)")}</p>
-
-      <h3>Preferred appointment / deadline</h3>
-      <p>${htmlEscape(intake.scheduling || "(not provided)")}</p>
-    </div>
-  </div>`;
-}
-
-
-function parseCustomerNameAndAddress(details = "") {
-  const parts = String(details).split(",").map((part) => part.trim()).filter(Boolean);
-  return {
-    customerName: parts[0] || "",
-    serviceAddress: parts.length > 1 ? parts.slice(1).join(", ") : ""
-  };
-}
-
-function extractEstimatedQuantity(details = "") {
-  const matches = [...String(details).matchAll(/\b(\d{1,4})\b/g)]
-    .map((match) => Number(match[1]))
-    .filter(Number.isFinite);
-  return matches.length ? Math.max(...matches) : 1;
-}
-
-function quickBooksEstimatePayload(intake, contact) {
-  const parsed = parseCustomerNameAndAddress(intake.customerDetails);
-  const reference = quoteReference(intake);
-  const confirmedContact = displayContactForQuote(contact, intake.from);
-  const quantity = extractEstimatedQuantity(intake.projectType);
-
-  return {
-    event: "precision_lighting.quote_intake_completed",
-    reference,
-    estimate_status: "DRAFT_REVIEW_REQUIRED",
-    source: "Joshua SMS",
-    customer: {
-      display_name: parsed.customerName || confirmedContact || intake.from,
-      phone: intake.from || "",
-      service_address: parsed.serviceAddress,
-      confirmed_contact: confirmedContact
-    },
-    estimate: {
-      customer_memo: `Joshua quote request ${reference}`,
-      private_note: [
-        `Original request: ${intake.initialRequest || "(not provided)"}`,
-        `Project details: ${intake.projectType || "(not provided)"}`,
-        `Preferred appointment/deadline: ${intake.scheduling || "(not provided)"}`,
-        `Suggested next step: ${suggestedNextStep(intake)}`,
-        `Photos received: ${intake.mediaUrls.length}`
-      ].join("\n"),
-      line_items: [
-        {
-          description: intake.projectType || intake.initialRequest || "Lighting service estimate",
-          quantity,
-          rate: null,
-          amount: null
-        }
-      ],
-      photo_urls: intake.mediaUrls
-    }
-  };
-}
-
-async function createQuickBooksEstimateDraft(intake, contact) {
-  const webhookUrl = String(process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_URL || "").trim();
-  if (!webhookUrl) {
-    return {
-      configured: false,
-      created: false,
-      status: "NOT_CONFIGURED",
-      message: "QUICKBOOKS_ESTIMATE_WEBHOOK_URL is not configured."
-    };
-  }
-
-  try {
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_SECRET
-          ? { "x-joshua-webhook-secret": process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_SECRET }
-          : {})
-      },
-      body: JSON.stringify(quickBooksEstimatePayload(intake, contact))
-    });
-
-    const responseText = await response.text();
-    if (!response.ok) {
-      throw new Error(`Estimate webhook returned ${response.status}: ${responseText.slice(0, 500)}`);
-    }
-
-    let result = {};
-    try {
-      result = responseText ? JSON.parse(responseText) : {};
-    } catch {
-      result = { response: responseText };
-    }
-
-    return {
-      configured: true,
-      created: true,
-      status: "SUBMITTED",
-      estimateId: result.estimate_id || result.estimateId || result.id || "",
-      estimateNumber: result.estimate_number || result.estimateNumber || result.doc_number || "",
-      result
-    };
-  } catch (error) {
-    app.log.error(error, "Could not create QuickBooks estimate draft");
-    return {
-      configured: true,
-      created: false,
-      status: "FAILED",
-      message: error.message
-    };
-  }
-}
-
-function quoteReadySummary(intake, contact, estimateResult = null) {
-  const reference = quoteReference(intake);
-  const contactName = displayContactForQuote(contact, intake.from);
-  const estimateLine = !estimateResult
-    ? "QuickBooks estimate: Not attempted"
-    : estimateResult.created
-      ? `QuickBooks estimate: Draft submitted${estimateResult.estimateNumber ? ` — ${estimateResult.estimateNumber}` : ""}`
-      : `QuickBooks estimate: ${estimateResult.status}${estimateResult.message ? ` — ${estimateResult.message}` : ""}`;
-  return [
-    "QUOTE REQUEST — READY FOR REVIEW",
-    `Reference: ${reference}`,
-    estimateLine,
-    "",
-    `From: ${intake.from || "Unknown"}`,
-    `Confirmed contact: ${contactName}`,
-    `Started: ${intake.startedAt}`,
-    `Estimated project size: ${inferProjectSize(intake.projectType)}`,
-    `Suggested next step: ${suggestedNextStep(intake)}`,
-    "",
-    "ORIGINAL REQUEST:",
-    intake.initialRequest || "(not provided)",
-    "",
-    "CUSTOMER NAME / SERVICE ADDRESS:",
-    intake.customerDetails || "(not provided)",
-    "",
-    "PROJECT TYPE / DETAILS:",
-    intake.projectType || "(not provided)",
-    "",
-    "PREFERRED APPOINTMENT / DEADLINE:",
-    intake.scheduling || "(not provided)",
-    "",
-    `PHOTOS: ${intake.mediaUrls.length} attached`
-  ].join("\n");
-}
-
-async function notifyCompletedQuote(intake, contact) {
-  const estimateResult = await createQuickBooksEstimateDraft(intake, contact);
-  const text = quoteReadySummary(intake, contact, estimateResult);
-  const html = quoteReadyHtml(intake, contact, estimateResult);
-  const attachments = await downloadQuoteMedia(intake.mediaUrls);
-  const reference = quoteReference(intake);
-
-  await Promise.allSettled([
-    sendEmail({
-      to: emailRecipientsForDepartment("travis"),
-      bcc: process.env.OWNER_EMAIL,
-      subject: `QUOTE REQUEST — READY FOR REVIEW — ${reference} — ${intake.from || "Unknown"}`,
-      text,
-      html,
-      attachments
-    }),
-    sendOwnerSms(text)
-  ]);
-
-  return estimateResult;
-}
-
-async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer }) {
-  let intake = quoteIntakes.get(from);
-
-  if (/^(CANCEL|QUIT)$/i.test(incoming)) {
-    quoteIntakes.delete(from);
-    return answer(
-      "Precision Lighting: Your quote request has been canceled. Reply anytime if you would like to start again. Reply STOP to opt out."
-    );
-  }
-
-  if (!intake) {
-    intake = createQuoteIntake(from, incoming, mediaUrls);
-    return answer(
-      "Precision Lighting: Thanks for contacting us about a quote. Please reply with your name and the service address."
-    );
-  }
-
-  if (mediaUrls.length) {
-    intake.mediaUrls.push(...mediaUrls.filter((url) => !intake.mediaUrls.includes(url)));
-  }
-
-  // A photo-only reply should not skip the current question.
-  const hasText = Boolean(incoming && incoming.trim());
-
-  if (intake.step === 1) {
-    if (!hasText) {
-      quoteIntakes.set(from, intake);
-      return answer(
-        `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please also reply with your name and the service address.`
-      );
-    }
-
-    intake.customerDetails = incoming;
-    intake.step = 2;
-    quoteIntakes.set(from, intake);
-    return answer(
-      "Precision Lighting: Thank you. Is this a repair, replacement, or new installation? Please include any helpful details. You may also attach photos."
-    );
-  }
-
-  if (intake.step === 2) {
-    if (!hasText) {
-      quoteIntakes.set(from, intake);
-      return answer(
-        `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please tell us whether this is a repair, replacement, or new installation, along with any helpful details.`
-      );
-    }
-
-    intake.projectType = incoming;
-    intake.step = 3;
-    quoteIntakes.set(from, intake);
-    return answer(
-      "Precision Lighting: What day or time works best for an appointment, and is there a deadline or urgent issue we should know about?"
-    );
-  }
-
-  if (!hasText) {
-    quoteIntakes.set(from, intake);
-    return answer(
-      `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please reply with your preferred appointment day or time and any deadline or urgency.`
-    );
-  }
-
-  intake.scheduling = incoming;
-  quoteIntakes.delete(from);
-  const reference = quoteReference(intake);
-  const estimateResult = await notifyCompletedQuote(intake, contact);
-
-  const estimateMessage = estimateResult.created
-    ? " A draft estimate has also been started."
-    : "";
-
-  return answer(
-    `Precision Lighting: Thank you. Your quote request is complete and has been sent for review. Reference ${reference}.${estimateMessage} A team member will contact you shortly. Reply STOP to opt out.`
-  );
-}
-
-function smsDepartmentForMessage(text = "") {
-  if (isRentalRequest(text) || isPoolLightInstallRequest(text)) return "travis";
-
-  // Quotes, estimates, pricing, proposals, and new projects go to Travis.
-  if (isQuoteRequest(text)) {
-    return "travis";
-  }
-
-  if (/\b(accounting|billing|invoice|payment|accounts payable|accounts receivable)\b/i.test(text)) {
-    return "accounting";
-  }
-
-  if (isJobUpdateRequest(text) || /\b(reschedule|schedule|appointment|technician|eta|work order|service status)\b/i.test(text)) {
-    return "ariana";
-  }
-
-  if (/\b(travis|owner|president|manager|management|supervisor)\b/i.test(text)) {
-    return "travis";
-  }
-
-  return "default";
-}
-
-function smsAcknowledgement(department = "default") {
-  if (department === "accounting") {
-    return "Precision Lighting: Thank you. Your accounting message has been sent to the office. A team member will follow up as soon as possible. Reply STOP to opt out.";
-  }
-  if (department === "ariana") {
-    return "Precision Lighting: Thank you. Your service or job-update message has been sent to Operations. A team member will follow up as soon as possible. Reply STOP to opt out.";
-  }
-  if (department === "travis") {
-    return "Precision Lighting: Thank you. Your message has been sent for management review. We will follow up as soon as possible. Reply STOP to opt out.";
-  }
-  return "Precision Lighting: Thank you. We received your message and sent it to the appropriate team member. We will follow up as soon as possible. Reply STOP to opt out.";
-}
-
-function safeContactFirstName(contact) {
-  const raw = String(contact?.first_name || contact?.firstName || "").trim();
-  if (!raw) return "Not confirmed";
-
-  const cleaned = raw.replace(/[^a-zA-Z' -]/g, "").trim();
-  if (!cleaned) return "Not confirmed";
-
-  const blockedTitles = new Set(["mr", "mrs", "ms", "miss", "dr", "doctor", "sir", "madam"]);
-  if (blockedTitles.has(cleaned.toLowerCase().replace(".", ""))) {
-    return "Not confirmed";
-  }
-
-  return cleaned;
-}
-
-async function notifyInboundSms({ from, incoming, department, contact }) {
-  const contactName = safeContactFirstName(contact);
-  const banner = department === "accounting"
-    ? "ACCOUNTING TEXT — RESPONSE NEEDED"
-    : department === "ariana"
-      ? "JOB / SERVICE TEXT — RESPONSE NEEDED"
-      : department === "travis"
-        ? "MANAGEMENT TEXT — RESPONSE NEEDED"
-        : "CUSTOMER TEXT — RESPONSE NEEDED";
-
-  const text = [
-    banner,
-    "",
-    `From: ${from || "Unknown"}`,
-    `Confirmed contact: ${contactName}`,
-    `Department: ${department}`,
-    "",
-    "MESSAGE:",
-    incoming || "(blank message)"
-  ].join("\n");
-
-  const recipients = emailRecipientsForDepartment(department);
-  await Promise.allSettled([
-    sendEmail({
-      to: recipients,
-      bcc: process.env.OWNER_EMAIL,
-      subject: `${banner} — ${from || "Unknown"}`,
-      text
-    }),
-    sendOwnerSms(text)
-  ]);
-}
-
-
-function isStaffNumber(from = "") {
-  return staffAuthorizedNumbers.has(normalizePhone(from));
-}
-
-function staffProfile(from = "") {
-  return staffAuthorizedNumbers.get(normalizePhone(from)) || null;
-}
-
-function staffWebhookForSystem(system = "") {
-  const urls = {
-    clockshark: process.env.CLOCKSHARK_COMMAND_WEBHOOK_URL,
-    quickbooks: process.env.QUICKBOOKS_COMMAND_WEBHOOK_URL || process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_URL,
-    outlook: process.env.OUTLOOK_COMMAND_WEBHOOK_URL,
-    google_job_sheet: process.env.GOOGLE_JOB_SHEET_WEBHOOK_URL
-  };
-  return String(urls[system] || "").trim();
-}
-
-function staffActionNeedsConfirmation(action = {}) {
-  if (action.system === "text") return true;
-  return action.mode !== "lookup";
-}
-
-function staffActionSummary(action = {}) {
-  const labels = {
-    clockshark: "ClockShark",
-    quickbooks: "QuickBooks",
-    outlook: "Outlook",
-    google_job_sheet: "Google Job Sheet",
-    text: "Text Message"
-  };
-
-  return [
-    `System: ${labels[action.system] || action.system || "Unknown"}`,
-    `Task: ${action.task || "Not identified"}`,
-    action.customer ? `Customer: ${action.customer}` : "",
-    action.jobName ? `Job name: ${action.jobName}` : "",
-    action.jobNumber ? `Work order: ${action.jobNumber}` : "",
-    action.trackingNumber && action.trackingNumber !== action.jobNumber
-      ? `Tracking number: ${action.trackingNumber}`
-      : "",
-    action.locationId ? `Location ID: ${action.locationId}` : "",
-    action.address ? `Address: ${action.address}` : "",
-    action.category ? `Category: ${action.category}` : "",
-    action.asset ? `Asset: ${action.asset}` : "",
-    action.problem ? `Problem: ${action.problem}` : "",
-    action.nte ? `NTE: ${action.nte}` : "",
-    action.target ? `Target: ${action.target}` : "",
-    action.details ? `Details: ${action.details}` : "",
-    action.scheduledFor ? `Schedule: ${action.scheduledFor}` : ""
-  ].filter(Boolean).join("\n");
-}
-
-async function downloadStaffImagesAsDataUrls(mediaUrls = []) {
-  if (!mediaUrls.length) return [];
-  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-    throw new Error("Twilio credentials are required to read staff screenshots.");
-  }
-
-  const auth = Buffer.from(
-    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-  ).toString("base64");
-
-  const images = [];
-  for (const mediaUrl of mediaUrls.slice(0, 4)) {
-    const response = await fetch(mediaUrl, {
-      headers: { Authorization: `Basic ${auth}` }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Could not download staff screenshot (${response.status}).`);
-    }
-
-    const contentType = String(
-      response.headers.get("content-type") || "application/octet-stream"
-    ).split(";")[0].trim();
-
-    if (!contentType.startsWith("image/")) {
-      throw new Error(`Unsupported staff attachment type: ${contentType}`);
-    }
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > 12 * 1024 * 1024) {
-      throw new Error("A staff screenshot is too large to process.");
-    }
-
-    images.push(`data:${contentType};base64,${bytes.toString("base64")}`);
-  }
-
-  return images;
-}
-
-function normalizeStaffAction(parsed = {}) {
-  return {
-    system: String(parsed.system || "unknown"),
-    mode: String(parsed.mode || "lookup"),
-    task: String(parsed.task || ""),
-    target: String(parsed.target || ""),
-    details: String(parsed.details || ""),
-    scheduledFor: String(parsed.scheduledFor || ""),
-    message_body: String(parsed.message_body || ""),
-    missing_information: String(parsed.missing_information || ""),
-    customer: String(parsed.customer || ""),
-    jobName: String(parsed.jobName || ""),
-    jobNumber: String(parsed.jobNumber || ""),
-    trackingNumber: String(parsed.trackingNumber || ""),
-    locationId: String(parsed.locationId || ""),
-    locationName: String(parsed.locationName || ""),
-    address: String(parsed.address || ""),
-    streetLine1: String(parsed.streetLine1 || ""),
-    streetLine2: String(parsed.streetLine2 || ""),
-    city: String(parsed.city || ""),
-    state: String(parsed.state || ""),
-    postalCode: String(parsed.postalCode || ""),
-    country: String(parsed.country || "US"),
-    category: String(parsed.category || ""),
-    asset: String(parsed.asset || ""),
-    problem: String(parsed.problem || ""),
-    description: String(parsed.description || ""),
-    nte: String(parsed.nte || ""),
-    poNumber: String(parsed.poNumber || "")
-  };
-}
-
-async function parseStaffCommand(incoming, profile, mediaUrls = []) {
-  const imageDataUrls = await downloadStaffImagesAsDataUrls(mediaUrls);
-
-  const userContent = [
-    {
-      type: "text",
-      text: [
-        `Authorized staff member: ${profile.name} (${profile.role})`,
-        `Command: ${incoming || "(no typed instruction)"}`,
-        imageDataUrls.length
-          ? "Read every attached screenshot carefully. Extract only information visibly supported by the screenshots. Do not guess hidden or cut-off values."
-          : ""
-      ].filter(Boolean).join("\\n")
-    },
-    ...imageDataUrls.map((url) => ({
-      type: "image_url",
-      image_url: { url, detail: "high" }
-    }))
-  ];
-
-  const completion = await openai.chat.completions.create({
-    model,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content: [
-          "You convert Precision Lighting internal staff texts and screenshots into one JSON action.",
-          "Return only valid JSON.",
-          "Allowed systems: clockshark, quickbooks, outlook, google_job_sheet, text, unknown.",
-          "Allowed modes: lookup, create, update, send.",
-          "Supported ClockShark tasks include: add job, schedule job, reschedule job, assign technician, build technician schedule, check clock status, review hours.",
-          "Supported QuickBooks tasks include: check estimate approval, list approved estimates, create draft estimate, create draft invoice, convert approved estimate to invoice, check payment status.",
-          "Supported Outlook tasks include: search email, summarize email, draft reply, send reply, forward email.",
-          "Supported Google Job Sheet tasks include: add new job, update job, find missing job details, change job status.",
-          "Supported text tasks include sending a text to a customer, technician, or staff member.",
-          "When the instruction says create/add this job and a screenshot shows a work order, use system clockshark, mode create, task add job unless another system is explicitly requested.",
-          "Extract customer, work order/job number, tracking number, location ID, location name, full address, category, asset, problem, description, NTE and PO number when visible.",
-          "Use the work order or tracking number as jobNumber when a distinct work-order number is visible.",
-          "Create jobName as a concise combination of customer, location ID or city, and problem when supported.",
-          "Split the address into streetLine1, streetLine2, city, state, postalCode and country when possible.",
-          "Preserve leading zeros in location IDs and postal codes.",
-          "Preserve currency exactly as displayed, such as $250.00.",
-          "Never invent missing names, phone numbers, dates, work-order numbers, pricing, addresses, technicians, or scheduling times.",
-          "If the screenshot supplies enough information to create the job, do not request optional scheduling details.",
-          "Set missing_information to a short question only when information required for the requested action is truly absent.",
-          "For text messages, target must include the recipient identifier and message_body must contain the exact proposed text.",
-          "For lookups, use mode lookup. Anything that creates, changes, schedules, sends, or converts uses create, update, or send.",
-          "Put a readable scope in description and a compact complete summary in details.",
-          "JSON keys: system, mode, task, target, details, scheduledFor, message_body, missing_information, customer, jobName, jobNumber, trackingNumber, locationId, locationName, address, streetLine1, streetLine2, city, state, postalCode, country, category, asset, problem, description, nte, poNumber."
-        ].join("\\n")
-      },
-      {
-        role: "user",
-        content: userContent
-      }
-    ]
-  });
-
-  const raw = completion.choices?.[0]?.message?.content || "{}";
-  return normalizeStaffAction(JSON.parse(raw));
-}
-
-async function postStaffWebhook(system, payload) {
-  const url = staffWebhookForSystem(system);
-  if (!url) {
-    return {
-      success: false,
-      configured: false,
-      message: `${system} webhook is not configured`
-    };
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(process.env.STAFF_COMMAND_WEBHOOK_SECRET
-        ? { "x-joshua-webhook-secret": process.env.STAFF_COMMAND_WEBHOOK_SECRET }
-        : {})
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const responseText = await response.text();
-  if (!response.ok) {
-    throw new Error(`${system} webhook returned ${response.status}: ${responseText.slice(0, 500)}`);
-  }
-
-  let result = {};
-  try {
-    result = responseText ? JSON.parse(responseText) : {};
-  } catch {
-    result = { message: responseText };
-  }
-
-  return { success: true, configured: true, result };
-}
-
-async function executeStaffAction(action, requester, profile) {
-  if (action.system === "text") {
-    const targetPhoneMatch = String(action.target || "").match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
-    if (!targetPhoneMatch) {
-      return {
-        success: false,
-        message: "I need the recipient's phone number before I can send the text."
-      };
-    }
-    if (!action.message_body) {
-      return {
-        success: false,
-        message: "I need the exact message you want sent."
-      };
-    }
-
-    const sent = await sendSmsTo(normalizePhone(targetPhoneMatch[0]), action.message_body);
-    return {
-      success: true,
-      message: `Text sent. Reference: ${sent.sid.slice(-8)}`
-    };
-  }
-
-  if (!["clockshark", "quickbooks", "outlook", "google_job_sheet"].includes(action.system)) {
-    return {
-      success: false,
-      message: "I could not determine which office system should handle that task."
-    };
-  }
-
-  const payload = {
-    event: "precision_lighting.staff_command",
-    requested_at: new Date().toISOString(),
-    requester: {
-      name: profile.name,
-      role: profile.role,
-      phone: requester
-    },
-    action
-  };
-
-  const webhook = await postStaffWebhook(action.system, payload);
-  if (!webhook.success) return webhook;
-
-  const resultMessage =
-    webhook.result?.message ||
-    webhook.result?.summary ||
-    webhook.result?.status ||
-    "Task completed successfully.";
-
-  return {
-    success: true,
-    message: String(resultMessage),
-    result: webhook.result
-  };
-}
-
-function storePendingStaffAction(from, action, profile) {
-  const pending = {
-    action,
-    profile,
-    createdAt: Date.now()
-  };
-  pendingStaffActions.set(from, pending);
-  setTimeout(() => {
-    if (pendingStaffActions.get(from) === pending) {
-      pendingStaffActions.delete(from);
-    }
-  }, 15 * 60 * 1000).unref?.();
-}
-
-async function handleStaffCommand({ from, incoming, mediaUrls = [], answer }) {
-  const profile = staffProfile(from);
-  if (!profile) return null;
-
-  const pending = pendingStaffActions.get(from);
-
-  if (/^(NO|N|CANCEL)$/i.test(incoming)) {
-    if (!pending) return answer("There is no pending staff task to cancel.");
-    pendingStaffActions.delete(from);
-    return answer("Canceled. No changes were made.");
-  }
-
-  if (/^(YES|Y|CONFIRM|PROCEED)$/i.test(incoming)) {
-    if (!pending) {
-      return answer("There is no pending staff task. Text me the task you want completed.");
-    }
-
-    pendingStaffActions.delete(from);
-    try {
-      const outcome = await executeStaffAction(pending.action, from, profile);
-      if (!outcome.success) {
-        return answer(`I could not complete the task: ${outcome.message}`);
-      }
-      return answer(`Completed for ${profile.name}.\n${outcome.message}`);
-    } catch (error) {
-      app.log.error(error, "Staff command execution failed");
-      await sendOwnerSms(
-        `JOSHUA STAFF COMMAND FAILURE\nRequester: ${profile.name} ${from}\n${staffActionSummary(pending.action)}\nError: ${error.message}`
-      );
-      return answer(`I could not complete the task. ${error.message}`);
-    }
-  }
-
-  let action;
-  try {
-    action = await parseStaffCommand(incoming, profile, mediaUrls);
-  } catch (error) {
-    app.log.error(error, "Could not parse staff command");
-    return answer("I could not read that staff request. Please resend the screenshot clearly and include an instruction such as: Create this job in ClockShark.");
-  }
-
-  if (action.missing_information) {
-    return answer(action.missing_information);
-  }
-
-  if (action.system === "unknown" || !action.task) {
-    return answer(
-      "Tell me which task to perform in ClockShark, QuickBooks, Outlook, the Google Job Sheet, or by text."
-    );
-  }
-
-  if (staffActionNeedsConfirmation(action)) {
-    storePendingStaffAction(from, action, profile);
-    return answer(
-      `Confirm this staff task:\n\n${staffActionSummary(action)}${
-        action.message_body ? `\nMessage: ${action.message_body}` : ""
-      }\n\nReply YES to complete it or CANCEL.`
-    );
-  }
-
-  try {
-    const outcome = await executeStaffAction(action, from, profile);
-    if (!outcome.success) {
-      return answer(`I could not complete the lookup: ${outcome.message}`);
-    }
-    return answer(`Completed for ${profile.name}.\n${outcome.message}`);
-  } catch (error) {
-    app.log.error(error, "Staff lookup failed");
-    return answer(`I could not complete the lookup. ${error.message}`);
-  }
-}
-
-app.post("/sms", async (request, reply) => {
-  if (!validateHttpRequest(request)) {
-    return reply.code(403).send("Invalid Twilio signature");
-  }
-
-  const from = normalizePhone(request.body?.From || "");
-  const incoming = String(request.body?.Body || "").trim();
-  const normalizedCommand = incoming.toUpperCase();
-  const isAuthorizedServiceChannelUser =
-    serviceChannelAuthorizedNumbers.size > 0 &&
-    serviceChannelAuthorizedNumbers.has(from);
-
-  async function answer(message) {
-    // Return TwiML so Twilio sends the reply immediately from the same number
-    // that received the customer's text. This avoids a second outbound REST
-    // request and prevents accepted-but-undelivered acknowledgement messages.
-    return reply.type("text/xml").send(
-      `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscape(message)}</Message></Response>`
-    );
-  }
-
-  // Twilio may intercept HELP/STOP/START through Advanced Opt-Out before the
-  // webhook runs. These replies are kept here as a safe fallback.
-  if (/^(HELP|INFO)$/i.test(incoming)) {
-    return answer(
-      "Precision Lighting: For assistance, call 855-533-4437 or reply to this message. Reply STOP to unsubscribe. Msg & data rates may apply."
-    );
-  }
-
-  if (/^(START|YES|UNSTOP)$/i.test(incoming) && !pendingServiceChannelActions.has(from)) {
-    return answer(
-      "Precision Lighting: You are subscribed to receive service-related text updates. Message frequency varies. Msg & data rates may apply. Reply HELP for help or STOP to opt out."
-    );
-  }
-
-  // ServiceChannel commands are available only to authorized internal numbers.
-  const looksLikeServiceChannelCommand =
-    /^(IN|CHECK\s*IN|CHECKIN|OUT|CHECK\s*OUT|CHECKOUT)\b/i.test(incoming) ||
-    (/^(YES|Y|CONFIRM|PROCEED|CANCEL|NO)$/i.test(incoming) &&
-      pendingServiceChannelActions.has(from));
-
-  if (looksLikeServiceChannelCommand) {
-    if (!isAuthorizedServiceChannelUser) {
-      return answer("This number is not authorized to request ServiceChannel IVR calls.");
-    }
-
-    const pending = pendingServiceChannelActions.get(from);
-
-    if (/^(CANCEL|NO)$/i.test(incoming)) {
-      pendingServiceChannelActions.delete(from);
-      return answer("Canceled. No ServiceChannel call was placed.");
-    }
-
-    if (/^(YES|Y|CONFIRM|PROCEED)$/i.test(incoming)) {
-      if (!pending) {
-        return answer(
-          "There is no pending ServiceChannel request. Text IN or OUT with the required details."
-        );
-      }
-
-      pendingServiceChannelActions.delete(from);
-
-      try {
-        const call = await startServiceChannelIvr(pending, from);
-        return answer(
-          `Joshua started the ServiceChannel ${pending.type === "checkin" ? "check-in" : "checkout"} call.` +
-          `\nTracking: ${pending.trackingNumber}\nCall reference: ${call.sid.slice(-8)}`
-        );
-      } catch (error) {
-        app.log.error(error, "Could not start ServiceChannel IVR call");
-        await sendOwnerSms(
-          `SERVICECHANNEL IVR FAILURE\nRequester: ${from}\nTracking: ${pending.trackingNumber}\n${error.message}`
-        );
-        return answer(
-          "The ServiceChannel IVR call could not be started. The office has been notified."
-        );
-      }
-    }
-
-    const parsed = parseServiceChannelText(incoming);
-    if (parsed.error) return answer(parsed.error);
-
-    pendingServiceChannelActions.set(from, parsed);
-    setTimeout(() => {
-      if (pendingServiceChannelActions.get(from) === parsed) {
-        pendingServiceChannelActions.delete(from);
-      }
-    }, 10 * 60 * 1000).unref?.();
-
-    return answer(serviceChannelConfirmation(parsed));
-  }
-
-  const mediaUrls = extractMmsUrls(request.body || {});
-
-  // Authorized staff numbers enter the internal command center before any
-  // customer-routing logic. Staff may include screenshots or photos.
-  // Unknown numbers can never trigger office actions.
-  if (isStaffNumber(from)) {
-    return handleStaffCommand({ from, incoming, mediaUrls, answer });
-  }
-
-  const contact = findSavedContact(from);
-
-  // Quote conversations are handled as a short guided intake. Joshua collects
-  // the details before sending one complete review-ready summary to Travis.
-  if (quoteIntakes.has(from) || isQuoteRequest(incoming)) {
-    return handleQuoteIntake({
-      from,
-      incoming,
-      mediaUrls,
-      contact,
-      answer
-    });
-  }
-
-  // All other inbound messages are treated as customer/office messages and
-  // routed without exposing internal names or phone numbers to the sender.
-  const department = smsDepartmentForMessage(incoming);
-  await notifyInboundSms({ from, incoming, department, contact });
-  return answer(smsAcknowledgement(department));
-});
-
-app.post("/servicechannel/status", async (request, reply) => {
-  if (!validateHttpRequest(request)) {
-    return reply.code(403).send("Invalid Twilio signature");
-  }
-
-  const requester = normalizePhone(request.query?.requester || "");
-  const callStatus = String(request.body?.CallStatus || "unknown").toLowerCase();
-  let action = null;
-
-  try {
-    action = JSON.parse(
-      Buffer.from(String(request.query?.action || ""), "base64url").toString("utf8")
-    );
-  } catch {
-    action = null;
-  }
-
-  const tracking = action?.trackingNumber || "unknown";
-  const typeLabel = action?.type === "checkout" ? "checkout" : "check-in";
-
-  if (requester) {
-    const message =
-      callStatus === "completed"
-        ? `ServiceChannel ${typeLabel} IVR call completed.\nTracking: ${tracking}\nPlease verify the status in ServiceChannel before leaving the site.`
-        : `ServiceChannel ${typeLabel} IVR call ended with status: ${callStatus}.\nTracking: ${tracking}\nManual follow-up is required.`;
-
-    try {
-      await sendSmsTo(requester, message);
-    } catch (error) {
-      app.log.error(error, "Could not send ServiceChannel status text");
-    }
-  }
-
-  return reply.type("text/xml").send(
-    `<?xml version="1.0" encoding="UTF-8"?><Response/>`
-  );
-});
-
 
 app.get("/health", async () => ({ ok: true }));
 
@@ -1980,13 +494,6 @@ app.all("/voice", async (request, reply) => {
   if (!validateHttpRequest(request)) {
     return reply.code(403).send("Invalid Twilio signature");
   }
-
-  const callerNumber = request.body?.From || request.query?.From || "";
-  const savedContact = findSavedContact(callerNumber);
-  const greetingName = savedContact?.firstName || savedContact?.displayName || "";
-  const welcomeGreeting = greetingName
-    ? `Thank you for calling Precision Lighting. Hello ${greetingName}, this is Joshua, your virtual service coordinator. How can I help you today?`
-    : "Thank you for calling Precision Lighting. This is Joshua, your virtual service coordinator. How can I help you today?";
 
   const voice = xmlEscape(process.env.TTS_VOICE || "UgBBYS2sOqTuMpoF3BR0");
   const ttsProvider = xmlEscape(process.env.TTS_PROVIDER || "ElevenLabs");
@@ -2000,7 +507,7 @@ app.all("/voice", async (request, reply) => {
   <Connect action="${publicBaseUrl}/connect-action" method="POST">
     <ConversationRelay
       url="${wsBaseUrl}/ws"
-      welcomeGreeting="${xmlEscape(welcomeGreeting)}"
+      welcomeGreeting="Thank you for calling Precision Lighting. This is Joshua, your virtual service coordinator. How can I help you today?"
       welcomeGreetingInterruptible="any"
       language="en-US"
       ttsProvider="${ttsProvider}"
@@ -2043,19 +550,7 @@ app.post("/connect-action", async (request, reply) => {
   let destinationNumber = defaultTransferNumber;
   let stage = "default";
 
-  if (department === "pool-light-install") {
-    destinationName = "Travis";
-    destinationNumber = travisTransferNumber;
-    stage = "travis";
-  } else if (department === "travis-rental") {
-    destinationName = isThursday()
-      ? "Travis on his day-off phone"
-      : "Travis";
-    destinationNumber = isThursday()
-      ? travisThursdayDayOffNumber
-      : travisTransferNumber;
-    stage = isThursday() ? "travis-day-off" : "travis";
-  } else if (department === "travis") {
+  if (department === "travis") {
     destinationName = "Travis";
     destinationNumber = travisTransferNumber;
     stage = "travis";
@@ -2069,16 +564,6 @@ app.post("/connect-action", async (request, reply) => {
     stage = "ariana";
   }
 
-  const session = getSessionForTwilioRequest(request);
-  if (session) {
-    session.transferAttempts ||= [];
-    session.transferAttempts.push({
-      stage,
-      person: stageDisplayName(stage),
-      startedAt: new Date().toISOString()
-    });
-  }
-
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna-Neural">Please hold while I connect you with ${xmlEscape(destinationName)}.</Say>
@@ -2088,16 +573,12 @@ app.post("/connect-action", async (request, reply) => {
     action="${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}"
     method="POST">
     ${
-      (
-        department === "travis" ||
-        department === "travis-rental" ||
-        department === "pool-light-install"
-      )
+      department === "travis"
         ? `<Number
-      url="${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}"
+      url="${publicBaseUrl}/screen-transfer?department=travis&amp;stage=travis"
       method="POST"
       machineDetection="Enable"
-      machineDetectionTimeout="30"
+      machineDetectionTimeout="18"
       machineDetectionSpeechThreshold="1800"
       machineDetectionSpeechEndThreshold="2000"
       machineDetectionSilenceTimeout="6000">${xmlEscape(destinationNumber)}</Number>`
@@ -2148,10 +629,6 @@ app.post("/dial-result", async (request, reply) => {
   const department = String(request.query?.department || "default").toLowerCase();
   const stage = String(request.query?.stage || "default").toLowerCase();
   const dialStatus = String(request.body?.DialCallStatus || "unknown").toLowerCase();
-  const dialDuration =
-    request.body?.DialCallDuration || request.body?.CallDuration || null;
-  const session = getSessionForTwilioRequest(request);
-  recordTransferAttempt(session, stage, dialStatus, dialDuration);
 
   app.log.info(
     {
@@ -2165,151 +642,12 @@ app.post("/dial-result", async (request, reply) => {
   );
 
   if (dialStatus === "completed" || dialStatus === "answered") {
-    await notifyTransferOutcome({
-      request,
-      department,
-      finalStatus: `Connected to ${stageDisplayName(stage)}`
-    });
     return reply
       .type("text/xml")
       .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
   }
 
-  if (department === "pool-light-install" && stage === "travis") {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "ariana",
-        person: "Ariana",
-        startedAt: new Date().toISOString()
-      });
-    }
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Travis is unavailable. I will try Ariana.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=pool-light-install&amp;stage=ariana"
-    method="POST">
-    <Number>${xmlEscape(arianaTransferNumber)}</Number>
-  </Dial>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  if (department === "pool-light-install" && stage === "ariana") {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "shellie",
-        person: "Shellie",
-        startedAt: new Date().toISOString()
-      });
-    }
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Ariana is unavailable. I will try Shellie.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=pool-light-install&amp;stage=shellie"
-    method="POST">
-    <Number>${xmlEscape(accountingTransferNumber)}</Number>
-  </Dial>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  if (
-    department === "ariana" &&
-    stage === "ariana" &&
-    isThursday() &&
-    !isThursdayAfterFive()
-  ) {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "shellie",
-        person: "Shellie",
-        startedAt: new Date().toISOString()
-      });
-    }
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Ariana is unavailable. I will try Shellie.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=ariana&amp;stage=shellie"
-    method="POST">
-    <Number>${xmlEscape(accountingTransferNumber)}</Number>
-  </Dial>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  if (
-    department === "ariana" &&
-    stage === "shellie" &&
-    isThursday() &&
-    !isThursdayAfterFive()
-  ) {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "travis",
-        person: "Travis",
-        startedAt: new Date().toISOString()
-      });
-    }
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Shellie is unavailable. I will try Travis.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=ariana&amp;stage=travis"
-    method="POST">
-    <Number
-      url="${publicBaseUrl}/screen-transfer?department=travis&amp;stage=travis"
-      method="POST"
-      machineDetection="Enable">${xmlEscape(travisTransferNumber)}</Number>
-  </Dial>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  if (department === "travis-office-backup" && stage === "ariana") {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "shellie",
-        person: "Shellie",
-        startedAt: new Date().toISOString()
-      });
-    }
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">That person is unavailable. I will try another person in the office.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=travis-office-backup&amp;stage=shellie"
-    method="POST">
-    <Number>${xmlEscape(accountingTransferNumber)}</Number>
-  </Dial>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  if (
-    department === "accounting" &&
-    stage === "shellie" &&
-    !isThursdayAfterFive()
-  ) {
-    if (session) {
-      session.transferAttempts.push({
-        stage: "ariana",
-        person: "Ariana",
-        startedAt: new Date().toISOString()
-      });
-    }
+  if (department === "accounting" && stage === "shellie") {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna-Neural">Shellie is unavailable. I will try Ariana in Operations.</Say>
@@ -2324,34 +662,6 @@ app.post("/dial-result", async (request, reply) => {
     return reply.type("text/xml").send(twiml);
   }
 
-  // When Travis does not answer, do not reveal individual staff names.
-  // Give the caller the choice to try someone else in the office or leave
-  // Travis a message.
-  if (
-    (department === "travis" || department === "travis-rental") &&
-    (stage === "travis" || stage === "travis-day-off")
-  ) {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Gather
-    input="speech dtmf"
-    numDigits="1"
-    timeout="6"
-    speechTimeout="auto"
-    action="${publicBaseUrl}/travis-unavailable-choice?department=${encodeURIComponent(department)}"
-    method="POST">
-    <Say voice="Polly.Joanna-Neural">Travis is unavailable at the moment. Would you like me to try someone else in the office, or would you prefer to leave him a message? Say someone else, or press 1. Say leave a message, or press 2.</Say>
-  </Gather>
-  <Redirect method="POST">${publicBaseUrl}/travis-unavailable-choice?department=${encodeURIComponent(department)}&amp;noResponse=1</Redirect>
-</Response>`;
-    return reply.type("text/xml").send(twiml);
-  }
-
-  await notifyTransferOutcome({
-    request,
-    department,
-    finalStatus: "No one answered — callback required"
-  });
   await notifyMissedTransfer({
     request,
     department,
@@ -2363,90 +673,6 @@ app.post("/dial-result", async (request, reply) => {
 <Response>
   <Say voice="Polly.Joanna-Neural">I’m sorry, no one is available right now. Your callback information has been sent to the team.</Say>
 </Response>`);
-});
-
-app.post("/travis-unavailable-choice", async (request, reply) => {
-  if (!validateHttpRequest(request)) {
-    return reply.code(403).send("Invalid Twilio signature");
-  }
-
-  const department = String(request.query?.department || "travis").toLowerCase();
-  const digits = String(request.body?.Digits || "").trim();
-  const speech = String(request.body?.SpeechResult || "").toLowerCase().trim();
-  const noResponse = String(request.query?.noResponse || "") === "1";
-  const wantsSomeoneElse =
-    digits === "1" ||
-    /someone else|another person|anyone else|office|yes|connect me|transfer me/.test(
-      speech
-    );
-  const wantsMessage =
-    digits === "2" ||
-    /leave (a )?message|message|voicemail|call me back|callback|no thanks|no thank you/.test(
-      speech
-    );
-
-  if (wantsSomeoneElse) {
-    const session = getSessionForTwilioRequest(request);
-    if (session) {
-      session.transferAttempts.push({
-        stage: "ariana",
-        person: "Ariana",
-        startedAt: new Date().toISOString()
-      });
-    }
-
-    return reply.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Certainly. I will try someone else in the office.</Say>
-  <Dial
-    timeout="25"
-    answerOnBridge="true"
-    action="${publicBaseUrl}/dial-result?department=travis-office-backup&amp;stage=ariana"
-    method="POST">
-    <Number>${xmlEscape(arianaTransferNumber)}</Number>
-  </Dial>
-</Response>`);
-  }
-
-  if (wantsMessage || noResponse) {
-    await notifyTransferOutcome({
-      request,
-      department,
-      finalStatus: "Travis unavailable — caller requested a callback"
-    });
-    await notifyMissedTransfer({
-      request,
-      department,
-      stage: "travis",
-      status: "callback-requested"
-    });
-
-    return reply.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna-Neural">Certainly. Your callback information and the reason for your call have been sent to Travis. Someone will follow up with you as soon as possible.</Say>
-</Response>`);
-  }
-
-  return reply.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Gather
-    input="speech dtmf"
-    numDigits="1"
-    timeout="6"
-    speechTimeout="auto"
-    action="${publicBaseUrl}/travis-unavailable-choice?department=${encodeURIComponent(department)}"
-    method="POST">
-    <Say voice="Polly.Joanna-Neural">I’m sorry, I didn’t understand. To try someone else in the office, say someone else or press 1. To leave Travis a message, say leave a message or press 2.</Say>
-  </Gather>
-  <Redirect method="POST">${publicBaseUrl}/travis-unavailable-choice?department=${encodeURIComponent(department)}&amp;noResponse=1</Redirect>
-</Response>`);
-});
-
-app.post("/travis-office-backup-result", async (request, reply) => {
-  if (!validateHttpRequest(request)) {
-    return reply.code(403).send("Invalid Twilio signature");
-  }
-  return reply.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
 });
 
 app.get("/ws", { websocket: true }, (socket, request) => {
@@ -2472,13 +698,9 @@ app.get("/ws", { websocket: true }, (socket, request) => {
         callSid: event.callSid,
         from: event.from,
         to: event.to,
-        savedContact: findSavedContact(event.from),
         startedAt: new Date().toISOString(),
         requestedDepartment: "",
-        requestedPerson: "",
-        transferReason: "",
-        routingRule: "",
-        transferAttempts: [],
+        clockSharkSent: false,
         messages: []
       });
       return;
@@ -2493,56 +715,22 @@ app.get("/ws", { websocket: true }, (socket, request) => {
 
       session.messages.push({ role: "user", content: callerText });
 
-      if (isObviousSolicitation(callerText) || isObviousAutomatedCaller(callerText)) {
-        const blockedLine =
-          "Precision Lighting does not accept automated or unsolicited sales calls. Please place this number on your do-not-call list. Goodbye.";
-        session.messages.push({ role: "assistant", content: blockedLine });
-        sendText(socket, blockedLine);
-        setTimeout(
-          () => endBlockedCall(socket, "Obvious solicitation or automated caller"),
-          4200
-        );
-        return;
-      }
-
       if (isImmediateEmergency(callerText)) {
-        const emergencyDepartment = isThursdayAfterFive()
-          ? "accounting"
-          : isThursday()
-            ? "ariana"
-            : "travis";
-        const emergencyDestination = isThursdayAfterFive()
-          ? "Shellie"
-          : isThursday()
-            ? "Ariana in Operations"
-            : "Travis";
-        session.requestedPerson = emergencyDestination;
-        session.transferReason = "Emergency";
-        session.routingRule = routingRuleLabel();
-        session.requestedDepartment = emergencyDepartment;
+        session.requestedDepartment = "travis";
         const warning =
-          `Please move away from the affected equipment and do not touch it. If there is smoke, fire, an active electrical hazard, or anyone is injured, call 911 immediately. I will also try to connect you with ${emergencyDestination}.`;
+          "Please move away from the affected equipment and do not touch it. If there is smoke, fire, an active electrical hazard, or anyone is injured, call 911 immediately. I will also try to connect you with Travis.";
         session.messages.push({ role: "assistant", content: warning });
         sendText(socket, warning);
         setTimeout(
-          () =>
-            endForTransfer(
-              socket,
-              "Electrical or life-safety emergency",
-              emergencyDepartment
-            ),
+          () => endForTransfer(socket, "Electrical or life-safety emergency", "travis"),
           5200
         );
         return;
       }
 
       if (wantsTransfer(callerText)) {
-        const { department, destinationName, transferReason } =
-          identifyDepartment(callerText);
+        const { department, destinationName } = identifyDepartment(callerText);
         session.requestedDepartment = department;
-        session.requestedPerson = destinationName;
-        session.transferReason = transferReason;
-        session.routingRule = routingRuleLabel();
         const transferLine = `Certainly. I’ll try to connect you with ${destinationName} now.`;
         session.messages.push({ role: "assistant", content: transferLine });
         sendText(socket, transferLine);
@@ -2579,7 +767,17 @@ app.get("/ws", { websocket: true }, (socket, request) => {
     if (!session) return;
 
     rememberRecentSession(session);
-    await notifyTeam(session);
+
+    const results = await Promise.allSettled([
+      sendJobToClockShark(session),
+      notifyTeam(session)
+    ]);
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        app.log.error(result.reason, "Post-call task failed");
+      }
+    }
   });
 
   socket.on("error", error => {
