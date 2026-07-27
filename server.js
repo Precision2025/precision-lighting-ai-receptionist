@@ -452,7 +452,7 @@ function emailRecipientsForDepartment(_department = "") {
     .join(", ");
 }
 
-async function sendEmail({ to, bcc, subject, text }) {
+async function sendEmail({ to, bcc, subject, text, html, attachments }) {
   if (!mailTransport || !to) return false;
   try {
     await mailTransport.sendMail({
@@ -460,7 +460,9 @@ async function sendEmail({ to, bcc, subject, text }) {
       to,
       bcc: bcc || undefined,
       subject,
-      text
+      text,
+      html: html || undefined,
+      attachments: attachments?.length ? attachments : undefined
     });
     return true;
   } catch (error) {
@@ -910,14 +912,195 @@ function createQuoteIntake(from, incoming, mediaUrls = []) {
   return intake;
 }
 
+
+function quoteReference(intake) {
+  const seed = `${intake.from || ""}|${intake.startedAt || ""}`;
+  let hash = 0;
+  for (const char of seed) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return `PL-${String(Math.abs(hash) % 100000).padStart(5, "0")}`;
+}
+
+function displayContactForQuote(contact, from) {
+  const normalizedFrom = normalizePhoneNumber(from);
+  const ownerNumbers = [
+    process.env.OWNER_SMS_NUMBER,
+    process.env.TRAVIS_TRANSFER_NUMBER,
+    travisTransferNumber
+  ].map(normalizePhoneNumber).filter(Boolean);
+
+  if (ownerNumbers.includes(normalizedFrom)) {
+    return "Owner — Travis Jackson";
+  }
+
+  return safeContactFirstName(contact);
+}
+
+function extractAddressFromCustomerDetails(details = "") {
+  const parts = String(details).split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return "";
+  return parts.slice(1).join(", ");
+}
+
+function inferProjectSize(details = "") {
+  const text = String(details);
+  const numericMatches = [...text.matchAll(/\b(\d{1,4})\b/g)]
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  const largest = numericMatches.length ? Math.max(...numericMatches) : 0;
+
+  if (largest >= 50) return "Large commercial project";
+  if (largest >= 10) return "Medium commercial project";
+  if (largest > 0) return "Small project";
+  return "Project size requires review";
+}
+
+function suggestedNextStep(intake) {
+  const combined = `${intake.initialRequest || ""} ${intake.projectType || ""}`.toLowerCase();
+  if (combined.includes("parking lot")) {
+    return "Schedule a site visit to verify pole locations, power, fixture count, mounting height, and lighting requirements.";
+  }
+  if (combined.includes("new installation")) {
+    return "Schedule a site visit and confirm scope, power availability, fixture selection, and installation access.";
+  }
+  if (combined.includes("repair")) {
+    return "Schedule troubleshooting and request clear photos of the affected fixtures, controls, and electrical area.";
+  }
+  return "Review the scope and contact the customer to schedule the appropriate next step.";
+}
+
+function htmlEscape(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function phoneHref(value = "") {
+  return `tel:${normalizePhoneNumber(value)}`;
+}
+
+function smsHref(value = "") {
+  return `sms:${normalizePhoneNumber(value)}`;
+}
+
+function mapsHref(address = "") {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+}
+
+async function downloadQuoteMedia(mediaUrls = []) {
+  if (!mediaUrls.length || !process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+    return [];
+  }
+
+  const auth = Buffer.from(
+    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+  ).toString("base64");
+
+  const attachments = [];
+  for (let index = 0; index < mediaUrls.length; index += 1) {
+    try {
+      const response = await fetch(mediaUrls[index], {
+        headers: { Authorization: `Basic ${auth}` }
+      });
+      if (!response.ok) {
+        app.log.warn({ status: response.status, url: mediaUrls[index] }, "Could not download quote photo");
+        continue;
+      }
+
+      const contentType = response.headers.get("content-type") || "application/octet-stream";
+      const extension =
+        contentType.includes("jpeg") ? "jpg" :
+        contentType.includes("png") ? "png" :
+        contentType.includes("gif") ? "gif" :
+        contentType.includes("webp") ? "webp" : "bin";
+
+      attachments.push({
+        filename: `quote-photo-${index + 1}.${extension}`,
+        content: Buffer.from(await response.arrayBuffer()),
+        contentType
+      });
+    } catch (error) {
+      app.log.error(error, "Could not download quote media");
+    }
+  }
+
+  return attachments;
+}
+
+function quoteReadyHtml(intake, contact) {
+  const reference = quoteReference(intake);
+  const confirmed = displayContactForQuote(contact, intake.from);
+  const address = extractAddressFromCustomerDetails(intake.customerDetails);
+  const photoCount = intake.mediaUrls.length;
+  const projectSize = inferProjectSize(intake.projectType);
+  const nextStep = suggestedNextStep(intake);
+
+  const actionButtons = [
+    `<a href="${phoneHref(intake.from)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#111827;color:#fff;text-decoration:none;border-radius:6px;">Call Customer</a>`,
+    `<a href="${smsHref(intake.from)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:6px;">Text Customer</a>`,
+    address
+      ? `<a href="${mapsHref(address)}" style="display:inline-block;padding:12px 18px;margin:4px;background:#047857;color:#fff;text-decoration:none;border-radius:6px;">Open Address in Maps</a>`
+      : ""
+  ].join("");
+
+  return `
+  <div style="font-family:Arial,sans-serif;max-width:720px;margin:auto;color:#111827;">
+    <div style="background:#111827;color:#fff;padding:22px;border-radius:8px 8px 0 0;">
+      <div style="font-size:24px;font-weight:700;">QUOTE REQUEST — READY FOR REVIEW</div>
+      <div style="margin-top:8px;font-size:16px;">Reference: <strong>${htmlEscape(reference)}</strong></div>
+    </div>
+
+    <div style="border:1px solid #d1d5db;padding:22px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><td style="padding:7px;font-weight:700;">Customer</td><td style="padding:7px;">${htmlEscape(intake.customerDetails || confirmed)}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Phone</td><td style="padding:7px;">${htmlEscape(intake.from || "Unknown")}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Confirmed contact</td><td style="padding:7px;">${htmlEscape(confirmed)}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Job type/details</td><td style="padding:7px;">${htmlEscape(intake.projectType || "(not provided)")}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Project size</td><td style="padding:7px;">${htmlEscape(projectSize)}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Preferred appointment</td><td style="padding:7px;">${htmlEscape(intake.scheduling || "(not provided)")}</td></tr>
+        <tr><td style="padding:7px;font-weight:700;">Photos</td><td style="padding:7px;">${photoCount} attached</td></tr>
+      </table>
+
+      <div style="margin-top:22px;padding:16px;background:#f3f4f6;border-left:5px solid #1d4ed8;">
+        <strong>Suggested next step</strong><br>
+        ${htmlEscape(nextStep)}
+      </div>
+
+      <div style="margin-top:22px;">${actionButtons}</div>
+
+      <hr style="margin:26px 0;border:none;border-top:1px solid #d1d5db;">
+
+      <h3>Original request</h3>
+      <p>${htmlEscape(intake.initialRequest || "(not provided)")}</p>
+
+      <h3>Customer name / service address</h3>
+      <p>${htmlEscape(intake.customerDetails || "(not provided)")}</p>
+
+      <h3>Project type / details</h3>
+      <p>${htmlEscape(intake.projectType || "(not provided)")}</p>
+
+      <h3>Preferred appointment / deadline</h3>
+      <p>${htmlEscape(intake.scheduling || "(not provided)")}</p>
+    </div>
+  </div>`;
+}
+
 function quoteReadySummary(intake, contact) {
-  const contactName = safeContactFirstName(contact);
+  const reference = quoteReference(intake);
+  const contactName = displayContactForQuote(contact, intake.from);
   return [
     "QUOTE REQUEST — READY FOR REVIEW",
+    `Reference: ${reference}`,
     "",
     `From: ${intake.from || "Unknown"}`,
     `Confirmed contact: ${contactName}`,
     `Started: ${intake.startedAt}`,
+    `Estimated project size: ${inferProjectSize(intake.projectType)}`,
+    `Suggested next step: ${suggestedNextStep(intake)}`,
     "",
     "ORIGINAL REQUEST:",
     intake.initialRequest || "(not provided)",
@@ -931,19 +1114,24 @@ function quoteReadySummary(intake, contact) {
     "PREFERRED APPOINTMENT / DEADLINE:",
     intake.scheduling || "(not provided)",
     "",
-    "PHOTOS:",
-    intake.mediaUrls.length ? intake.mediaUrls.join("\n") : "(none received)"
+    `PHOTOS: ${intake.mediaUrls.length} attached`
   ].join("\n");
 }
 
 async function notifyCompletedQuote(intake, contact) {
   const text = quoteReadySummary(intake, contact);
+  const html = quoteReadyHtml(intake, contact);
+  const attachments = await downloadQuoteMedia(intake.mediaUrls);
+  const reference = quoteReference(intake);
+
   await Promise.allSettled([
     sendEmail({
       to: emailRecipientsForDepartment("travis"),
       bcc: process.env.OWNER_EMAIL,
-      subject: `QUOTE REQUEST — READY FOR REVIEW — ${intake.from || "Unknown"}`,
-      text
+      subject: `QUOTE REQUEST — READY FOR REVIEW — ${reference} — ${intake.from || "Unknown"}`,
+      text,
+      html,
+      attachments
     }),
     sendOwnerSms(text)
   ]);
@@ -977,7 +1165,7 @@ async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer })
     if (!hasText) {
       quoteIntakes.set(from, intake);
       return answer(
-        "Precision Lighting: We received your photo. Please also reply with your name and the service address."
+        `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please also reply with your name and the service address.`
       );
     }
 
@@ -993,7 +1181,7 @@ async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer })
     if (!hasText) {
       quoteIntakes.set(from, intake);
       return answer(
-        "Precision Lighting: We received your photo. Please tell us whether this is a repair, replacement, or new installation, along with any helpful details."
+        `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please tell us whether this is a repair, replacement, or new installation, along with any helpful details.`
       );
     }
 
@@ -1008,16 +1196,17 @@ async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer })
   if (!hasText) {
     quoteIntakes.set(from, intake);
     return answer(
-      "Precision Lighting: We received your photo. Please reply with your preferred appointment day or time and any deadline or urgency."
+      `Precision Lighting: Thanks! We received ${intake.mediaUrls.length} photo${intake.mediaUrls.length === 1 ? "" : "s"}. Please reply with your preferred appointment day or time and any deadline or urgency.`
     );
   }
 
   intake.scheduling = incoming;
   quoteIntakes.delete(from);
+  const reference = quoteReference(intake);
   await notifyCompletedQuote(intake, contact);
 
   return answer(
-    "Precision Lighting: Thank you. Your quote request is complete and has been sent for review. A team member will contact you shortly. Reply STOP to opt out."
+    `Precision Lighting: Thank you. Your quote request is complete and has been sent for review. Reference ${reference}. A team member will contact you shortly. Reply STOP to opt out.`
   );
 }
 
