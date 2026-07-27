@@ -701,6 +701,9 @@ const serviceChannelAuthorizedNumbers = new Set(
 );
 const pendingServiceChannelActions = new Map();
 
+// Temporary multi-step quote intake sessions, keyed by caller number.
+const quoteIntakes = new Map();
+
 const SERVICECHANNEL_STATUS_NAMES = {
   "1": "Job Complete",
   "2": "Requires Authorization",
@@ -877,11 +880,152 @@ async function startServiceChannelIvr(action, requester) {
   });
 }
 
+
+function isQuoteRequest(text = "") {
+  return /\b(quote|quotation|estimate|pricing|price|proposal|bid|new project|new service|parking lot lighting)\b/i.test(text);
+}
+
+function extractMmsUrls(body = {}) {
+  const count = Math.max(0, Number.parseInt(body.NumMedia || "0", 10) || 0);
+  const urls = [];
+  for (let index = 0; index < count; index += 1) {
+    const url = String(body[`MediaUrl${index}`] || "").trim();
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+function createQuoteIntake(from, incoming, mediaUrls = []) {
+  const intake = {
+    from,
+    startedAt: new Date().toISOString(),
+    step: 1,
+    initialRequest: incoming,
+    customerDetails: "",
+    projectType: "",
+    scheduling: "",
+    mediaUrls: [...mediaUrls]
+  };
+  quoteIntakes.set(from, intake);
+  return intake;
+}
+
+function quoteReadySummary(intake, contact) {
+  const contactName = safeContactFirstName(contact);
+  return [
+    "QUOTE REQUEST — READY FOR REVIEW",
+    "",
+    `From: ${intake.from || "Unknown"}`,
+    `Confirmed contact: ${contactName}`,
+    `Started: ${intake.startedAt}`,
+    "",
+    "ORIGINAL REQUEST:",
+    intake.initialRequest || "(not provided)",
+    "",
+    "CUSTOMER NAME / SERVICE ADDRESS:",
+    intake.customerDetails || "(not provided)",
+    "",
+    "PROJECT TYPE / DETAILS:",
+    intake.projectType || "(not provided)",
+    "",
+    "PREFERRED APPOINTMENT / DEADLINE:",
+    intake.scheduling || "(not provided)",
+    "",
+    "PHOTOS:",
+    intake.mediaUrls.length ? intake.mediaUrls.join("\n") : "(none received)"
+  ].join("\n");
+}
+
+async function notifyCompletedQuote(intake, contact) {
+  const text = quoteReadySummary(intake, contact);
+  await Promise.allSettled([
+    sendEmail({
+      to: emailRecipientsForDepartment("travis"),
+      bcc: process.env.OWNER_EMAIL,
+      subject: `QUOTE REQUEST — READY FOR REVIEW — ${intake.from || "Unknown"}`,
+      text
+    }),
+    sendOwnerSms(text)
+  ]);
+}
+
+async function handleQuoteIntake({ from, incoming, mediaUrls, contact, answer }) {
+  let intake = quoteIntakes.get(from);
+
+  if (/^(CANCEL|QUIT)$/i.test(incoming)) {
+    quoteIntakes.delete(from);
+    return answer(
+      "Precision Lighting: Your quote request has been canceled. Reply anytime if you would like to start again. Reply STOP to opt out."
+    );
+  }
+
+  if (!intake) {
+    intake = createQuoteIntake(from, incoming, mediaUrls);
+    return answer(
+      "Precision Lighting: Thanks for contacting us about a quote. Please reply with your name and the service address."
+    );
+  }
+
+  if (mediaUrls.length) {
+    intake.mediaUrls.push(...mediaUrls.filter((url) => !intake.mediaUrls.includes(url)));
+  }
+
+  // A photo-only reply should not skip the current question.
+  const hasText = Boolean(incoming && incoming.trim());
+
+  if (intake.step === 1) {
+    if (!hasText) {
+      quoteIntakes.set(from, intake);
+      return answer(
+        "Precision Lighting: We received your photo. Please also reply with your name and the service address."
+      );
+    }
+
+    intake.customerDetails = incoming;
+    intake.step = 2;
+    quoteIntakes.set(from, intake);
+    return answer(
+      "Precision Lighting: Thank you. Is this a repair, replacement, or new installation? Please include any helpful details. You may also attach photos."
+    );
+  }
+
+  if (intake.step === 2) {
+    if (!hasText) {
+      quoteIntakes.set(from, intake);
+      return answer(
+        "Precision Lighting: We received your photo. Please tell us whether this is a repair, replacement, or new installation, along with any helpful details."
+      );
+    }
+
+    intake.projectType = incoming;
+    intake.step = 3;
+    quoteIntakes.set(from, intake);
+    return answer(
+      "Precision Lighting: What day or time works best for an appointment, and is there a deadline or urgent issue we should know about?"
+    );
+  }
+
+  if (!hasText) {
+    quoteIntakes.set(from, intake);
+    return answer(
+      "Precision Lighting: We received your photo. Please reply with your preferred appointment day or time and any deadline or urgency."
+    );
+  }
+
+  intake.scheduling = incoming;
+  quoteIntakes.delete(from);
+  await notifyCompletedQuote(intake, contact);
+
+  return answer(
+    "Precision Lighting: Thank you. Your quote request is complete and has been sent for review. A team member will contact you shortly. Reply STOP to opt out."
+  );
+}
+
 function smsDepartmentForMessage(text = "") {
   if (isRentalRequest(text) || isPoolLightInstallRequest(text)) return "travis";
 
   // Quotes, estimates, pricing, proposals, and new projects go to Travis.
-  if (/\b(quote|quotation|estimate|pricing|price|proposal|bid|new project|new service|parking lot lighting)\b/i.test(text)) {
+  if (isQuoteRequest(text)) {
     return "travis";
   }
 
@@ -1053,10 +1197,24 @@ app.post("/sms", async (request, reply) => {
     return answer(serviceChannelConfirmation(parsed));
   }
 
+  const contact = findSavedContact(from);
+  const mediaUrls = extractMmsUrls(request.body || {});
+
+  // Quote conversations are handled as a short guided intake. Joshua collects
+  // the details before sending one complete review-ready summary to Travis.
+  if (quoteIntakes.has(from) || isQuoteRequest(incoming)) {
+    return handleQuoteIntake({
+      from,
+      incoming,
+      mediaUrls,
+      contact,
+      answer
+    });
+  }
+
   // All other inbound messages are treated as customer/office messages and
   // routed without exposing internal names or phone numbers to the sender.
   const department = smsDepartmentForMessage(incoming);
-  const contact = findSavedContact(from);
   await notifyInboundSms({ from, incoming, department, contact });
   return answer(smsAcknowledgement(department));
 });
