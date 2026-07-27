@@ -367,7 +367,41 @@ function emailRecipientsForDepartment(department = "") {
     .join(", ");
 }
 
-async function sendEmail({ to, bcc, subject, text }) {
+function htmlEscape(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function summaryToHtml(summary = "") {
+  const lines = String(summary).split(/\r?\n/);
+
+  const formattedLines = lines.map(line => {
+    const escaped = htmlEscape(line);
+
+    if (/^REASON FOR CALL\s*:/i.test(line)) {
+      const reason = escaped.replace(/^REASON FOR CALL\s*:/i, "").trim();
+      return `<div style="margin:18px 0 20px;padding:14px 16px;border-left:6px solid #d60000;background:#fff1f1;font-family:Arial,sans-serif;font-size:20px;line-height:1.4;color:#d60000;font-weight:800;"><span style="font-weight:900;">REASON FOR CALL:</span>${reason ? ` ${reason}` : ""}</div>`;
+    }
+
+    if (/^(NEW SERVICE REQUEST|GENERAL|CALLER REQUESTING|MISSED TRANSFER)/i.test(line)) {
+      return `<div style="margin:0 0 18px;font-family:Arial,sans-serif;font-size:20px;line-height:1.35;color:#147a32;font-weight:800;">${escaped}</div>`;
+    }
+
+    if (!line.trim()) {
+      return `<div style="height:10px;"></div>`;
+    }
+
+    return `<div style="margin:0 0 8px;font-family:Arial,sans-serif;font-size:16px;line-height:1.45;color:#111111;">${escaped}</div>`;
+  });
+
+  return `<div style="max-width:760px;background:#ffffff;padding:20px;">${formattedLines.join("")}</div>`;
+}
+
+async function sendEmail({ to, bcc, subject, text, html }) {
   if (!mailTransport || !to) return false;
   try {
     await mailTransport.sendMail({
@@ -375,7 +409,8 @@ async function sendEmail({ to, bcc, subject, text }) {
       to,
       bcc: bcc || undefined,
       subject,
-      text
+      text,
+      html: html || summaryToHtml(text)
     });
     return true;
   } catch (error) {
