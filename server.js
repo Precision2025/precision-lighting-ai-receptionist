@@ -706,6 +706,23 @@ const pendingServiceChannelActions = new Map();
 // Temporary multi-step quote intake sessions, keyed by caller number.
 const quoteIntakes = new Map();
 
+// Staff Command Center
+// Only explicitly authorized staff phone numbers can enter management mode.
+// Configure the regular Travis, Ariana, and Shellie numbers in Render.
+// Travis's Thursday number is included as a safe default.
+const staffAuthorizedNumbers = new Map(
+  [
+    [process.env.TRAVIS_STAFF_NUMBER, { name: "Travis", role: "Owner" }],
+    [process.env.TRAVIS_THURSDAY_NUMBER || "+14698662986", { name: "Travis", role: "Owner" }],
+    [process.env.ARIANA_STAFF_NUMBER, { name: "Ariana", role: "Operations" }],
+    [process.env.SHELLIE_STAFF_NUMBER, { name: "Shellie", role: "Accounting" }]
+  ]
+    .filter(([number]) => Boolean(number))
+    .map(([number, profile]) => [normalizePhone(number), profile])
+);
+
+const pendingStaffActions = new Map();
+
 const SERVICECHANNEL_STATUS_NAMES = {
   "1": "Job Complete",
   "2": "Requires Authorization",
@@ -1428,6 +1445,374 @@ async function notifyInboundSms({ from, incoming, department, contact }) {
   ]);
 }
 
+
+function isStaffNumber(from = "") {
+  return staffAuthorizedNumbers.has(normalizePhone(from));
+}
+
+function staffProfile(from = "") {
+  return staffAuthorizedNumbers.get(normalizePhone(from)) || null;
+}
+
+function staffWebhookForSystem(system = "") {
+  const urls = {
+    clockshark: process.env.CLOCKSHARK_COMMAND_WEBHOOK_URL,
+    quickbooks: process.env.QUICKBOOKS_COMMAND_WEBHOOK_URL || process.env.QUICKBOOKS_ESTIMATE_WEBHOOK_URL,
+    outlook: process.env.OUTLOOK_COMMAND_WEBHOOK_URL,
+    google_job_sheet: process.env.GOOGLE_JOB_SHEET_WEBHOOK_URL
+  };
+  return String(urls[system] || "").trim();
+}
+
+function staffActionNeedsConfirmation(action = {}) {
+  if (action.system === "text") return true;
+  return action.mode !== "lookup";
+}
+
+function staffActionSummary(action = {}) {
+  const labels = {
+    clockshark: "ClockShark",
+    quickbooks: "QuickBooks",
+    outlook: "Outlook",
+    google_job_sheet: "Google Job Sheet",
+    text: "Text Message"
+  };
+
+  return [
+    `System: ${labels[action.system] || action.system || "Unknown"}`,
+    `Task: ${action.task || "Not identified"}`,
+    action.customer ? `Customer: ${action.customer}` : "",
+    action.jobName ? `Job name: ${action.jobName}` : "",
+    action.jobNumber ? `Work order: ${action.jobNumber}` : "",
+    action.trackingNumber && action.trackingNumber !== action.jobNumber
+      ? `Tracking number: ${action.trackingNumber}`
+      : "",
+    action.locationId ? `Location ID: ${action.locationId}` : "",
+    action.address ? `Address: ${action.address}` : "",
+    action.category ? `Category: ${action.category}` : "",
+    action.asset ? `Asset: ${action.asset}` : "",
+    action.problem ? `Problem: ${action.problem}` : "",
+    action.nte ? `NTE: ${action.nte}` : "",
+    action.target ? `Target: ${action.target}` : "",
+    action.details ? `Details: ${action.details}` : "",
+    action.scheduledFor ? `Schedule: ${action.scheduledFor}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+async function downloadStaffImagesAsDataUrls(mediaUrls = []) {
+  if (!mediaUrls.length) return [];
+  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+    throw new Error("Twilio credentials are required to read staff screenshots.");
+  }
+
+  const auth = Buffer.from(
+    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+  ).toString("base64");
+
+  const images = [];
+  for (const mediaUrl of mediaUrls.slice(0, 4)) {
+    const response = await fetch(mediaUrl, {
+      headers: { Authorization: `Basic ${auth}` }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Could not download staff screenshot (${response.status}).`);
+    }
+
+    const contentType = String(
+      response.headers.get("content-type") || "application/octet-stream"
+    ).split(";")[0].trim();
+
+    if (!contentType.startsWith("image/")) {
+      throw new Error(`Unsupported staff attachment type: ${contentType}`);
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > 12 * 1024 * 1024) {
+      throw new Error("A staff screenshot is too large to process.");
+    }
+
+    images.push(`data:${contentType};base64,${bytes.toString("base64")}`);
+  }
+
+  return images;
+}
+
+function normalizeStaffAction(parsed = {}) {
+  return {
+    system: String(parsed.system || "unknown"),
+    mode: String(parsed.mode || "lookup"),
+    task: String(parsed.task || ""),
+    target: String(parsed.target || ""),
+    details: String(parsed.details || ""),
+    scheduledFor: String(parsed.scheduledFor || ""),
+    message_body: String(parsed.message_body || ""),
+    missing_information: String(parsed.missing_information || ""),
+    customer: String(parsed.customer || ""),
+    jobName: String(parsed.jobName || ""),
+    jobNumber: String(parsed.jobNumber || ""),
+    trackingNumber: String(parsed.trackingNumber || ""),
+    locationId: String(parsed.locationId || ""),
+    locationName: String(parsed.locationName || ""),
+    address: String(parsed.address || ""),
+    streetLine1: String(parsed.streetLine1 || ""),
+    streetLine2: String(parsed.streetLine2 || ""),
+    city: String(parsed.city || ""),
+    state: String(parsed.state || ""),
+    postalCode: String(parsed.postalCode || ""),
+    country: String(parsed.country || "US"),
+    category: String(parsed.category || ""),
+    asset: String(parsed.asset || ""),
+    problem: String(parsed.problem || ""),
+    description: String(parsed.description || ""),
+    nte: String(parsed.nte || ""),
+    poNumber: String(parsed.poNumber || "")
+  };
+}
+
+async function parseStaffCommand(incoming, profile, mediaUrls = []) {
+  const imageDataUrls = await downloadStaffImagesAsDataUrls(mediaUrls);
+
+  const userContent = [
+    {
+      type: "text",
+      text: [
+        `Authorized staff member: ${profile.name} (${profile.role})`,
+        `Command: ${incoming || "(no typed instruction)"}`,
+        imageDataUrls.length
+          ? "Read every attached screenshot carefully. Extract only information visibly supported by the screenshots. Do not guess hidden or cut-off values."
+          : ""
+      ].filter(Boolean).join("\\n")
+    },
+    ...imageDataUrls.map((url) => ({
+      type: "image_url",
+      image_url: { url, detail: "high" }
+    }))
+  ];
+
+  const completion = await openai.chat.completions.create({
+    model,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You convert Precision Lighting internal staff texts and screenshots into one JSON action.",
+          "Return only valid JSON.",
+          "Allowed systems: clockshark, quickbooks, outlook, google_job_sheet, text, unknown.",
+          "Allowed modes: lookup, create, update, send.",
+          "Supported ClockShark tasks include: add job, schedule job, reschedule job, assign technician, build technician schedule, check clock status, review hours.",
+          "Supported QuickBooks tasks include: check estimate approval, list approved estimates, create draft estimate, create draft invoice, convert approved estimate to invoice, check payment status.",
+          "Supported Outlook tasks include: search email, summarize email, draft reply, send reply, forward email.",
+          "Supported Google Job Sheet tasks include: add new job, update job, find missing job details, change job status.",
+          "Supported text tasks include sending a text to a customer, technician, or staff member.",
+          "When the instruction says create/add this job and a screenshot shows a work order, use system clockshark, mode create, task add job unless another system is explicitly requested.",
+          "Extract customer, work order/job number, tracking number, location ID, location name, full address, category, asset, problem, description, NTE and PO number when visible.",
+          "Use the work order or tracking number as jobNumber when a distinct work-order number is visible.",
+          "Create jobName as a concise combination of customer, location ID or city, and problem when supported.",
+          "Split the address into streetLine1, streetLine2, city, state, postalCode and country when possible.",
+          "Preserve leading zeros in location IDs and postal codes.",
+          "Preserve currency exactly as displayed, such as $250.00.",
+          "Never invent missing names, phone numbers, dates, work-order numbers, pricing, addresses, technicians, or scheduling times.",
+          "If the screenshot supplies enough information to create the job, do not request optional scheduling details.",
+          "Set missing_information to a short question only when information required for the requested action is truly absent.",
+          "For text messages, target must include the recipient identifier and message_body must contain the exact proposed text.",
+          "For lookups, use mode lookup. Anything that creates, changes, schedules, sends, or converts uses create, update, or send.",
+          "Put a readable scope in description and a compact complete summary in details.",
+          "JSON keys: system, mode, task, target, details, scheduledFor, message_body, missing_information, customer, jobName, jobNumber, trackingNumber, locationId, locationName, address, streetLine1, streetLine2, city, state, postalCode, country, category, asset, problem, description, nte, poNumber."
+        ].join("\\n")
+      },
+      {
+        role: "user",
+        content: userContent
+      }
+    ]
+  });
+
+  const raw = completion.choices?.[0]?.message?.content || "{}";
+  return normalizeStaffAction(JSON.parse(raw));
+}
+
+async function postStaffWebhook(system, payload) {
+  const url = staffWebhookForSystem(system);
+  if (!url) {
+    return {
+      success: false,
+      configured: false,
+      message: `${system} webhook is not configured`
+    };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(process.env.STAFF_COMMAND_WEBHOOK_SECRET
+        ? { "x-joshua-webhook-secret": process.env.STAFF_COMMAND_WEBHOOK_SECRET }
+        : {})
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(`${system} webhook returned ${response.status}: ${responseText.slice(0, 500)}`);
+  }
+
+  let result = {};
+  try {
+    result = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    result = { message: responseText };
+  }
+
+  return { success: true, configured: true, result };
+}
+
+async function executeStaffAction(action, requester, profile) {
+  if (action.system === "text") {
+    const targetPhoneMatch = String(action.target || "").match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
+    if (!targetPhoneMatch) {
+      return {
+        success: false,
+        message: "I need the recipient's phone number before I can send the text."
+      };
+    }
+    if (!action.message_body) {
+      return {
+        success: false,
+        message: "I need the exact message you want sent."
+      };
+    }
+
+    const sent = await sendSmsTo(normalizePhone(targetPhoneMatch[0]), action.message_body);
+    return {
+      success: true,
+      message: `Text sent. Reference: ${sent.sid.slice(-8)}`
+    };
+  }
+
+  if (!["clockshark", "quickbooks", "outlook", "google_job_sheet"].includes(action.system)) {
+    return {
+      success: false,
+      message: "I could not determine which office system should handle that task."
+    };
+  }
+
+  const payload = {
+    event: "precision_lighting.staff_command",
+    requested_at: new Date().toISOString(),
+    requester: {
+      name: profile.name,
+      role: profile.role,
+      phone: requester
+    },
+    action
+  };
+
+  const webhook = await postStaffWebhook(action.system, payload);
+  if (!webhook.success) return webhook;
+
+  const resultMessage =
+    webhook.result?.message ||
+    webhook.result?.summary ||
+    webhook.result?.status ||
+    "Task completed successfully.";
+
+  return {
+    success: true,
+    message: String(resultMessage),
+    result: webhook.result
+  };
+}
+
+function storePendingStaffAction(from, action, profile) {
+  const pending = {
+    action,
+    profile,
+    createdAt: Date.now()
+  };
+  pendingStaffActions.set(from, pending);
+  setTimeout(() => {
+    if (pendingStaffActions.get(from) === pending) {
+      pendingStaffActions.delete(from);
+    }
+  }, 15 * 60 * 1000).unref?.();
+}
+
+async function handleStaffCommand({ from, incoming, mediaUrls = [], answer }) {
+  const profile = staffProfile(from);
+  if (!profile) return null;
+
+  const pending = pendingStaffActions.get(from);
+
+  if (/^(NO|N|CANCEL)$/i.test(incoming)) {
+    if (!pending) return answer("There is no pending staff task to cancel.");
+    pendingStaffActions.delete(from);
+    return answer("Canceled. No changes were made.");
+  }
+
+  if (/^(YES|Y|CONFIRM|PROCEED)$/i.test(incoming)) {
+    if (!pending) {
+      return answer("There is no pending staff task. Text me the task you want completed.");
+    }
+
+    pendingStaffActions.delete(from);
+    try {
+      const outcome = await executeStaffAction(pending.action, from, profile);
+      if (!outcome.success) {
+        return answer(`I could not complete the task: ${outcome.message}`);
+      }
+      return answer(`Completed for ${profile.name}.\n${outcome.message}`);
+    } catch (error) {
+      app.log.error(error, "Staff command execution failed");
+      await sendOwnerSms(
+        `JOSHUA STAFF COMMAND FAILURE\nRequester: ${profile.name} ${from}\n${staffActionSummary(pending.action)}\nError: ${error.message}`
+      );
+      return answer(`I could not complete the task. ${error.message}`);
+    }
+  }
+
+  let action;
+  try {
+    action = await parseStaffCommand(incoming, profile, mediaUrls);
+  } catch (error) {
+    app.log.error(error, "Could not parse staff command");
+    return answer("I could not read that staff request. Please resend the screenshot clearly and include an instruction such as: Create this job in ClockShark.");
+  }
+
+  if (action.missing_information) {
+    return answer(action.missing_information);
+  }
+
+  if (action.system === "unknown" || !action.task) {
+    return answer(
+      "Tell me which task to perform in ClockShark, QuickBooks, Outlook, the Google Job Sheet, or by text."
+    );
+  }
+
+  if (staffActionNeedsConfirmation(action)) {
+    storePendingStaffAction(from, action, profile);
+    return answer(
+      `Confirm this staff task:\n\n${staffActionSummary(action)}${
+        action.message_body ? `\nMessage: ${action.message_body}` : ""
+      }\n\nReply YES to complete it or CANCEL.`
+    );
+  }
+
+  try {
+    const outcome = await executeStaffAction(action, from, profile);
+    if (!outcome.success) {
+      return answer(`I could not complete the lookup: ${outcome.message}`);
+    }
+    return answer(`Completed for ${profile.name}.\n${outcome.message}`);
+  } catch (error) {
+    app.log.error(error, "Staff lookup failed");
+    return answer(`I could not complete the lookup. ${error.message}`);
+  }
+}
+
 app.post("/sms", async (request, reply) => {
   if (!validateHttpRequest(request)) {
     return reply.code(403).send("Invalid Twilio signature");
@@ -1520,8 +1905,16 @@ app.post("/sms", async (request, reply) => {
     return answer(serviceChannelConfirmation(parsed));
   }
 
-  const contact = findSavedContact(from);
   const mediaUrls = extractMmsUrls(request.body || {});
+
+  // Authorized staff numbers enter the internal command center before any
+  // customer-routing logic. Staff may include screenshots or photos.
+  // Unknown numbers can never trigger office actions.
+  if (isStaffNumber(from)) {
+    return handleStaffCommand({ from, incoming, mediaUrls, answer });
+  }
+
+  const contact = findSavedContact(from);
 
   // Quote conversations are handled as a short guided intake. Joshua collects
   // the details before sending one complete review-ready summary to Travis.
