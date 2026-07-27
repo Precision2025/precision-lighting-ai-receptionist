@@ -443,19 +443,12 @@ async function makeSummary(session, transferResult = null) {
   return response.choices[0]?.message?.content?.trim() || transcript;
 }
 
-function emailRecipientsForDepartment(department = "") {
-  if (department === "accounting" || department === "ariana") {
-    return [process.env.ACCOUNTING_EMAIL, process.env.OPERATIONS_EMAIL]
-      .filter(Boolean)
-      .join(", ");
-  }
-
-  return [
-    process.env.SUMMARY_EMAIL_TO,
-    process.env.OPERATIONS_EMAIL,
-    process.env.ACCOUNTING_EMAIL
-  ]
+function emailRecipientsForDepartment(_department = "") {
+  // The user requested that Operations and Accounting email recipients be removed.
+  // Keep all Joshua notification emails on Travis's configured summary/owner address.
+  return [process.env.SUMMARY_EMAIL_TO, process.env.OWNER_EMAIL]
     .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
     .join(", ");
 }
 
@@ -886,15 +879,24 @@ async function startServiceChannelIvr(action, requester) {
 
 function smsDepartmentForMessage(text = "") {
   if (isRentalRequest(text) || isPoolLightInstallRequest(text)) return "travis";
+
+  // Quotes, estimates, pricing, proposals, and new projects go to Travis.
+  if (/\b(quote|quotation|estimate|pricing|price|proposal|bid|new project|new service|parking lot lighting)\b/i.test(text)) {
+    return "travis";
+  }
+
   if (/\b(accounting|billing|invoice|payment|accounts payable|accounts receivable)\b/i.test(text)) {
     return "accounting";
   }
+
   if (isJobUpdateRequest(text) || /\b(reschedule|schedule|appointment|technician|eta|work order|service status)\b/i.test(text)) {
     return "ariana";
   }
+
   if (/\b(travis|owner|president|manager|management|supervisor)\b/i.test(text)) {
     return "travis";
   }
+
   return "default";
 }
 
@@ -911,8 +913,23 @@ function smsAcknowledgement(department = "default") {
   return "Precision Lighting: Thank you. We received your message and sent it to the appropriate team member. We will follow up as soon as possible. Reply STOP to opt out.";
 }
 
+function safeContactFirstName(contact) {
+  const raw = String(contact?.first_name || contact?.firstName || "").trim();
+  if (!raw) return "Not confirmed";
+
+  const cleaned = raw.replace(/[^a-zA-Z' -]/g, "").trim();
+  if (!cleaned) return "Not confirmed";
+
+  const blockedTitles = new Set(["mr", "mrs", "ms", "miss", "dr", "doctor", "sir", "madam"]);
+  if (blockedTitles.has(cleaned.toLowerCase().replace(".", ""))) {
+    return "Not confirmed";
+  }
+
+  return cleaned;
+}
+
 async function notifyInboundSms({ from, incoming, department, contact }) {
-  const contactName = contact?.first_name || contact?.firstName || "Not confirmed";
+  const contactName = safeContactFirstName(contact);
   const banner = department === "accounting"
     ? "ACCOUNTING TEXT — RESPONSE NEEDED"
     : department === "ariana"
@@ -957,16 +974,11 @@ app.post("/sms", async (request, reply) => {
     serviceChannelAuthorizedNumbers.has(from);
 
   async function answer(message) {
-    try {
-      await sendSmsTo(from, message);
-    } catch (error) {
-      app.log.error(error, "Could not send inbound SMS reply");
-      await sendOwnerSms(
-        `SMS REPLY FAILURE\nTo: ${from}\nMessage: ${message}\n${error.message}`
-      );
-    }
+    // Return TwiML so Twilio sends the reply immediately from the same number
+    // that received the customer's text. This avoids a second outbound REST
+    // request and prevents accepted-but-undelivered acknowledgement messages.
     return reply.type("text/xml").send(
-      '<?xml version="1.0" encoding="UTF-8"?><Response/>'
+      `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscape(message)}</Message></Response>`
     );
   }
 
