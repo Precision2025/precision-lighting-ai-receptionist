@@ -192,10 +192,12 @@ async function sendTeamRelay({ from, body, includeSender = false }) {
   );
 }
 
-async function sendJoshuaTeamUpdate(body) {
+async function sendJoshuaTeamUpdate(body, excludeNumber = "") {
   if (!twilioClient || !process.env.TWILIO_SMS_FROM) return;
+  const excluded = normalizePhone(excludeNumber);
+  const recipients = teamSmsMembers().filter(member => member.number !== excluded);
   await Promise.allSettled(
-    teamSmsMembers().map(member =>
+    recipients.map(member =>
       twilioClient.messages.create({
         from: process.env.TWILIO_SMS_FROM,
         to: member.number,
@@ -203,6 +205,16 @@ async function sendJoshuaTeamUpdate(body) {
       })
     )
   );
+}
+
+function isOutOfTownJob(job = {}) {
+  const city = String(job.city || "").trim().toLowerCase();
+  if (!city) return false;
+  const configured = String(process.env.LOCAL_JOB_CITIES || "Dallas,Fort Worth,Arlington,Garland,Plano,Irving,Frisco,McKinney,Richardson,Carrollton,Mesquite,Grand Prairie,Rowlett,Sachse,Rockwall,Allen,Addison,Coppell,Lewisville,The Colony,Grapevine,Euless,Bedford,Hurst")
+    .split(",")
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean);
+  return !configured.includes(city);
 }
 
 function serviceChannelAuthorizedNumbers() {
@@ -810,10 +822,33 @@ app.post("/sms", async (request, reply) => {
     try {
       const job = await addToJobSheets({ from, body, mediaUrl, mediaContentType });
       const tracking = job.tracking_number || job.po_number || "unknown";
+      const customer = job.customer || "Unknown customer";
       const location = job.location_name || job.address || "the job";
-      const confirmation = `✅ ADDED TO JOB SHEETS\n\nTracking: ${tracking}\nLocation: ${location}\nRequested by: ${teamMemberName(from)}`;
+      const requestedBy = teamMemberName(from);
+      const outOfTown = isOutOfTownJob(job);
+      const clockSharkLine = outOfTown
+        ? "\nClockShark: Not created — out-of-town job"
+        : "";
+      const confirmation = `✅ Joshua completed your request.
+
+✔ Added to Job Sheets
+Tracking: ${tracking}
+Customer: ${customer}
+Location: ${location}
+Requested by: ${requestedBy}${clockSharkLine}
+
+Team notified: Ariana & Shellie`;
       response.message(confirmation);
-      await sendJoshuaTeamUpdate(`Joshua: ${confirmation}`);
+
+      const teamNotice = `📋 NEW JOB ADDED
+
+Tracking: ${tracking}
+Customer: ${customer}
+Location: ${location}
+Requested by: ${requestedBy}${clockSharkLine}
+
+Joshua added this job to Job Sheets.`;
+      await sendJoshuaTeamUpdate(teamNotice, from);
     } catch (error) {
       app.log.error(error, "Could not add work order to Job Sheets");
       response.message(`⚠️ Joshua could not add this to Job Sheets: ${error.message}`);
