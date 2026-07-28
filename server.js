@@ -699,7 +699,15 @@ app.post("/sms", async (request, reply) => {
       twiml: callTwiml,
       statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}`,
       statusCallbackMethod: "POST",
-      statusCallbackEvent: ["completed"]
+      statusCallbackEvent: ["completed"],
+      // Record the IVR side of the call so we can hear exactly which prompt
+      // rejected or missed the digits. This is diagnostic and avoids blind
+      // timing changes.
+      record: true,
+      recordingChannels: "mono",
+      recordingStatusCallback: `${publicBaseUrl}/servicechannel-recording-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}`,
+      recordingStatusCallbackMethod: "POST",
+      recordingStatusCallbackEvent: ["completed"]
     });
 
     app.log.info(
@@ -709,11 +717,11 @@ app.post("/sms", async (request, reply) => {
 
     if (command.type === "checkin") {
       response.message(
-        `Joshua started the O'Reilly check-in call for tracking #${command.trackingNumber}. I will text you when the call ends.`
+        `Joshua started the O'Reilly check-in call for tracking #${command.trackingNumber}. Call SID: ${call.sid}. I will text you when the call ends.`
       );
     } else {
       response.message(
-        `Joshua started the O'Reilly check-out call for tracking #${command.trackingNumber}. Status: ${command.statusText}. Technicians: ${command.technicianCount}. I will text you when the call ends.`
+        `Joshua started the O'Reilly check-out call for tracking #${command.trackingNumber}. Status: ${command.statusText}. Technicians: ${command.technicianCount}. Call SID: ${call.sid}. I will text you when the call ends.`
       );
     }
   } catch (error) {
@@ -722,6 +730,37 @@ app.post("/sms", async (request, reply) => {
   }
 
   return reply.type("text/xml").send(response.toString());
+});
+
+app.post("/servicechannel-recording-status", async (request, reply) => {
+  if (!validateHttpRequest(request)) {
+    return reply.code(403).send("Invalid Twilio signature");
+  }
+
+  const requestedBy = normalizePhone(request.query?.requestedBy);
+  const tracking = String(request.query?.tracking || "");
+  const recordingStatus = String(request.body?.RecordingStatus || "unknown");
+  const recordingSid = String(request.body?.RecordingSid || "");
+  const recordingUrl = String(request.body?.RecordingUrl || "");
+
+  app.log.info(
+    { requestedBy, tracking, recordingStatus, recordingSid, recordingUrl },
+    "ServiceChannel IVR recording ready"
+  );
+
+  if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM && recordingStatus === "completed") {
+    try {
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_SMS_FROM,
+        to: requestedBy,
+        body: `Diagnostic recording is ready for tracking #${tracking}. Open Twilio Voice Logs and select the newest outbound call. Recording SID: ${recordingSid}.`
+      });
+    } catch (error) {
+      app.log.error(error, "Could not send recording-ready SMS");
+    }
+  }
+
+  return reply.code(204).send();
 });
 
 app.post("/servicechannel-call-status", async (request, reply) => {
