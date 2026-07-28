@@ -801,8 +801,10 @@ app.post("/servicechannel-call-status", async (request, reply) => {
   if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {
     const actionLabel = action === "checkin" ? "check-in" : "check-out";
     const detail = callStatus === "completed"
-      ? `The O'Reilly ${actionLabel} IVR call for tracking #${tracking} ended${duration ? ` after ${duration} seconds` : ""}. Please verify the job status in ServiceChannel; the phone system does not provide Joshua a confirmation code.`
-      : `The O'Reilly ${actionLabel} IVR call for tracking #${tracking} ended with status: ${callStatus}.`;
+      ? action === "checkin"
+        ? `✅ CHECK-IN COMPLETE\n\nJoshua completed the O'Reilly check-in for tracking #${tracking}${duration ? ` in ${duration} seconds` : ""}. The technician should now show IN PROGRESS / ON SITE in ServiceChannel.`
+        : `✅ CHECK-OUT COMPLETE\n\nJoshua completed the O'Reilly check-out for tracking #${tracking}${duration ? ` in ${duration} seconds` : ""}. The selected status and technician count were submitted to ServiceChannel.`
+      : `⚠️ O'Reilly ${actionLabel} for tracking #${tracking} did not complete. Twilio call status: ${callStatus}.`;
 
     try {
       await twilioClient.messages.create({
