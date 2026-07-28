@@ -151,8 +151,11 @@ function positiveSeconds(name, fallback) {
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
 }
 
-function buildServiceChannelCallTwiml(command) {
-  const pin = String(process.env.SERVICECHANNEL_PIN || "").replace(/\D/g, "");
+function buildServiceChannelCallTwiml(command, serviceChannelPin) {
+  // Keep the PIN and tracking number as separate explicit values.
+  // IVR order: English (1) -> PIN# -> tracking number#.
+  const pin = String(serviceChannelPin || "").replace(/\D/g, "");
+  const trackingNumber = String(command.trackingNumber || "").replace(/\D/g, "");
   const response = new twilio.twiml.VoiceResponse();
 
   // Do not send one long DTMF string. ServiceChannel's prompts can take several
@@ -164,7 +167,7 @@ function buildServiceChannelCallTwiml(command) {
   response.play({ digits: `${pin}#` });
 
   response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TRACKING_SECONDS", 7) });
-  response.play({ digits: `${command.trackingNumber}#` });
+  response.play({ digits: `${trackingNumber}#` });
 
   if (command.type === "checkout") {
     response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_STATUS_SECONDS", 7) });
@@ -690,7 +693,15 @@ app.post("/sms", async (request, reply) => {
     return reply.type("text/xml").send(response.toString());
   }
 
-  const callTwiml = buildServiceChannelCallTwiml(command);
+  // Safety check: never send the tracking number in the PIN position.
+  if (pin === command.trackingNumber) {
+    response.message(
+      "Joshua stopped the IVR call because the ServiceChannel PIN is set to the same value as the tracking number. Correct SERVICECHANNEL_PIN in Render."
+    );
+    return reply.type("text/xml").send(response.toString());
+  }
+
+  const callTwiml = buildServiceChannelCallTwiml(command, pin);
 
   try {
     const call = await twilioClient.calls.create({
