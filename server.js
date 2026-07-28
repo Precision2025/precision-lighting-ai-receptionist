@@ -34,6 +34,12 @@ const clockSharkZapierWebhookUrl =
 const jobSheetsZapierWebhookUrl =
   process.env.JOB_SHEETS_ZAPIER_WEBHOOK_URL || "";
 
+const serviceChannelEmailWebhookSecret =
+  process.env.SERVICECHANNEL_EMAIL_WEBHOOK_SECRET || "";
+
+const recentServiceChannelEmailNotifications = new Map();
+const SERVICECHANNEL_EMAIL_DEDUPE_MS = 24 * 60 * 60 * 1000;
+
 function isAddToJobSheetsCommand(body = "") {
   return /^(?:joshua\s+)?(?:add|save|send|put)\s+(?:this\s+)?to\s+(?:the\s+)?job\s*sheets?\.?$/i.test(String(body).trim());
 }
@@ -215,6 +221,54 @@ function isOutOfTownJob(job = {}) {
     .map(value => value.trim().toLowerCase())
     .filter(Boolean);
   return !configured.includes(city);
+}
+
+
+function firstValue(...values) {
+  for (const value of values) {
+    const cleaned = String(value ?? "").trim();
+    if (cleaned) return cleaned;
+  }
+  return "";
+}
+
+function pruneServiceChannelEmailNotifications() {
+  const cutoff = Date.now() - SERVICECHANNEL_EMAIL_DEDUPE_MS;
+  for (const [key, timestamp] of recentServiceChannelEmailNotifications.entries()) {
+    if (timestamp < cutoff) recentServiceChannelEmailNotifications.delete(key);
+  }
+}
+
+function validateServiceChannelEmailWebhook(request) {
+  if (!serviceChannelEmailWebhookSecret) return false;
+  const headerSecret = String(request.headers["x-joshua-webhook-secret"] || "").trim();
+  const authorization = String(request.headers.authorization || "").trim();
+  const bearerSecret = authorization.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+  const bodySecret = String(request.body?.webhook_secret || request.body?.secret || "").trim();
+  return [headerSecret, bearerSecret, bodySecret].some(value => value && value === serviceChannelEmailWebhookSecret);
+}
+
+function buildServiceChannelEmailNotification(payload = {}) {
+  const tracking = firstValue(payload.tracking_number, payload.trackingNumber, payload.job_number, payload.jobNumber, payload.po_number, payload.poNumber, "Unknown");
+  const customer = firstValue(payload.customer, payload.job_name, payload.jobName, "Unknown customer");
+  const location = firstValue(payload.location_name, payload.locationName, payload.address, payload.job_address, payload.jobAddress, "Unknown location");
+  const scheduledDate = firstValue(payload.scheduled_date, payload.scheduledDate);
+  const scheduledTime = firstValue(payload.scheduled_time, payload.scheduledTime);
+  const scheduled = [scheduledDate, scheduledTime].filter(Boolean).join(" ") || "Not provided";
+  const nte = firstValue(payload.nte, payload.NTE, "Not provided");
+  const requestedBy = firstValue(payload.requested_by, payload.requestedBy, "ServiceChannel Email");
+  const city = firstValue(payload.city, payload.job_city, payload.jobCity);
+  const outOfTown = isOutOfTownJob({ city });
+  const clockSharkLine = outOfTown
+    ? "\nClockShark: Not created — out-of-town job"
+    : "";
+
+  return {
+    tracking,
+    text: `📋 NEW SERVICECHANNEL JOB ADDED\n\nTracking: ${tracking}\nCustomer: ${customer}\nLocation: ${location}\nScheduled: ${scheduled}\nNTE: ${nte}\nRequested by: ${requestedBy}${clockSharkLine}`
+  };
 }
 
 function serviceChannelAuthorizedNumbers() {
@@ -792,7 +846,8 @@ app.get("/", async () => ({
   receptionist: "Joshua",
   status: "online",
   clockSharkWebhookConfigured: Boolean(clockSharkZapierWebhookUrl),
-  jobSheetsWebhookConfigured: Boolean(jobSheetsZapierWebhookUrl)
+  jobSheetsWebhookConfigured: Boolean(jobSheetsZapierWebhookUrl),
+  serviceChannelEmailWebhookConfigured: Boolean(serviceChannelEmailWebhookSecret)
 }));
 
 app.get("/health", async () => ({ ok: true }));
@@ -946,6 +1001,51 @@ Joshua added this job to Job Sheets.`;
   }
 
   return reply.type("text/xml").send(response.toString());
+});
+
+
+app.post("/servicechannel-email", async (request, reply) => {
+  if (!validateServiceChannelEmailWebhook(request)) {
+    return reply.code(403).send({ ok: false, error: "Invalid webhook secret" });
+  }
+
+  try {
+    const payload = request.body || {};
+    const notification = buildServiceChannelEmailNotification(payload);
+    const emailId = firstValue(payload.email_id, payload.emailId, payload.message_id, payload.messageId);
+    const dedupeKey = emailId || notification.tracking;
+
+    pruneServiceChannelEmailNotifications();
+    if (dedupeKey && recentServiceChannelEmailNotifications.has(dedupeKey)) {
+      return reply.send({
+        ok: true,
+        duplicate: true,
+        tracking_number: notification.tracking,
+        message: "Notification was already sent"
+      });
+    }
+
+    if (!twilioClient || !process.env.TWILIO_SMS_FROM) {
+      return reply.code(503).send({
+        ok: false,
+        error: "Twilio SMS is not configured"
+      });
+    }
+
+    await sendJoshuaTeamUpdate(notification.text);
+    if (dedupeKey) recentServiceChannelEmailNotifications.set(dedupeKey, Date.now());
+
+    app.log.info({ tracking: notification.tracking, emailId }, "ServiceChannel email notification sent to team");
+    return reply.send({
+      ok: true,
+      duplicate: false,
+      tracking_number: notification.tracking,
+      recipients: teamSmsMembers().map(member => member.name)
+    });
+  } catch (error) {
+    app.log.error(error, "Could not process ServiceChannel email webhook");
+    return reply.code(500).send({ ok: false, error: error.message });
+  }
 });
 
 app.post("/servicechannel-recording-status", async (request, reply) => {
