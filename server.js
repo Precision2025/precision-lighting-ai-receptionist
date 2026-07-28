@@ -164,10 +164,18 @@ function buildServiceChannelCallTwiml(command, serviceChannelPin) {
   response.play({ digits: "1" });
 
   response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_PIN_SECONDS", 6) });
-  response.play({ digits: `${pin}#` });
+  response.play({ digits: pin });
+  response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_PIN_CONFIRM_SECONDS", 1) });
+  response.play({ digits: "#" });
+  response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_PIN_FINAL_CONFIRM_SECONDS", 2) });
+  response.play({ digits: "#" });
 
   response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TRACKING_SECONDS", 7) });
-  response.play({ digits: `${trackingNumber}#` });
+  response.play({ digits: trackingNumber });
+  response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TRACKING_CONFIRM_SECONDS", 1) });
+  response.play({ digits: "#" });
+  response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TRACKING_FINAL_CONFIRM_SECONDS", 2) });
+  response.play({ digits: "#" });
 
   if (command.type === "checkout") {
     response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_STATUS_SECONDS", 7) });
