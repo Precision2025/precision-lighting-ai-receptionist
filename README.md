@@ -34,3 +34,42 @@ Set `shared_number` to `true` for company main lines, family/shared phones, or a
 Do not upload `.env.example` over your live `.env`. It contains blank placeholders, not your credentials.
 After deployment, call `/health` to verify the server is online.
 The home route `/` reports how many unique confirmed contacts were loaded.
+
+## O'Reilly ServiceChannel IVR by text
+
+Joshua can now receive authorized text commands and call the saved ServiceChannel check-in number automatically.
+
+Examples:
+
+- `Check in 123456789`
+- `CI 123456789`
+- `Check out 123456789 complete 2 techs`
+- `Check out 123456789 waiting for quote 1 tech`
+- `Check out 123456789 parts needed 2 techs`
+- `Check out 123456789 return trip needed 1 tech`
+- Compact: `CO 123456789 1 2` (status 1, two technicians)
+
+Checkout status mapping:
+
+- 1 = Complete
+- 2 = Waiting for authorization/quote
+- 3 = Parts needed
+- 4 = Return trip needed
+
+### Twilio configuration
+
+On Joshua's Twilio phone number, set **Messaging > A message comes in** to:
+
+`https://YOUR-RENDER-URL/sms`
+
+Method: `POST`
+
+The outbound IVR status callback is handled automatically at `/servicechannel/ivr-status`.
+
+### Required Render environment variables
+
+Copy the values from `SERVICECHANNEL-ENV.txt` into Render. `SERVICECHANNEL_VOICE_FROM` must be a voice-capable Twilio number in your account. Keep `SERVICECHANNEL_PIN` private.
+
+Only phone numbers in `SERVICECHANNEL_AUTHORIZED_NUMBERS`, plus configured Travis/Ariana/Shellie numbers, can run the IVR commands.
+
+A completed phone call confirms that Twilio completed the call and sent the keypad sequence. It does not independently prove that ServiceChannel accepted every entry, so Joshua's completion text tells the sender to verify in ServiceChannel when confirmation is required.

@@ -56,6 +56,163 @@ const sessions = new Map();
 const recentSessionsByCallSid = new Map();
 const RECENT_SESSION_TTL_MS = 15 * 60 * 1000;
 
+
+const serviceChannelIvrNumber =
+  process.env.SERVICECHANNEL_IVR_NUMBER || "+15165007776";
+const serviceChannelVoiceFrom =
+  process.env.SERVICECHANNEL_VOICE_FROM || process.env.TWILIO_SMS_FROM || "";
+const serviceChannelPin = clean(process.env.SERVICECHANNEL_PIN || "");
+const pendingIvrCalls = new Map();
+
+function normalizePhone(value = "") {
+  const digits = String(value).replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function authorizedServiceChannelNumbers() {
+  const configured = String(process.env.SERVICECHANNEL_AUTHORIZED_NUMBERS || "")
+    .split(/[;,\s]+/)
+    .map(normalizePhone)
+    .filter(Boolean);
+
+  const defaults = [
+    process.env.OWNER_SMS_NUMBER,
+    process.env.TRAVIS_TRANSFER_NUMBER || travisTransferNumber,
+    process.env.ARIANA_SMS_NUMBER,
+    process.env.ARIANA_TRANSFER_NUMBER || arianaTransferNumber,
+    process.env.SHELLIE_SMS_NUMBER,
+    process.env.ACCOUNTING_TRANSFER_NUMBER || accountingTransferNumber
+  ]
+    .map(normalizePhone)
+    .filter(Boolean);
+
+  return new Set([...configured, ...defaults]);
+}
+
+function serviceChannelSenderName(phone = "") {
+  const normalized = normalizePhone(phone);
+  const names = new Map([
+    [normalizePhone(process.env.OWNER_SMS_NUMBER || travisTransferNumber), "Travis"],
+    [normalizePhone(process.env.ARIANA_SMS_NUMBER || arianaTransferNumber), "Ariana"],
+    [normalizePhone(process.env.SHELLIE_SMS_NUMBER || accountingTransferNumber), "Shellie"]
+  ]);
+  return names.get(normalized) || "Team member";
+}
+
+const checkoutStatusMap = [
+  { code: "2", label: "Waiting for authorization/quote", pattern: /\b(waiting(?:\s+for)?\s+(?:authorization|authori[sz]ation|quote)|awaiting\s+(?:authorization|quote)|authorization|quote)\b/i },
+  { code: "3", label: "Parts needed", pattern: /\b(parts?\s+needed|need(?:s|ed)?\s+parts?|parts?)\b/i },
+  { code: "4", label: "Return trip needed", pattern: /\b(return\s+trip(?:\s+needed)?|return(?:ing)?|come\s+back|follow[- ]?up\s+trip)\b/i },
+  { code: "1", label: "Complete", pattern: /\b(complete|completed|done|finished|finish)\b/i }
+];
+
+function parseServiceChannelSms(body = "") {
+  const text = clean(body);
+  const lower = text.toLowerCase();
+  const isCheckOut = /\b(check\s*out|checkout|clock\s*out|co)\b/i.test(text);
+  const isCheckIn = /\b(check\s*in|checkin|clock\s*in|ci)\b/i.test(text);
+
+  if (!isCheckIn && !isCheckOut) return null;
+
+  const trackingMatch = text.match(/\b(\d{5,})\b/);
+  const trackingNumber = trackingMatch?.[1] || "";
+
+  if (isCheckIn && !isCheckOut) {
+    return { action: "checkin", trackingNumber };
+  }
+
+  const status = checkoutStatusMap.find(item => item.pattern.test(lower));
+  let technicianCount = "";
+  const techMatch = text.match(/\b(\d+)\s*(?:techs?|technicians?|people|persons?)\b/i);
+  if (techMatch) technicianCount = techMatch[1];
+
+  // Also accept compact commands such as: CO 123456 1 2
+  if (!technicianCount && trackingMatch) {
+    const afterTracking = text.slice((trackingMatch.index || 0) + trackingMatch[0].length);
+    const numericTokens = afterTracking.match(/\b\d+\b/g) || [];
+    if (numericTokens.length >= 2 && /^[1-4]$/.test(numericTokens[0])) {
+      technicianCount = numericTokens[1];
+    } else if (numericTokens.length === 1 && status) {
+      technicianCount = numericTokens[0];
+    }
+  }
+
+  let resolvedStatus = status;
+  if (!resolvedStatus && trackingMatch) {
+    const afterTracking = text.slice((trackingMatch.index || 0) + trackingMatch[0].length);
+    const numericStatus = afterTracking.match(/\b([1-4])\b/);
+    if (numericStatus) {
+      resolvedStatus = checkoutStatusMap.find(item => item.code === numericStatus[1]);
+    }
+  }
+
+  return {
+    action: "checkout",
+    trackingNumber,
+    statusCode: resolvedStatus?.code || "",
+    statusLabel: resolvedStatus?.label || "",
+    technicianCount
+  };
+}
+
+function ivrPause(name, fallback) {
+  const value = String(process.env[name] || fallback);
+  return /^[wW]+$/.test(value) ? value.toLowerCase() : fallback;
+}
+
+function buildServiceChannelDigits(command) {
+  const languagePause = ivrPause("SERVICECHANNEL_LANGUAGE_PAUSE", "wwww");
+  const pinPause = ivrPause("SERVICECHANNEL_PIN_PAUSE", "wwwwww");
+  const trackingPause = ivrPause("SERVICECHANNEL_TRACKING_PAUSE", "wwwwww");
+  const statusPause = ivrPause("SERVICECHANNEL_STATUS_PAUSE", "wwww");
+  const techPause = ivrPause("SERVICECHANNEL_TECH_PAUSE", "wwww");
+
+  let digits = `1${languagePause}${serviceChannelPin}#${pinPause}${command.trackingNumber}#`;
+  if (command.action === "checkout") {
+    digits += `${trackingPause}${command.statusCode}#${statusPause}${command.technicianCount}#${techPause}`;
+  }
+  return digits;
+}
+
+function smsResponse(message) {
+  const response = new twilio.twiml.MessagingResponse();
+  response.message(message);
+  return response.toString();
+}
+
+async function startServiceChannelIvr({ command, sender }) {
+  if (!twilioClient) throw new Error("Twilio credentials are not configured");
+  if (!serviceChannelVoiceFrom) throw new Error("SERVICECHANNEL_VOICE_FROM is not configured");
+  if (!serviceChannelPin) throw new Error("SERVICECHANNEL_PIN is not configured");
+
+  const digits = buildServiceChannelDigits(command);
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.pause({ length: 1 });
+  twiml.play({ digits });
+  twiml.pause({ length: 3 });
+
+  const call = await twilioClient.calls.create({
+    to: serviceChannelIvrNumber,
+    from: serviceChannelVoiceFrom,
+    twiml: twiml.toString(),
+    statusCallback: `${publicBaseUrl}/servicechannel/ivr-status`,
+    statusCallbackMethod: "POST",
+    statusCallbackEvent: ["initiated", "ringing", "answered", "completed"]
+  });
+
+  pendingIvrCalls.set(call.sid, {
+    sender,
+    command,
+    requestedAt: new Date().toISOString()
+  });
+
+  setTimeout(() => pendingIvrCalls.delete(call.sid), 60 * 60 * 1000).unref?.();
+  return call;
+}
+
 function xmlEscape(value = "") {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -524,6 +681,131 @@ app.get("/", async () => ({
 }));
 
 app.get("/health", async () => ({ ok: true }));
+
+
+app.post("/sms", async (request, reply) => {
+  if (!validateHttpRequest(request)) {
+    return reply.code(403).send("Invalid Twilio signature");
+  }
+
+  const sender = normalizePhone(request.body?.From || "");
+  const body = clean(request.body?.Body || "");
+  const senderName = serviceChannelSenderName(sender);
+  const command = parseServiceChannelSms(body);
+
+  if (!command) {
+    return reply
+      .type("text/xml")
+      .send(
+        smsResponse(
+          "Joshua here. For O'Reilly IVR, text: Check in TRACKING# or Check out TRACKING# complete 2 techs. Statuses: complete, waiting for quote, parts needed, or return trip needed."
+        )
+      );
+  }
+
+  if (!authorizedServiceChannelNumbers().has(sender)) {
+    app.log.warn({ sender }, "Unauthorized ServiceChannel SMS command");
+    return reply
+      .type("text/xml")
+      .send(smsResponse("This number is not authorized to run ServiceChannel IVR commands."));
+  }
+
+  if (!command.trackingNumber) {
+    return reply
+      .type("text/xml")
+      .send(smsResponse(`${senderName}, please include the ServiceChannel tracking number.`));
+  }
+
+  if (command.action === "checkout" && !command.statusCode) {
+    return reply
+      .type("text/xml")
+      .send(
+        smsResponse(
+          `${senderName}, choose a checkout status: complete, waiting for quote, parts needed, or return trip needed.`
+        )
+      );
+  }
+
+  if (command.action === "checkout" && !command.technicianCount) {
+    return reply
+      .type("text/xml")
+      .send(smsResponse(`${senderName}, how many technicians? Example: 2 techs.`));
+  }
+
+  try {
+    const call = await startServiceChannelIvr({ command, sender });
+    const actionLabel = command.action === "checkin" ? "check-in" : "check-out";
+    const details =
+      command.action === "checkout"
+        ? ` Status: ${command.statusLabel}. Technicians: ${command.technicianCount}.`
+        : "";
+
+    app.log.info(
+      {
+        callSid: call.sid,
+        sender,
+        action: command.action,
+        trackingNumber: command.trackingNumber,
+        statusCode: command.statusCode || undefined,
+        technicianCount: command.technicianCount || undefined
+      },
+      "ServiceChannel IVR call started"
+    );
+
+    return reply
+      .type("text/xml")
+      .send(
+        smsResponse(
+          `${senderName}, I started the O'Reilly ${actionLabel} for tracking #${command.trackingNumber}.${details} I'll text you when the IVR call finishes.`
+        )
+      );
+  } catch (error) {
+    app.log.error(error, "Could not start ServiceChannel IVR call");
+    return reply
+      .type("text/xml")
+      .send(
+        smsResponse(
+          `${senderName}, I could not start the IVR call. Please check the Twilio and ServiceChannel environment settings.`
+        )
+      );
+  }
+});
+
+app.post("/servicechannel/ivr-status", async (request, reply) => {
+  if (!validateHttpRequest(request)) {
+    return reply.code(403).send("Invalid Twilio signature");
+  }
+
+  const callSid = clean(request.body?.CallSid);
+  const callStatus = clean(request.body?.CallStatus).toLowerCase();
+  const pending = pendingIvrCalls.get(callSid);
+
+  app.log.info({ callSid, callStatus }, "ServiceChannel IVR call status");
+
+  if (pending && ["completed", "busy", "failed", "no-answer", "canceled"].includes(callStatus)) {
+    pendingIvrCalls.delete(callSid);
+    const { sender, command } = pending;
+    const actionLabel = command.action === "checkin" ? "check-in" : "check-out";
+    const success = callStatus === "completed";
+    const message = success
+      ? `Joshua update: The O'Reilly ${actionLabel} IVR call for tracking #${command.trackingNumber} completed. Please verify in ServiceChannel if confirmation is required.`
+      : `Joshua alert: The O'Reilly ${actionLabel} IVR call for tracking #${command.trackingNumber} ended with status: ${callStatus}. Please complete it manually.`;
+
+    if (twilioClient && process.env.TWILIO_SMS_FROM) {
+      try {
+        await twilioClient.messages.create({
+          from: process.env.TWILIO_SMS_FROM,
+          to: sender,
+          body: message
+        });
+      } catch (error) {
+        app.log.error(error, "Could not send ServiceChannel IVR status text");
+      }
+    }
+  }
+
+  return reply.type("text/xml").send("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>");
+});
 
 app.all("/voice", async (request, reply) => {
   if (!validateHttpRequest(request)) {
