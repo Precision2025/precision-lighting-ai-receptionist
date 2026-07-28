@@ -178,11 +178,21 @@ function buildServiceChannelCallTwiml(command, serviceChannelPin) {
   response.play({ digits: "#" });
 
   if (command.type === "checkout") {
+    // Checkout status is entered first, then confirmed with # twice.
     response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_STATUS_SECONDS", 7) });
-    response.play({ digits: `${command.status}#` });
+    response.play({ digits: String(command.status) });
+    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_STATUS_CONFIRM_SECONDS", 1) });
+    response.play({ digits: "#" });
+    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_STATUS_FINAL_CONFIRM_SECONDS", 2) });
+    response.play({ digits: "#" });
 
-    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TECH_COUNT_SECONDS", 6) });
-    response.play({ digits: `${command.technicianCount}#` });
+    // Wait for the technician-count prompt, enter the count, and confirm it.
+    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TECH_COUNT_SECONDS", 7) });
+    response.play({ digits: String(command.technicianCount) });
+    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TECH_COUNT_CONFIRM_SECONDS", 1) });
+    response.play({ digits: "#" });
+    response.pause({ length: positiveSeconds("SERVICECHANNEL_BEFORE_TECH_COUNT_FINAL_CONFIRM_SECONDS", 2) });
+    response.play({ digits: "#" });
   }
 
   // Leave enough time for the IVR to announce acceptance or an error.
