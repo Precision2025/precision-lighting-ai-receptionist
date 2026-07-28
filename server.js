@@ -307,12 +307,12 @@ function parseServiceChannelSms(body = "") {
   const text = String(body).trim().replace(/\s+/g, " ");
   if (/^(help|commands|menu)$/i.test(text)) return { type: "help" };
 
-  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
+  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci|in)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
   if (checkIn) {
     return { type: "checkin", trackingNumber: checkIn[1] };
   }
 
-  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
+  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co|out)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
   if (checkOut) {
     const statusText = checkOut[2].toLowerCase().trim();
     const status = SERVICECHANNEL_STATUS_MAP[statusText];
@@ -921,6 +921,13 @@ Joshua added this job to Job Sheets.`;
   if (command.type === "invalid_status") {
     response.message(
       "Status not recognized. Use: complete, waiting for quote, parts needed, or return trip needed."
+    );
+    return reply.type("text/xml").send(response.toString());
+  }
+
+  if (command.type === "unknown" && /^(?:joshua\s+)?(?:out|check\s*out|checkout|co)\b/i.test(body)) {
+    response.message(
+      "Checkout needs the status and technician count. Example: Out 357659285 complete 1 tech"
     );
     return reply.type("text/xml").send(response.toString());
   }
