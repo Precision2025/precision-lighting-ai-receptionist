@@ -31,6 +31,86 @@ const arianaTransferNumber = process.env.ARIANA_TRANSFER_NUMBER || "+19729044736
 const clockSharkZapierWebhookUrl =
   process.env.CLOCKSHARK_ZAPIER_WEBHOOK_URL || "";
 
+const jobSheetsZapierWebhookUrl =
+  process.env.JOB_SHEETS_ZAPIER_WEBHOOK_URL || "";
+
+function isAddToJobSheetsCommand(body = "") {
+  return /^(?:joshua\s+)?(?:add|save|send|put)\s+(?:this\s+)?to\s+(?:the\s+)?job\s*sheets?\.?$/i.test(String(body).trim());
+}
+
+async function downloadTwilioMediaAsDataUrl(mediaUrl, contentType = "image/jpeg") {
+  if (!mediaUrl) return null;
+  const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+  const mediaResponse = await fetch(mediaUrl, {
+    headers: { Authorization: `Basic ${auth}` }
+  });
+  if (!mediaResponse.ok) {
+    throw new Error(`Could not download Twilio media (${mediaResponse.status})`);
+  }
+  const arrayBuffer = await mediaResponse.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString("base64");
+  return `data:${contentType || "image/jpeg"};base64,${base64}`;
+}
+
+async function extractJobSheetFromImage(dataUrl, senderName) {
+  const completion = await openai.chat.completions.create({
+    model,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You extract service work-order details from screenshots for Precision Lighting job sheets.",
+          "Return valid JSON only. Never invent missing values.",
+          "Use these keys: customer, location_id, location_name, address, city, state, postal_code, scheduled_date, scheduled_time, trade, category, nte, po_number, tracking_number, customer_area, asset, problem_type, problem, problem_description, phone, region, district, requested_by, source."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `Extract this work order. requested_by=${senderName}; source=Joshua MMS.` },
+          { type: "image_url", image_url: { url: dataUrl } }
+        ]
+      }
+    ]
+  });
+  const raw = completion.choices?.[0]?.message?.content || "{}";
+  return JSON.parse(raw);
+}
+
+async function addToJobSheets({ from, body, mediaUrl, mediaContentType }) {
+  if (!jobSheetsZapierWebhookUrl) {
+    throw new Error("JOB_SHEETS_ZAPIER_WEBHOOK_URL is not configured in Render");
+  }
+  if (!mediaUrl) {
+    throw new Error("Attach the work-order screenshot with the 'Add to job sheets' message");
+  }
+
+  const senderName = teamMemberName(from);
+  const dataUrl = await downloadTwilioMediaAsDataUrl(mediaUrl, mediaContentType);
+  const extracted = await extractJobSheetFromImage(dataUrl, senderName);
+  const payload = {
+    ...extracted,
+    requested_by: extracted.requested_by || senderName,
+    source: extracted.source || "Joshua MMS",
+    command: body,
+    sender_phone: from,
+    received_at: new Date().toISOString(),
+    original_media_url: mediaUrl
+  };
+
+  const zapResponse = await fetch(jobSheetsZapierWebhookUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!zapResponse.ok) {
+    const text = await zapResponse.text();
+    throw new Error(`Job Sheets Zap failed (${zapResponse.status}): ${text.slice(0, 160)}`);
+  }
+  return payload;
+}
+
 const shouldValidate =
   (process.env.VALIDATE_TWILIO_SIGNATURE || "true").toLowerCase() === "true";
 
@@ -699,7 +779,8 @@ app.get("/", async () => ({
   name: "Precision Lighting AI Receptionist",
   receptionist: "Joshua",
   status: "online",
-  clockSharkWebhookConfigured: Boolean(clockSharkZapierWebhookUrl)
+  clockSharkWebhookConfigured: Boolean(clockSharkZapierWebhookUrl),
+  jobSheetsWebhookConfigured: Boolean(jobSheetsZapierWebhookUrl)
 }));
 
 app.get("/health", async () => ({ ok: true }));
@@ -712,6 +793,9 @@ app.post("/sms", async (request, reply) => {
 
   const from = normalizePhone(request.body?.From);
   const body = String(request.body?.Body || "").trim();
+  const numMedia = Number(request.body?.NumMedia || 0);
+  const mediaUrl = numMedia > 0 ? String(request.body?.MediaUrl0 || "") : "";
+  const mediaContentType = numMedia > 0 ? String(request.body?.MediaContentType0 || "image/jpeg") : "";
   const response = new twilio.twiml.MessagingResponse();
   const authorized = serviceChannelAuthorizedNumbers();
 
@@ -719,6 +803,21 @@ app.post("/sms", async (request, reply) => {
 
   if (!authorized.has(from)) {
     response.message("This number is not authorized to run O'Reilly IVR commands.");
+    return reply.type("text/xml").send(response.toString());
+  }
+
+  if (isAddToJobSheetsCommand(body)) {
+    try {
+      const job = await addToJobSheets({ from, body, mediaUrl, mediaContentType });
+      const tracking = job.tracking_number || job.po_number || "unknown";
+      const location = job.location_name || job.address || "the job";
+      const confirmation = `✅ ADDED TO JOB SHEETS\n\nTracking: ${tracking}\nLocation: ${location}\nRequested by: ${teamMemberName(from)}`;
+      response.message(confirmation);
+      await sendJoshuaTeamUpdate(`Joshua: ${confirmation}`);
+    } catch (error) {
+      app.log.error(error, "Could not add work order to Job Sheets");
+      response.message(`⚠️ Joshua could not add this to Job Sheets: ${error.message}`);
+    }
     return reply.type("text/xml").send(response.toString());
   }
 
