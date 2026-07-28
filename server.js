@@ -77,6 +77,54 @@ function normalizePhone(value = "") {
   return String(value).trim();
 }
 
+function teamSmsMembers() {
+  const entries = [
+    { name: "Travis", number: process.env.TRAVIS_SMS_NUMBER || process.env.OWNER_PHONE || "+12142435649" },
+    { name: "Ariana", number: process.env.ARIANA_SMS_NUMBER || "+19729044736" },
+    { name: "Shellie", number: process.env.SHELLIE_SMS_NUMBER || "+19729044735" }
+  ];
+
+  const seen = new Set();
+  return entries
+    .map(member => ({ ...member, number: normalizePhone(member.number) }))
+    .filter(member => member.number && !seen.has(member.number) && seen.add(member.number));
+}
+
+function teamMemberName(number = "") {
+  const normalized = normalizePhone(number);
+  return teamSmsMembers().find(member => member.number === normalized)?.name || "Team member";
+}
+
+async function sendTeamRelay({ from, body, includeSender = false }) {
+  if (!twilioClient || !process.env.TWILIO_SMS_FROM) return;
+  const senderName = teamMemberName(from);
+  const recipients = teamSmsMembers().filter(member => includeSender || member.number !== normalizePhone(from));
+  const text = `${senderName}: ${body}`;
+
+  await Promise.allSettled(
+    recipients.map(member =>
+      twilioClient.messages.create({
+        from: process.env.TWILIO_SMS_FROM,
+        to: member.number,
+        body: text
+      })
+    )
+  );
+}
+
+async function sendJoshuaTeamUpdate(body) {
+  if (!twilioClient || !process.env.TWILIO_SMS_FROM) return;
+  await Promise.allSettled(
+    teamSmsMembers().map(member =>
+      twilioClient.messages.create({
+        from: process.env.TWILIO_SMS_FROM,
+        to: member.number,
+        body
+      })
+    )
+  );
+}
+
 function serviceChannelAuthorizedNumbers() {
   // Accept the comma-separated allowlist plus individually configured team numbers.
   // The known Precision Lighting team numbers remain as a safe fallback so a timing
@@ -689,7 +737,10 @@ app.post("/sms", async (request, reply) => {
   }
 
   if (command.type === "unknown") {
-    response.message(`I did not recognize that command.\n\n${serviceChannelHelpText()}`);
+    // Native Group MMS is not generally available for new Twilio activations.
+    // Relay ordinary team texts to the other authorized team members instead.
+    await sendTeamRelay({ from, body });
+    response.message("✅ Joshua shared your message with Travis, Ariana, and Shellie.");
     return reply.type("text/xml").send(response.toString());
   }
 
@@ -748,10 +799,12 @@ app.post("/sms", async (request, reply) => {
       response.message(
         `Joshua started the O'Reilly check-in call for tracking #${command.trackingNumber}. Call SID: ${call.sid}. I will text you when the call ends.`
       );
+      await sendJoshuaTeamUpdate(`Joshua: O'Reilly check-in started for tracking #${command.trackingNumber}. Requested by ${teamMemberName(from)}.`);
     } else {
       response.message(
         `Joshua started the O'Reilly check-out call for tracking #${command.trackingNumber}. Status: ${command.statusText}. Technicians: ${command.technicianCount}. Call SID: ${call.sid}. I will text you when the call ends.`
       );
+      await sendJoshuaTeamUpdate(`Joshua: O'Reilly check-out started for tracking #${command.trackingNumber}. Status: ${command.statusText}. Technicians: ${command.technicianCount}. Requested by ${teamMemberName(from)}.`);
     }
   } catch (error) {
     app.log.error(error, "Could not start ServiceChannel IVR call");
