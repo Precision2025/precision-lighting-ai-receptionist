@@ -78,9 +78,22 @@ function normalizePhone(value = "") {
 }
 
 function serviceChannelAuthorizedNumbers() {
+  // Accept the comma-separated allowlist plus individually configured team numbers.
+  // The known Precision Lighting team numbers remain as a safe fallback so a timing
+  // update cannot accidentally lock Travis, Ariana, or Shellie out of IVR commands.
+  const configured = String(process.env.SERVICECHANNEL_AUTHORIZED_NUMBERS || "").split(",");
+  const individual = [
+    process.env.TRAVIS_SMS_NUMBER,
+    process.env.OWNER_PHONE,
+    process.env.ARIANA_SMS_NUMBER,
+    process.env.SHELLIE_SMS_NUMBER,
+    "+12142435649",
+    "+19729044736",
+    "+19729044735"
+  ];
+
   return new Set(
-    String(process.env.SERVICECHANNEL_AUTHORIZED_NUMBERS || "")
-      .split(",")
+    [...configured, ...individual]
       .map(normalizePhone)
       .filter(Boolean)
   );
