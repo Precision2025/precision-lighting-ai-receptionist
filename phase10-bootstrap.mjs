@@ -266,6 +266,72 @@ if (!panel.includes(DASHBOARD_FIX_MARKER)) {
 </script></body>`);
 }
 
+
+const DASHBOARD_CARD_LINKS_MARKER = "JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4";
+if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
+  panel = panel.replace('</style>', `
+/* JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4 */
+.dashboard-clickable{cursor:pointer;position:relative;touch-action:manipulation;transition:border-color .14s ease,transform .14s ease,background .14s ease}
+.dashboard-clickable:hover{border-color:#eab308;background:#172536;transform:translateY(-1px)}
+.dashboard-clickable:focus-visible{outline:3px solid #eab308;outline-offset:2px}
+.dashboard-clickable:after{content:"›";position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:24px;color:#eab308;font-weight:900}
+@media(max-width:760px){.dashboard-clickable:hover{transform:none}.dashboard-clickable{padding-right:42px!important}}
+</style>`);
+  panel = panel.replace('</body>', `<script>
+// JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4
+(function(){
+ function openTab(tab){
+  if(typeof window.officeOpenTab==='function'){window.officeOpenTab(tab);return;}
+  document.querySelectorAll('.panel').forEach(function(p){p.classList.toggle('active',p.id===tab)});
+  document.querySelectorAll('.tab').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab)});
+  document.querySelectorAll('.office-nav-btn').forEach(function(b){b.classList.toggle('active',b.dataset.officeTab===tab)});
+  window.scrollTo({top:0,behavior:'smooth'});
+ }
+ function openQueue(queue){
+  if(typeof window.officeOpenQueue==='function'){window.officeOpenQueue(queue);return;}
+  openTab('operations');
+ }
+ function markCard(element,action,value){
+  if(!element)return;
+  const card=element.classList&&element.classList.contains('card')?element:element.closest('.card');
+  if(!card)return;
+  card.classList.add('dashboard-clickable');
+  card.setAttribute('role','button');card.setAttribute('tabindex','0');
+  card.dataset.dashboardAction=action;card.dataset.dashboardValue=value;
+ }
+ function installClickableCards(){
+  markCard(document.getElementById('fails'),'tab','operations');
+  markCard(document.getElementById('taskCount'),'tab','tasks');
+  markCard(document.getElementById('completedToday'),'tab','workorders');
+  markCard(document.getElementById('openOrders'),'tab','workorders');
+  markCard(document.getElementById('availableTechs'),'tab','technicians');
+  markCard(document.getElementById('outs'),'tab','activity');
+  markCard(document.getElementById('queueAuth'),'queue','authorization');
+  markCard(document.getElementById('queueProposal'),'queue','proposal');
+  markCard(document.getElementById('queueParts'),'queue','parts');
+  markCard(document.getElementById('queueBilling'),'queue','billing');
+  markCard(document.getElementById('onsiteCards'),'tab','dispatch');
+  markCard(document.getElementById('insights'),'queue','billing');
+ }
+ function activate(card,e){
+  if(!card)return;
+  if(e){e.preventDefault();e.stopImmediatePropagation();}
+  const action=card.dataset.dashboardAction,value=card.dataset.dashboardValue;
+  if(action==='queue')openQueue(value);else if(action==='tab')openTab(value);
+ }
+ document.addEventListener('click',function(e){
+  const card=e.target.closest('.dashboard-clickable');if(card)activate(card,e);
+ },true);
+ document.addEventListener('keydown',function(e){
+  const card=e.target.closest&&e.target.closest('.dashboard-clickable');
+  if(card&&(e.key==='Enter'||e.key===' '))activate(card,e);
+ },true);
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',installClickableCards);else installClickableCards();
+ setTimeout(installClickableCards,300);setTimeout(installClickableCards,1200);
+})();
+</script></body>`);
+}
+
 fs.writeFileSync(panelPath, panel);
 console.log("Joshua Office Suite v3.1 installed: stable Phase 10 + Create Job + ClockShark roster + Wishlist.");
 await import("./server.js");
