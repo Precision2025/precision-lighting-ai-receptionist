@@ -8,6 +8,7 @@ import nodemailer from "nodemailer";
 import fs from "node:fs";
 import path from "node:path";
 import { SYSTEM_PROMPT, SUMMARY_PROMPT } from "./prompt.js";
+import { sendJobToClockSharkZapier } from "./clockshark-webhook.js";
 
 const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"];
 for (const key of required) {
@@ -65,6 +66,7 @@ function emptyControlData() {
     callbacks: [],
     tasks: [],
     technicians: {},
+    wishlist: [],
     settings: {
       maxOnsiteMinutes: 240,
       reminderMinutes: 30,
@@ -93,6 +95,7 @@ function readControlData() {
       technicians: parsed.technicians && typeof parsed.technicians === "object"
         ? parsed.technicians
         : {},
+      wishlist: Array.isArray(parsed.wishlist) ? parsed.wishlist : [],
       settings: {
         maxOnsiteMinutes: 240,
         reminderMinutes: 30,
@@ -372,6 +375,7 @@ function controlSummary() {
     activeCount: active.length,
     active,
     technicians,
+    wishlist: data.wishlist || [],
     failures: failures.slice(0, 20),
     attentionWorkOrders,
     openTasks,
@@ -1992,6 +1996,148 @@ app.post("/api/control/ivr", async (request, reply) => {
   }
 });
 
+
+
+app.get("/api/control/clockshark-technicians", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const rosterUrl = String(process.env.CLOCKSHARK_TECHNICIANS_WEBHOOK_URL || "").trim();
+  if (!rosterUrl) {
+    const technicians = Object.values(readControlData().technicians)
+      .filter(item => item.active !== false && item.status !== "inactive")
+      .map(item => ({ id: item.clockSharkId || item.id || item.name, name: item.name, phone: item.phone || "", source: "Joshua cache" }));
+    return reply.send({ ok: true, configured: false, source: "Joshua cache", technicians });
+  }
+  try {
+    const response = await fetch(rosterUrl, { headers: { accept: "application/json" } });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`ClockShark roster request failed (${response.status}): ${text.slice(0, 300)}`);
+    const parsed = text ? JSON.parse(text) : [];
+    const rows = Array.isArray(parsed) ? parsed : (parsed.technicians || parsed.employees || parsed.data || []);
+    const technicians = rows.map(item => ({
+      id: String(item.id || item.employeeId || item.employee_id || item.clockSharkId || item.name || "").trim(),
+      name: String(item.name || item.displayName || item.fullName || [item.firstName, item.lastName].filter(Boolean).join(" ") || "").trim(),
+      phone: String(item.phone || item.mobilePhone || item.mobile || "").trim(),
+      active: item.active !== false && item.isActive !== false && String(item.status || "").toLowerCase() !== "inactive"
+    })).filter(item => item.name && item.active);
+    const data = readControlData();
+    for (const tech of technicians) {
+      const current = data.technicians[tech.name] || {};
+      data.technicians[tech.name] = { ...current, name: tech.name, phone: tech.phone || current.phone || "", clockSharkId: tech.id, active: true, updatedAt: new Date().toISOString() };
+    }
+    writeControlData(data);
+    return reply.send({ ok: true, configured: true, source: "ClockShark", technicians });
+  } catch (error) {
+    return reply.code(502).send({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/control/create-job", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const body = request.body || {};
+  const trackingNumber = String(body.trackingNumber || body.workOrderNumber || "").replace(/\D/g, "");
+  if (trackingNumber.length < 4) return reply.code(400).send({ ok: false, error: "A valid tracking/work-order number is required." });
+  const data = readControlData();
+  if (data.workOrders[trackingNumber]) return reply.code(409).send({ ok: false, error: `Tracking #${trackingNumber} already exists.` });
+  const technicianName = String(body.technicianName || "").trim();
+  const technicianId = String(body.technicianId || "").trim();
+  const item = updateControlWorkOrder(trackingNumber, {
+    workOrderNumber: String(body.workOrderNumber || trackingNumber).trim(),
+    customer: String(body.customer || "").trim(),
+    locationName: String(body.locationName || "").trim(),
+    address: String(body.address || "").trim(),
+    city: String(body.city || "").trim(),
+    stateProvince: String(body.stateProvince || body.state || "").trim(),
+    postalCode: String(body.postalCode || "").trim(),
+    trade: String(body.trade || "").trim(),
+    problemDescription: String(body.description || body.problemDescription || "").trim(),
+    priority: String(body.priority || "normal").trim(),
+    nte: body.nte === "" || body.nte === undefined ? "" : Number(body.nte),
+    technician: technicianName,
+    clockSharkTechnicianId: technicianId,
+    state: "new",
+    source: "Control Panel",
+    createdAt: new Date().toISOString()
+  });
+  const results = { joshua: { ok: true }, jobSheets: { ok: false, skipped: true }, clockShark: { ok: false, skipped: true } };
+  if (jobSheetsZapierWebhookUrl) {
+    try {
+      const response = await fetch(jobSheetsZapierWebhookUrl, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ action: "create_job", ...item }) });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`Job Sheets webhook failed (${response.status}): ${text.slice(0, 300)}`);
+      results.jobSheets = { ok: true, status: response.status };
+    } catch (error) { results.jobSheets = { ok: false, error: error.message }; }
+  }
+  if (clockSharkZapierWebhookUrl) {
+    try {
+      const result = await sendJobToClockSharkZapier({
+        name: [item.customer, item.locationName].filter(Boolean).join(" — ") || `Work Order ${trackingNumber}`,
+        jobNumber: item.workOrderNumber,
+        description: item.problemDescription || item.trade || "Service job",
+        address: item.address,
+        city: item.city,
+        stateProvince: item.stateProvince,
+        postalCode: item.postalCode,
+        customerName: item.customer,
+        technician_id: technicianId,
+        technician_name: technicianName
+      });
+      results.clockShark = { ok: true, status: result.status };
+    } catch (error) { results.clockShark = { ok: false, error: error.message }; }
+  }
+  updateControlWorkOrder(trackingNumber, { integrations: results, clockSharkStatus: results.clockShark.ok ? "created" : (results.clockShark.skipped ? "not_configured" : "retry_needed"), jobSheetsStatus: results.jobSheets.ok ? "created" : (results.jobSheets.skipped ? "not_configured" : "retry_needed") });
+  addControlEvent({ type: "job_created", level: results.clockShark.ok || results.clockShark.skipped ? "success" : "warning", trackingNumber, requestedBy: "Control Panel", integrations: results });
+  return reply.send({ ok: true, trackingNumber, workOrder: item, results });
+});
+
+app.post("/api/control/work-orders/:tracking/retry-clockshark", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const tracking = String(request.params.tracking || "").replace(/\D/g, "");
+  const item = readControlData().workOrders[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Work order not found." });
+  try {
+    const result = await sendJobToClockSharkZapier({ name: [item.customer, item.locationName].filter(Boolean).join(" — ") || `Work Order ${tracking}`, jobNumber: item.workOrderNumber || tracking, description: item.problemDescription || item.trade || "Service job", address: item.address, city: item.city, stateProvince: item.stateProvince, postalCode: item.postalCode, customerName: item.customer, technician_id: item.clockSharkTechnicianId, technician_name: item.technician });
+    updateControlWorkOrder(tracking, { clockSharkStatus: "created", clockSharkLastRetryAt: new Date().toISOString() });
+    addControlEvent({ type: "clockshark_retry_succeeded", level: "success", trackingNumber: tracking, requestedBy: "Control Panel" });
+    return reply.send({ ok: true, status: result.status });
+  } catch (error) {
+    updateControlWorkOrder(tracking, { clockSharkStatus: "retry_needed", clockSharkLastError: error.message });
+    return reply.code(502).send({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/control/wishlist", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  const description = String(body.description || "").trim();
+  if (!title || !description) return reply.code(400).send({ ok: false, error: "Title and description are required." });
+  const data = readControlData();
+  const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title, description, priority: String(body.priority || "normal"), requestedBy: String(body.requestedBy || "Office").trim(), status: "requested", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  data.wishlist.unshift(item); writeControlData(data);
+  addControlEvent({ type: "wishlist_requested", level: "info", requestedBy: item.requestedBy, wishlistId: item.id, title: item.title });
+  let texted = false, textError = "";
+  const to = normalizePhone(process.env.WISHLIST_TEXT_TO || process.env.OWNER_NOTIFICATION_NUMBER || process.env.OWNER_SMS_NUMBER || travisTransferNumber);
+  if (twilioClient && process.env.TWILIO_SMS_FROM && to) {
+    try { await twilioClient.messages.create({ from: process.env.TWILIO_SMS_FROM, to, body: `Joshua Office Wishlist (${item.priority.toUpperCase()})\n${item.title}\nRequested by: ${item.requestedBy}\n${item.description}` }); texted = true; }
+    catch (error) { textError = error.message; }
+  }
+  return reply.send({ ok: true, item, texted, textError });
+});
+
+app.post("/api/control/wishlist/:id/status", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const allowed = new Set(["requested","reviewing","planned","in_progress","completed","declined"]);
+  const status = String(request.body?.status || "").toLowerCase();
+  if (!allowed.has(status)) return reply.code(400).send({ ok: false, error: "Invalid wishlist status." });
+  const data = readControlData(); const item = data.wishlist.find(x => x.id === String(request.params.id));
+  if (!item) return reply.code(404).send({ ok: false, error: "Wishlist request not found." });
+  item.status = status; item.updatedAt = new Date().toISOString(); writeControlData(data);
+  return reply.send({ ok: true, item });
+});
 
 app.post("/api/control/work-orders/:tracking", async (request, reply) => {
   if (!controlAuthorized(request)) {

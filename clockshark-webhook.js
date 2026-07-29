@@ -21,6 +21,8 @@ export function buildClockSharkJobPayload(job = {}) {
     customer_name: clean(job.customer_name || job.customerName),
     caller_name: clean(job.caller_name || job.callerName),
     caller_phone: clean(job.caller_phone || job.callerPhone),
+    technician_id: clean(job.technician_id || job.technicianId),
+    technician_name: clean(job.technician_name || job.technicianName),
     source: "Joshua AI Assistant"
   };
 

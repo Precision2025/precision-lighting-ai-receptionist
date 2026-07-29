@@ -1,0 +1,25 @@
+JOSHUA OFFICE SUITE v3.1 SAFE EXTENSIONS
+
+This package is based directly on the restored working commit 71a6cab.
+It does NOT add a phase11 bootstrap and does NOT change the start command.
+
+Start command remains:
+node phase10-bootstrap.mjs
+
+Added directly to the stable Phase 10 application:
+- Create Job dialog
+- Duplicate tracking-number protection
+- Job Sheets webhook submission
+- ClockShark job submission and retry API
+- ClockShark technician roster endpoint
+- Technician ID stored on the work order
+- Office Wishlist with permanent storage
+- Wishlist SMS to Travis
+- Wishlist status workflow
+
+Keep all existing Render environment variables.
+Add these:
+WISHLIST_TEXT_TO=+12142435649
+CLOCKSHARK_TECHNICIANS_WEBHOOK_URL=<Zapier/automation URL that returns active ClockShark technicians as JSON>
+
+If CLOCKSHARK_TECHNICIANS_WEBHOOK_URL is not present, the dropdown safely uses Joshua's existing technician cache. No check-in/check-out routes were removed or changed.
