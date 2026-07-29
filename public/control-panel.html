@@ -184,7 +184,19 @@ function renderOrders(){
 function renderBilling(){
  billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${money(x.invoiceAmount)}</td><td>${money(x.estimatedCost)}</td><td class="${Number(x.grossProfit||0)>=0?"profitPositive":"profitNegative"}">${money(x.grossProfit)}</td><td>${Number(x.grossMargin||0).toFixed(1)}%</td><td>${money(x.nte)}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${esc(x.paymentStatus||"unpaid")}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the profit pipeline.</td></tr>";
 }
-function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>"}
+function taskActionLabel(task={}){
+ const explicit=String(task.actionLabel||"").trim();
+ if(explicit)return explicit;
+ const type=String(task.workflowType||"").toLowerCase();
+ const title=String(task.title||"").toLowerCase();
+ if(type==="proposal"||/quote|proposal/.test(title))return "Mark Quote Submitted";
+ if(type==="parts"||/order parts|parts needed/.test(title))return "Mark Parts Ordered";
+ if(type==="return_trip"||/return trip|schedule return/.test(title))return "Mark Return Scheduled";
+ if(type==="billing"||/billing|prepare invoice|ready to bill/.test(title))return "Mark Ready to Bill";
+ if(/verify servicechannel check.?out/.test(title))return "Mark Checkout Verified";
+ return "Mark Complete";
+}
+function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">${esc(taskActionLabel(x))}</button></div>`).join(""):"<span class='muted'>No open tasks.</span>"}
 function renderActivity(){events.innerHTML=cache.recentEvents.slice(0,70).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>"}
 function fillSettings(){maxOnsite.value=cache.settings.maxOnsiteMinutes;reminderMinutes.value=cache.settings.reminderMinutes;nteWarningPercent.value=cache.settings.nteWarningPercent;overtimeHours.value=cache.settings.overtimeHours;autoReminders.checked=cache.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=cache.settings.autoInvoiceQueue!==false}
 
