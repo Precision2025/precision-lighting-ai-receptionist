@@ -14,7 +14,26 @@ if (prior === beforeServerRemoval || /import\s*\(\s*["']\.\/server\.js["']\s*\)/
   throw new Error("Could not disable Phase 10 server startup before Phase 11 patching.");
 }
 fs.writeFileSync(runtimePath, prior);
-await import("./.phase10-runtime-only.mjs");
+
+// Phase 10 itself reads Phase 8 and expected its server import to be the final line.
+// Newer Phase 8 button/card patches may append code after that import. Temporarily
+// sanitize Phase 8 so Phase 10 can build its runtime-only copy, then restore it.
+const phase8Path = new URL("./phase8-bootstrap.mjs", import.meta.url);
+const originalPhase8 = fs.readFileSync(phase8Path, "utf8");
+const sanitizedPhase8 = originalPhase8.replace(
+  /await\s+import\s*\(\s*["']\.\/server\.js["']\s*\)\s*;?/g,
+  ""
+);
+if (sanitizedPhase8 === originalPhase8 || /import\s*\(\s*["']\.\/server\.js["']\s*\)/.test(sanitizedPhase8)) {
+  throw new Error("Could not disable Phase 8 server startup before Office Suite patching.");
+}
+
+try {
+  fs.writeFileSync(phase8Path, sanitizedPhase8);
+  await import("./.phase10-runtime-only.mjs");
+} finally {
+  fs.writeFileSync(phase8Path, originalPhase8);
+}
 
 let server = fs.readFileSync(serverPath, "utf8");
 let panel = fs.readFileSync(panelPath, "utf8");
