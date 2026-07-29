@@ -6,34 +6,28 @@ const serverPath = new URL("./server.js", import.meta.url);
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
 
 let prior = fs.readFileSync(priorPath, "utf8");
-// Remove Phase 10's server startup wherever it appears. Some earlier button-fix
-// versions append code after this line, so it cannot safely be matched only at EOF.
-const beforeServerRemoval = prior;
-prior = prior.replace(/await\s+import\s*\(\s*["']\.\/server\.js["']\s*\)\s*;?/g, "");
-if (prior === beforeServerRemoval || /import\s*\(\s*["']\.\/server\.js["']\s*\)/.test(prior)) {
-  throw new Error("Could not disable Phase 10 server startup before Phase 11 patching.");
-}
-fs.writeFileSync(runtimePath, prior);
 
-// Phase 10 itself reads Phase 8 and expected its server import to be the final line.
-// Newer Phase 8 button/card patches may append code after that import. Temporarily
-// sanitize Phase 8 so Phase 10 can build its runtime-only copy, then restore it.
-const phase8Path = new URL("./phase8-bootstrap.mjs", import.meta.url);
-const originalPhase8 = fs.readFileSync(phase8Path, "utf8");
-const sanitizedPhase8 = originalPhase8.replace(
+// Fix Phase 10's older Phase 8 startup-removal logic in memory. Newer Phase 8
+// versions can contain code after the server import, so matching only EOF fails.
+prior = prior.replace(
+  /phase8\s*=\s*phase8\.replace\([^;]+;\s*if\s*\(phase8\.includes\('await import\("\.\/server\.js"\)'\)\)\s*\{\s*throw new Error\("Could not disable Phase 8 server startup before Office Suite patching\."\);\s*\}/s,
+  `phase8 = phase8.replace(/await\\s+import\\s*\\(\\s*["']\\.\\/server\\.js["']\\s*\\)\\s*;?/g, "");
+if (/import\\s*\\(\\s*["']\\.\\/server\\.js["']\\s*\\)/.test(phase8)) {
+  throw new Error("Could not disable Phase 8 server startup before Office Suite patching.");
+}`
+);
+
+// Remove Phase 10's own final server startup so Phase 11 can add routes/UI first.
+prior = prior.replace(
   /await\s+import\s*\(\s*["']\.\/server\.js["']\s*\)\s*;?/g,
   ""
 );
-if (sanitizedPhase8 === originalPhase8 || /import\s*\(\s*["']\.\/server\.js["']\s*\)/.test(sanitizedPhase8)) {
-  throw new Error("Could not disable Phase 8 server startup before Office Suite patching.");
+if (/import\s*\(\s*["']\.\/server\.js["']\s*\)/.test(prior)) {
+  throw new Error("Could not disable Phase 10 server startup before Phase 11 patching.");
 }
 
-try {
-  fs.writeFileSync(phase8Path, sanitizedPhase8);
-  await import("./.phase10-runtime-only.mjs");
-} finally {
-  fs.writeFileSync(phase8Path, originalPhase8);
-}
+fs.writeFileSync(runtimePath, prior);
+await import("./.phase10-runtime-only.mjs");
 
 let server = fs.readFileSync(serverPath, "utf8");
 let panel = fs.readFileSync(panelPath, "utf8");
@@ -42,7 +36,126 @@ const SERVER_MARKER = "JOSHUA_PHASE11_CREATE_JOB_CLOCKSHARK";
 const PANEL_MARKER = "JOSHUA_PHASE11_CREATE_JOB_UI";
 
 if (!server.includes(SERVER_MARKER)) {
-  const routeInsertion = `const shouldValidate =`;
+  const routeInsertion = `
+// JOSHUA_WISHLIST_FEATURE_REQUESTS
+app.get("/api/control/wishlist", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const data = readControlData();
+  const items = (data.tasks || [])
+    .filter(item => item.type === "feature_request")
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  return reply.send({ ok: true, items });
+});
+
+app.post("/api/control/wishlist", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  const description = String(body.description || "").trim();
+  const requestedBy = String(body.requestedBy || "Office").trim();
+  const priority = String(body.priority || "normal").trim();
+
+  if (!title) return reply.code(400).send({ ok: false, error: "Feature/change title is required." });
+  if (!description) return reply.code(400).send({ ok: false, error: "Please describe the requested feature or change." });
+
+  const item = addControlTask({
+    type: "feature_request",
+    title,
+    description,
+    requestedBy,
+    priority,
+    status: "requested",
+    source: "office_wishlist"
+  });
+
+  addControlEvent({
+    type: "wishlist_request",
+    level: "info",
+    title: `Wishlist request: ${title}`,
+    detail: `${requestedBy}: ${description}`,
+    taskId: item.id
+  });
+
+  let textMessage = { ok: false, status: "not_sent", error: "" };
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID || "";
+    const authToken = process.env.TWILIO_AUTH_TOKEN || "";
+    const from =
+      process.env.TWILIO_PHONE_NUMBER ||
+      process.env.TWILIO_FROM_NUMBER ||
+      process.env.TWILIO_NUMBER ||
+      "";
+    const to =
+      process.env.WISHLIST_TEXT_TO ||
+      process.env.OWNER_NOTIFICATION_NUMBER ||
+      process.env.TRAVIS_TRANSFER_NUMBER ||
+      "+12142435649";
+
+    if (!accountSid || !authToken || !from) {
+      throw new Error("Twilio SMS variables are incomplete.");
+    }
+
+    const smsClient = twilio(accountSid, authToken);
+    const sent = await smsClient.messages.create({
+      body: [
+        "JOSHUA WISHLIST REQUEST",
+        `Requested by: ${requestedBy}`,
+        `Priority: ${priority.toUpperCase()}`,
+        `Request: ${title}`,
+        description
+      ].join("\n").slice(0, 1500),
+      from,
+      to
+    });
+
+    textMessage = { ok: true, status: sent.status || "queued", sid: sent.sid || "" };
+  } catch (error) {
+    textMessage = { ok: false, status: "failed", error: String(error.message || error) };
+    addControlEvent({
+      type: "wishlist_text_failed",
+      level: "error",
+      title: `Wishlist text failed: ${title}`,
+      detail: textMessage.error,
+      taskId: item.id
+    });
+  }
+
+  const latest = readControlData();
+  const taskIndex = (latest.tasks || []).findIndex(task => task.id === item.id);
+  if (taskIndex >= 0) {
+    latest.tasks[taskIndex].textStatus = textMessage.status;
+    latest.tasks[taskIndex].textSid = textMessage.sid || "";
+    latest.tasks[taskIndex].textError = textMessage.error || "";
+    latest.tasks[taskIndex].textSentAt = textMessage.ok ? new Date().toISOString() : "";
+    writeControlData(latest);
+  }
+
+  return reply.send({ ok: true, item, textMessage });
+});
+
+app.patch("/api/control/wishlist/:id", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const id = String(request.params.id || "").trim();
+  const body = request.body || {};
+  const allowed = {};
+  if (body.status !== undefined) allowed.status = String(body.status);
+  if (body.priority !== undefined) allowed.priority = String(body.priority);
+  if (body.ownerNotes !== undefined) allowed.ownerNotes = String(body.ownerNotes);
+  const updated = updateControlTask(id, allowed);
+  if (!updated || updated.type !== "feature_request") {
+    return reply.code(404).send({ ok: false, error: "Wishlist request not found." });
+  }
+  return reply.send({ ok: true, item: updated });
+});
+
+const shouldValidate =`;
   if (!server.includes(routeInsertion)) {
     throw new Error("Phase 11 could not find server route insertion point.");
   }
@@ -266,6 +379,10 @@ app.post("/api/control/jobs/:tracking/retry-clockshark", async (request, reply) 
 
 if (!panel.includes(PANEL_MARKER)) {
   panel = panel.replace(
+    '<button class="office-nav-btn" data-office-tab="settings">⚙ <span>Settings</span></button>',
+    '<button class="office-nav-btn" id="wishlistNavButton" data-office-wishlist="true">☆ <span>Wishlist</span><span id="navWishlistCount" class="nav-count">0</span></button>\n   <button class="office-nav-btn" data-office-tab="settings">⚙ <span>Settings</span></button>'
+  );
+  panel = panel.replace(
     "</style>",
     `
 /* JOSHUA_PHASE11_CREATE_JOB_UI */
@@ -312,7 +429,7 @@ if (!panel.includes(PANEL_MARKER)) {
    <div><label>Priority</label><select id="cjPriority"><option value="normal">Normal</option><option value="urgent">Urgent</option><option value="emergency">Emergency</option></select></div>
    <div><label>NTE ($)</label><input id="cjNte" type="number" min="0" step=".01"></div>
    <div><label>Scheduled date/time</label><input id="cjScheduled" type="datetime-local"></div>
-   <div><label>Assigned technician</label><input id="cjTech"></div>
+   <div><label>Assigned technician</label><select id="cjTech"><option value="">Unassigned</option></select><div id="cjTechSource" class="small muted">Loading ClockShark technicians…</div></div>
    <div class="wide"><label>Job description / scope *</label><textarea id="cjDescription" required></textarea></div>
    <div class="wide"><label>Office notes</label><textarea id="cjNotes"></textarea></div>
   </div>
@@ -322,6 +439,31 @@ if (!panel.includes(PANEL_MARKER)) {
 </dialog>
 `;
   panel = panel.replace("</main>", "</main>\n" + dialog);
+
+  const wishlistDialog = `
+<dialog id="wishlistDialog" class="create-job-dialog">
+ <div class="office-section-title">
+  <div><h2>Office Wishlist</h2><div class="small muted">Request a feature or change. Joshua will save it and text Travis.</div></div>
+  <button id="closeWishlist" type="button" class="secondary">Close</button>
+ </div>
+ <form id="wishlistForm">
+  <div class="create-job-grid">
+   <div><label>Requested by *</label><input id="wishRequestedBy" required placeholder="Name"></div>
+   <div><label>Priority</label><select id="wishPriority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+   <div class="wide"><label>Feature or change *</label><input id="wishTitle" required placeholder="Example: Add a customer callback reminder"></div>
+   <div class="wide"><label>What should Joshua do? *</label><textarea id="wishDescription" required placeholder="Describe the requested change and how it should work."></textarea></div>
+  </div>
+  <div style="margin-top:14px"><button id="wishlistSubmit" type="submit">Send Request to Travis</button></div>
+ </form>
+ <div id="wishlistResult" style="display:none;margin-top:14px"></div>
+ <div class="office-section-title" style="margin-top:24px">
+  <div><h3 style="margin:0">Submitted Requests</h3><div class="small muted">Newest requests appear first.</div></div>
+  <button id="refreshWishlist" type="button" class="secondary">Refresh</button>
+ </div>
+ <div id="wishlistList" class="queue-list"></div>
+</dialog>
+`;
+  panel = panel.replace("</main>", "</main>\n" + wishlistDialog);
 
   const script = `
 <script>
@@ -333,9 +475,25 @@ if (!panel.includes(PANEL_MARKER)) {
  const result=byId("createJobResult");
  const submit=byId("createJobSubmit");
 
+ function loadClockSharkTechnicians(){
+  const select=byId("cjTech");
+  const source=byId("cjTechSource");
+  if(!select)return;
+  const raw=(window.cache&&window.cache.technicians)||{};
+  const techs=Array.isArray(raw)?raw:Object.values(raw);
+  const active=techs.filter(t=>String(t.status||"active").toLowerCase()!=="inactive"&&String(t.disabled||"false")!=="true");
+  active.sort((a,b)=>String(a.name||a.displayName||"").localeCompare(String(b.name||b.displayName||"")));
+  select.innerHTML='<option value="">Unassigned</option>'+active.map(t=>{
+   const name=String(t.name||t.displayName||t.fullName||"").trim();
+   const id=String(t.clockSharkId||t.clocksharkId||t.id||name).trim();
+   return name?'<option value="'+esc(name)+'" data-clockshark-id="'+esc(id)+'">'+esc(name)+'</option>':"";
+  }).join("");
+  if(source)source.textContent=active.length?active.length+" active ClockShark technician"+(active.length===1?"":"s")+" available":"No synced ClockShark technicians found";
+ }
  function openCreateJob(){
   form.reset();
   byId("cjState").value="TX";
+  loadClockSharkTechnicians();
   result.style.display="none";
   result.innerHTML="";
   dlg.showModal();
@@ -352,6 +510,91 @@ if (!panel.includes(PANEL_MARKER)) {
   existingNew.addEventListener("click",e=>{e.preventDefault();e.stopImmediatePropagation();openCreateJob()},true);
  }
  byId("closeCreateJob").addEventListener("click",closeCreateJob);
+
+ const wishDlg=byId("wishlistDialog");
+ const wishForm=byId("wishlistForm");
+ const wishResult=byId("wishlistResult");
+ const wishSubmit=byId("wishlistSubmit");
+
+ async function loadWishlist(){
+  const list=byId("wishlistList");
+  if(!list)return;
+  list.innerHTML="<div class='muted'>Loading wishlist…</div>";
+  try{
+   const data=await api("/api/control/wishlist");
+   const items=data.items||[];
+   const openCount=items.filter(x=>!["completed","declined"].includes(String(x.status||"requested"))).length;
+   const badge=byId("navWishlistCount");
+   if(badge)badge.textContent=String(openCount);
+   list.innerHTML=items.length?items.map(item=>{
+    const status=String(item.status||"requested");
+    const textState=item.textStatus==="failed"?"⚠ Text failed":item.textStatus?"✓ Text "+esc(item.textStatus):"Text pending";
+    return '<div class="queue-row" style="grid-template-columns:1.1fr 2fr .8fr auto">'+
+      '<div><strong>'+esc(item.title||"Feature request")+'</strong><div class="small muted">'+esc(item.requestedBy||"Office")+' · '+new Date(item.createdAt).toLocaleString()+'</div></div>'+
+      '<div>'+esc(item.description||"")+'<div class="small muted">'+textState+'</div></div>'+
+      '<div><strong>'+esc(String(item.priority||"normal").toUpperCase())+'</strong><div class="small muted">'+esc(status.replaceAll("_"," "))+'</div></div>'+
+      '<div><select class="wishlist-status" data-wish-id="'+esc(item.id)+'">'+
+       ["requested","reviewing","planned","in_progress","completed","declined"].map(s=>'<option value="'+s+'" '+(s===status?"selected":"")+'>'+s.replaceAll("_"," ")+'</option>').join("")+
+      '</select></div></div>';
+   }).join(""):"<div class='queue-empty'>No feature requests have been submitted yet.</div>";
+  }catch(err){
+   list.innerHTML="<div class='system-result fail'><strong>Could not load wishlist</strong><span class='small'>"+esc(err.message)+"</span></div>";
+  }
+ }
+
+ function openWishlist(){
+  wishResult.style.display="none";
+  wishResult.innerHTML="";
+  wishDlg.showModal();
+  loadWishlist();
+ }
+ window.openWishlist=openWishlist;
+ const wishNav=byId("wishlistNavButton");
+ if(wishNav)wishNav.addEventListener("click",openWishlist);
+ byId("closeWishlist").addEventListener("click",()=>wishDlg.close());
+ byId("refreshWishlist").addEventListener("click",loadWishlist);
+
+ wishForm.addEventListener("submit",async e=>{
+  e.preventDefault();
+  wishSubmit.disabled=true;
+  wishSubmit.textContent="Sending…";
+  wishResult.style.display="block";
+  wishResult.innerHTML="<div class='muted'>Saving request and texting Travis…</div>";
+  try{
+   const response=await api("/api/control/wishlist",{
+    method:"POST",
+    body:JSON.stringify({
+     requestedBy:byId("wishRequestedBy").value,
+     priority:byId("wishPriority").value,
+     title:byId("wishTitle").value,
+     description:byId("wishDescription").value
+    })
+   });
+   const sms=response.textMessage||{};
+   wishResult.innerHTML='<div class="system-result '+(sms.ok?"ok":"fail")+'"><strong>✓ Request saved</strong><span class="small">'+
+    (sms.ok?"Text sent to Travis.":"Request saved, but the text failed: "+esc(sms.error||"Unknown SMS error"))+
+    "</span></div>";
+   wishForm.reset();
+   await loadWishlist();
+  }catch(err){
+   wishResult.innerHTML='<div class="system-result fail"><strong>Request not submitted</strong><span class="small">'+esc(err.message)+'</span></div>';
+  }finally{
+   wishSubmit.disabled=false;
+   wishSubmit.textContent="Send Request to Travis";
+  }
+ });
+
+ document.addEventListener("change",async e=>{
+  const select=e.target.closest(".wishlist-status");
+  if(!select)return;
+  try{
+   await api("/api/control/wishlist/"+encodeURIComponent(select.dataset.wishId),{
+    method:"PATCH",
+    body:JSON.stringify({status:select.value})
+   });
+   await loadWishlist();
+  }catch(err){alert(err.message)}
+ });
 
  function row(name,entry){
   const ok=entry&&entry.ok;
@@ -385,6 +628,7 @@ if (!panel.includes(PANEL_MARKER)) {
    nte:byId("cjNte").value,
    scheduledAt:byId("cjScheduled").value,
    assignedTechnician:byId("cjTech").value,
+   clockSharkTechnicianId:byId("cjTech").selectedOptions[0]?.dataset.clocksharkId||"",
    description:byId("cjDescription").value,
    officeNotes:byId("cjNotes").value
   };
