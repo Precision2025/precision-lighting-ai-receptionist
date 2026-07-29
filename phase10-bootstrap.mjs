@@ -214,6 +214,48 @@ setTimeout(renderWishlist,400);
 </script></body>`);
 }
 
+
+const DASHBOARD_FIX_MARKER = "JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2";
+if (!panel.includes(DASHBOARD_FIX_MARKER)) {
+  panel = panel.replace('</style>', `
+/* JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2 */
+.dashboard-ivr-card{margin:0 0 16px;border-color:#3f5872}.dashboard-ivr-card h2{display:flex;align-items:center;gap:8px}.dashboard-ivr-card h2:before{content:"☎";color:#eab308}.dashboard-ivr-card button[type="submit"]{margin-top:12px}
+</style>`);
+  panel = panel.replace('</body>', `<script>
+// JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2
+(function(){
+ function openOfficeTabSafe(tab){
+  if(typeof window.officeOpenTab==='function'){window.officeOpenTab(tab);return;}
+  const native=document.querySelector('.tab[data-tab="'+tab+'"]');
+  if(native){native.click();return;}
+  document.querySelectorAll('.panel').forEach(function(p){p.classList.toggle('active',p.id===tab)});
+  window.scrollTo({top:0,behavior:'smooth'});
+ }
+ function installDashboardFix(){
+  const executive=document.getElementById('executive');
+  const ivrForm=document.getElementById('ivrForm');
+  const welcome=executive&&executive.querySelector('.office-welcome');
+  if(executive&&ivrForm){
+   const card=ivrForm.closest('.card');
+   if(card&&!card.classList.contains('dashboard-ivr-card')){
+    card.classList.add('dashboard-ivr-card');
+    const title=card.querySelector('h2');if(title)title.textContent='ServiceChannel IVR Check In / Check Out';
+    if(welcome)welcome.insertAdjacentElement('afterend',card);else executive.insertBefore(card,executive.firstChild);
+   }
+  }
+  document.querySelectorAll('[data-office-tab="operations"]').forEach(function(btn){
+   if(btn.closest('.office-welcome-actions'))btn.onclick=function(e){e.preventDefault();e.stopPropagation();openOfficeTabSafe('operations')};
+  });
+  document.querySelectorAll('[data-office-tab="activity"]').forEach(function(btn){
+   if(btn.closest('.office-welcome-actions'))btn.onclick=function(e){e.preventDefault();e.stopPropagation();openOfficeTabSafe('activity')};
+  });
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',installDashboardFix);else installDashboardFix();
+ setTimeout(installDashboardFix,500);
+})();
+</script></body>`);
+}
+
 fs.writeFileSync(panelPath, panel);
 console.log("Joshua Office Suite v3.1 installed: stable Phase 10 + Create Job + ClockShark roster + Wishlist.");
 await import("./server.js");
