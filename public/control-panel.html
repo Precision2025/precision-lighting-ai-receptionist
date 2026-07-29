@@ -1,30 +1,32 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Joshua Control Panel</title>
 <style>
-:root{font-family:Inter,system-ui,Arial,sans-serif;color:#f7f8fa;background:#0c1118}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0c1118,#131b26);min-height:100vh}
-header{padding:24px 5%;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #263244}
-h1{margin:0;font-size:25px}.muted{color:#9db0c8}.online{color:#63e6a7;font-weight:800}
-main{padding:24px 5%;max-width:1500px;margin:auto}.grid{display:grid;gap:16px}.stats{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
-.card{background:#151e2a;border:1px solid #273548;border-radius:15px;padding:18px;box-shadow:0 12px 35px #0004}
-.stat strong{display:block;font-size:28px;margin-top:7px}.two{grid-template-columns:1fr 1.7fr;margin-top:16px}
-h2{font-size:17px;margin:0 0 14px}.attention{border-color:#7c493f}.good{border-color:#285b49}
-form{display:grid;gap:11px}label{font-size:12px;color:#aebed1}input,select,button{width:100%;padding:12px;border-radius:9px;border:1px solid #34445a;background:#0f1620;color:#fff}
-button{background:#eab308;color:#111827;font-weight:800;border:0;cursor:pointer}button.secondary{background:#253348;color:#fff}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #273548}th{color:#9db0c8}
-.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#253348}.badge.onsite{background:#18573e}.badge.attention{background:#71392f}
-.event{padding:11px 0;border-bottom:1px solid #273548}.event:last-child{border-bottom:0}.event strong{display:block}.small{font-size:12px}
-#message{min-height:24px;font-weight:700}.scroll{overflow:auto;max-height:520px}
-@media(max-width:900px){.two{grid-template-columns:1fr}table{min-width:760px}}
+:root{font-family:Inter,system-ui,Arial,sans-serif;color:#f7f8fa;background:#091018}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#081018,#111b27);min-height:100vh}
+header{padding:22px 4%;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #263447;position:sticky;top:0;background:#091018ee;backdrop-filter:blur(12px);z-index:10}
+h1{margin:0;font-size:25px}.muted{color:#9eb0c7}.live{color:#61e3a5;font-weight:900}
+main{padding:22px 4%;max-width:1600px;margin:auto}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.card{background:#141e2b;border:1px solid #2a394d;border-radius:16px;padding:17px;box-shadow:0 12px 35px #0004}.stat strong{display:block;font-size:28px;margin-top:6px}
+.tabs{display:flex;gap:8px;overflow:auto;margin:16px 0}.tab{width:auto;white-space:nowrap;background:#1d2a3a;color:#dce7f3;padding:10px 14px}.tab.active{background:#eab308;color:#111827}
+.panel{display:none}.panel.active{display:block}.two{grid-template-columns:1fr 1.5fr}.three{grid-template-columns:repeat(3,1fr)}
+h2{font-size:17px;margin:0 0 13px}label{font-size:12px;color:#aebed1;display:block;margin-bottom:5px}
+input,select,textarea,button{width:100%;padding:11px;border-radius:9px;border:1px solid #34465e;background:#0e1722;color:#fff}
+textarea{min-height:88px;resize:vertical}button{background:#eab308;color:#111827;font-weight:900;border:0;cursor:pointer}.secondary{background:#26374c;color:#fff}.danger{background:#743b32;color:#fff}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.formgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #28384c;vertical-align:top}th{color:#9db0c8;position:sticky;top:0;background:#141e2b}
+.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#26374c}.onsite{background:#185a41}.attention{background:#753d32}.completed{background:#274867}
+.event,.task{padding:11px 0;border-bottom:1px solid #28384c}.event:last-child,.task:last-child{border:0}.small{font-size:12px}
+.scroll{overflow:auto;max-height:520px}.alert{border-color:#79483e}.success{border-color:#28614d}
+.actions{display:flex;gap:7px}.actions button{width:auto;padding:8px 10px}.search{margin-bottom:10px}
+dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff;width:min(720px,94vw);padding:18px}dialog::backdrop{background:#000a}
+@media(max-width:900px){.two,.three,.formgrid{grid-template-columns:1fr}table{min-width:950px}header{align-items:flex-start}.subtitle{max-width:250px}}
 </style>
 </head>
 <body>
-<header><div><h1>Joshua Control Panel</h1><div class="muted">Precision Lighting Operations Command Center</div></div><div id="live" class="online">● CONNECTING</div></header>
+<header><div><h1>Joshua Control Panel</h1><div class="muted subtitle">Precision Lighting Operations Command Center</div></div><div id="live" class="live">● CONNECTING</div></header>
 <main>
 <div class="grid stats">
  <div class="card stat"><span class="muted">Joshua</span><strong id="joshua">—</strong></div>
@@ -32,55 +34,97 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
  <div class="card stat"><span class="muted">Today's check-ins</span><strong id="ins">0</strong></div>
  <div class="card stat"><span class="muted">Today's check-outs</span><strong id="outs">0</strong></div>
  <div class="card stat"><span class="muted">Needs attention</span><strong id="fails">0</strong></div>
+ <div class="card stat"><span class="muted">Open tasks</span><strong id="taskCount">0</strong></div>
+</div>
+<div class="tabs">
+ <button class="tab active" data-tab="operations">Operations</button>
+ <button class="tab" data-tab="workorders">Work Orders</button>
+ <button class="tab" data-tab="tasks">Tasks</button>
+ <button class="tab" data-tab="activity">Activity</button>
+ <button class="tab" data-tab="settings">Settings</button>
 </div>
 
+<section id="operations" class="panel active">
 <div class="grid two">
- <section class="card">
-  <h2>Manual ServiceChannel Control</h2>
-  <form id="ivrForm">
-   <div class="row"><div><label>Action</label><select id="action"><option value="checkin">Check in</option><option value="checkout">Check out</option></select></div><div><label>Tracking number</label><input id="tracking" inputmode="numeric" required></div></div>
-   <div id="checkoutFields" style="display:none">
-    <div class="row"><div><label>Status</label><select id="status"><option>complete</option><option>waiting for quote</option><option>parts needed</option><option>return trip needed</option></select></div><div><label>Technicians onsite</label><input id="techs" type="number" min="1" value="1"></div></div>
-   </div>
-   <button type="submit">Start IVR Call</button><div id="message"></div>
-  </form>
- </section>
- <section class="card attention"><h2>Needs Attention</h2><div id="attention" class="scroll muted">No current problems.</div></section>
+ <div class="card"><h2>Manual ServiceChannel Control</h2><form id="ivrForm">
+  <div class="row"><div><label>Action</label><select id="action"><option value="checkin">Check in</option><option value="checkout">Check out</option></select></div><div><label>Tracking number</label><input id="tracking" inputmode="numeric" required></div></div>
+  <div id="checkoutFields" style="display:none"><div class="row"><div><label>Status</label><select id="status"><option>complete</option><option>waiting for quote</option><option>parts needed</option><option>return trip needed</option></select></div><div><label>Technicians onsite</label><input id="techs" type="number" min="1" value="1"></div></div></div>
+  <button type="submit">Start IVR Call</button><div id="message"></div>
+ </form></div>
+ <div class="card alert"><h2>Needs Attention</h2><div id="attention" class="scroll muted">No current problems.</div></div>
 </div>
+<div class="card" style="margin-top:14px"><h2>Currently Onsite</h2><div id="onsiteCards" class="grid three"></div></div>
+</section>
 
-<section class="card" style="margin-top:16px"><h2>Active & Recent Work Orders</h2><div class="scroll"><table><thead><tr><th>Tracking #</th><th>Status</th><th>Check-in</th><th>Check-out</th><th>Techs</th><th>Onsite duration</th><th>Requested by</th></tr></thead><tbody id="orders"></tbody></table></div></section>
-<section class="card" style="margin-top:16px"><h2>Recent Activity</h2><div id="events" class="scroll"></div></section>
+<section id="workorders" class="panel">
+<div class="card"><div class="row"><h2>Work Orders</h2><button id="newOrder" class="secondary">Add / Update Work Order</button></div>
+<input id="orderSearch" class="search" placeholder="Search tracking number, customer, address, technician…">
+<div class="scroll"><table><thead><tr><th>Tracking / WO</th><th>Customer / Location</th><th>Status</th><th>Technician</th><th>NTE</th><th>Estimated</th><th>Remaining</th><th>Onsite</th><th>Actions</th></tr></thead><tbody id="orders"></tbody></table></div></div>
+</section>
+
+<section id="tasks" class="panel">
+<div class="grid two"><div class="card"><h2>Create Follow-up Task</h2><form id="taskForm">
+<label>Task</label><input id="taskTitle" required placeholder="Example: Call customer with job update">
+<div class="row"><div><label>Tracking number</label><input id="taskTracking"></div><div><label>Assigned to</label><select id="taskAssigned"><option>Travis</option><option>Ariana</option><option>Shellie</option><option>Technician</option></select></div></div>
+<div class="row"><div><label>Priority</label><select id="taskPriority"><option>normal</option><option>urgent</option></select></div><div><label>Due</label><input id="taskDue" type="datetime-local"></div></div>
+<label>Notes</label><textarea id="taskNotes"></textarea><button>Create Task</button></form></div>
+<div class="card"><h2>Open Tasks</h2><div id="taskList" class="scroll"></div></div></div>
+</section>
+
+<section id="activity" class="panel"><div class="card"><h2>Recent Activity</h2><div id="events" class="scroll"></div></div></section>
+<section id="settings" class="panel"><div class="card"><h2>Automation Settings</h2><form id="settingsForm">
+<div class="row"><div><label>Flag onsite jobs after (minutes)</label><input id="maxOnsite" type="number" min="15"></div><div><label>Reminder interval (minutes)</label><input id="reminderMinutes" type="number" min="15"></div></div>
+<button>Save Settings</button></form><p class="muted small">These settings control dashboard exception timing. Automatic outbound reminders can be enabled once technician phone numbers are stored on each work order.</p></div></section>
 </main>
+
+<dialog id="orderDialog"><h2>Add or Update Work Order</h2><form id="orderForm">
+<div class="formgrid">
+<div><label>Tracking number</label><input id="oTracking" required></div><div><label>Work order number</label><input id="oWorkOrder"></div>
+<div><label>Customer</label><input id="oCustomer"></div><div><label>Location</label><input id="oLocation"></div>
+<div><label>Address</label><input id="oAddress"></div><div><label>Technician</label><input id="oTechnician"></div>
+<div><label>NTE ($)</label><input id="oNte" type="number" step=".01"></div><div><label>Estimated total ($)</label><input id="oEstimated" type="number" step=".01"></div>
+<div><label>State</label><select id="oState"><option value="new">New</option><option value="scheduled">Scheduled</option><option value="onsite">Onsite</option><option value="attention">Needs attention</option><option value="completed">Completed</option><option value="ready_to_invoice">Ready to invoice</option></select></div><div><label>Scheduled</label><input id="oScheduled" type="datetime-local"></div>
+</div><label>Problem description</label><textarea id="oProblem"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
+<div class="row"><button>Save Work Order</button><button type="button" id="closeOrder" class="secondary">Cancel</button></div></form></dialog>
+
 <script>
 const key=new URLSearchParams(location.search).get("key")||localStorage.getItem("joshuaKey")||"";
 if(key)localStorage.setItem("joshuaKey",key);
 const headers={"Content-Type":"application/json","X-Control-Panel-Key":key};
+let cache={workOrders:[],openTasks:[]};
+const money=v=>v===null||v===undefined||v===""?"—":new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(v));
 const fmt=v=>v?new Date(v).toLocaleString():"—";
-const duration=ms=>{
- if(!ms&&ms!==0)return "—";
- const m=Math.max(0,Math.round(ms/60000)),h=Math.floor(m/60),r=m%60;
- return `${h?`${h} hr `:""}${r} min`;
-};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.getElementById(b.dataset.tab).classList.add("active")});
+async function api(url,opts={}){const r=await fetch(url,{...opts,headers});const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d}
 async function refresh(){
  try{
-  const r=await fetch("/api/control/status",{headers});
-  if(!r.ok)throw new Error("Unauthorized");
-  const d=await r.json();
-  live.textContent="● LIVE";joshua.textContent=d.online?"ONLINE":"OFFLINE";
-  active.textContent=d.activeCount;ins.textContent=d.todayCheckIns;outs.textContent=d.todayCheckOuts;fails.textContent=d.failures.length;
-  attention.innerHTML=d.failures.length?d.failures.map(x=>`<div class="event"><strong>⚠ ${x.type.replaceAll("_"," ")}</strong><span class="small">${x.trackingNumber||""} · ${fmt(x.createdAt)}<br>${x.error||x.callStatus||""}</span></div>`).join(""):"<span class='online'>No current problems.</span>";
-  orders.innerHTML=d.workOrders.map(x=>`<tr><td><strong>${x.trackingNumber}</strong></td><td><span class="badge ${x.state}">${(x.state||"unknown").replaceAll("_"," ")}</span></td><td>${fmt(x.checkInAt)}</td><td>${fmt(x.checkOutAt)}</td><td>${x.technicianCount||"—"}</td><td>${x.onsiteDuration||duration(x.onsiteMilliseconds)}</td><td>${x.requestedBy||"—"}</td></tr>`).join("")||"<tr><td colspan='7' class='muted'>No work-order activity recorded yet.</td></tr>";
-  events.innerHTML=d.recentEvents.slice(0,40).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${x.type.replaceAll("_"," ")}</strong><span class="small muted">Tracking ${x.trackingNumber||"—"} · ${x.requestedBy||"Joshua"} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>";
+  const d=await api("/api/control/status");cache=d;
+  live.textContent="● LIVE";joshua.textContent=d.online?"ONLINE":"OFFLINE";active.textContent=d.activeCount;ins.textContent=d.todayCheckIns;outs.textContent=d.todayCheckOuts;
+  const attentionItems=[...d.failures,...d.attentionWorkOrders];fails.textContent=attentionItems.length;taskCount.textContent=d.openTasks.length;
+  attention.innerHTML=attentionItems.length?attentionItems.map(x=>`<div class="event"><strong>⚠ ${esc(x.type||x.state||"Work order needs attention")}</strong><span class="small">${esc(x.trackingNumber||"")} · ${esc(x.lastError||x.error||x.callStatus||x.liveOnsiteDuration||"Review required")}</span></div>`).join(""):"<span class='live'>No current problems.</span>";
+  onsiteCards.innerHTML=d.active.length?d.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><h2 style="margin-top:12px">${esc(x.liveOnsiteDuration)}</h2><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>";
+  renderOrders();renderTasks();
+  events.innerHTML=d.recentEvents.slice(0,60).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>";
+  maxOnsite.value=d.settings.maxOnsiteMinutes;reminderMinutes.value=d.settings.reminderMinutes;
  }catch(e){live.textContent="● OFFLINE / UNAUTHORIZED";live.style.color="#ff8b7d"}
 }
-action.addEventListener("change",()=>checkoutFields.style.display=action.value==="checkout"?"block":"none");
-ivrForm.addEventListener("submit",async e=>{
- e.preventDefault();message.textContent="Starting call…";
- const payload={action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value};
- const r=await fetch("/api/control/ivr",{method:"POST",headers,body:JSON.stringify(payload)});
- const d=await r.json();message.textContent=d.ok?`✅ Call started: ${d.callSid}`:`⚠ ${d.error}`;
- refresh();
-});
+function renderOrders(){
+ const q=orderSearch.value.toLowerCase();
+ const rows=cache.workOrders.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
+ orders.innerHTML=rows.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong><br><span class="small muted">${esc(x.workOrderNumber||"")}</span></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.technician||"—")}</td><td>${money(x.nte)}</td><td>${money(x.estimatedTotal)}</td><td>${money(x.remainingNte)}</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><div class="actions"><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button></div></td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No matching work orders.</td></tr>";
+}
+function renderTasks(){
+ taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${esc(x.priority==="urgent"?"🚨 ":"")}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>";
+}
+action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
+ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
+orderSearch.oninput=renderOrders;newOrder.onclick=()=>{orderForm.reset();orderDialog.showModal()};closeOrder.onclick=()=>orderDialog.close();
+window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTechnician.value=x.technician||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?x.scheduledAt.slice(0,16):"";oProblem.value=x.problemDescription||"";oNotes.value=x.notes||"";orderDialog.showModal()};
+orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,technician:oTechnician.value,nte:oNte.value,estimatedTotal:oEstimated.value,state:oState.value,scheduledAt:oScheduled.value,problemDescription:oProblem.value,notes:oNotes.value})});orderDialog.close();refresh()};
+taskForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/tasks",{method:"POST",body:JSON.stringify({title:taskTitle.value,trackingNumber:taskTracking.value,assignedTo:taskAssigned.value,priority:taskPriority.value,dueAt:taskDue.value,notes:taskNotes.value})});taskForm.reset();refresh()};
+window.closeTask=async id=>{await api(`/api/control/tasks/${id}/close`,{method:"POST",body:"{}"});refresh()};
+settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value})});refresh()};
 refresh();setInterval(refresh,15000);
 </script>
 </body></html>
