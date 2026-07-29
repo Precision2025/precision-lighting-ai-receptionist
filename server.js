@@ -2,7 +2,7 @@ import "dotenv/config";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import formbody from "@fastify/formbody";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import twilio from "twilio";
 import nodemailer from "nodemailer";
 import fs from "node:fs";
@@ -769,6 +769,107 @@ function buildServiceChannelCallTwiml(command, serviceChannelPin) {
   return response.toString();
 }
 
+
+function serviceChannelSuccessFromTranscript(transcript, action) {
+  const text = String(transcript || "").replace(/\s+/g, " ").trim();
+  const lower = text.toLowerCase();
+  const failure = /(?:not|unable|could not|cannot|invalid|unsuccessful|failed|error|no matching)/i.test(text);
+  const success = action === "checkin"
+    ? /(?:successfully\s+checked\s+in|checked\s+in\s+successfully|you\s+(?:are|have been)\s+(?:now\s+)?checked\s+in)/i.test(text)
+    : /(?:successfully\s+checked\s+out|checked\s+out\s+successfully|you\s+(?:are|have been)\s+(?:now\s+)?checked\s+out|confirmation\s+(?:number|code))/i.test(text);
+  return { text, success: Boolean(success && !failure), failure };
+}
+
+function extractCheckoutConfirmationNumber(transcript) {
+  const text = String(transcript || "");
+  const patterns = [
+    /confirmation\s+(?:number|code)\s+(?:is\s+)?([A-Z0-9][A-Z0-9\s-]{2,24})/i,
+    /(?:confirmation|reference)\s*#?\s*([A-Z0-9-]{4,20})/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return String(match[1] || "").replace(/\s+/g, "").replace(/[^A-Z0-9-]/gi, "").trim();
+  }
+  return "";
+}
+
+async function syncServiceChannelJobSheets(trackingNumber, payload) {
+  if (!jobSheetsZapierWebhookUrl) return { ok: false, skipped: true };
+  try {
+    const response = await fetch(jobSheetsZapierWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ action: "servicechannel_ivr_update", tracking_number: trackingNumber, ...payload })
+    });
+    if (!response.ok) throw new Error(`Job Sheets update failed (${response.status})`);
+    return { ok: true };
+  } catch (error) {
+    app.log.error(error, "Could not sync ServiceChannel IVR result to Job Sheets");
+    return { ok: false, error: error.message };
+  }
+}
+
+async function finalizeConfirmedServiceChannelIvr({ action, tracking, statusText, technicianCount, technicianName, requestedBy, callSid, transcript, confirmationNumber }) {
+  const completedDate = new Date();
+  const checkInKey = String(tracking).trim();
+  const existing = readControlData().workOrders[checkInKey] || {};
+  const recordedCheckIn = serviceChannelCheckInTimes.get(checkInKey) || (existing.checkInAt ? new Date(existing.checkInAt) : null);
+  const onsiteMilliseconds = action === "checkout" && recordedCheckIn ? Math.max(0, completedDate.getTime() - recordedCheckIn.getTime()) : null;
+  const onsiteDuration = onsiteMilliseconds !== null ? formatElapsedTime(onsiteMilliseconds) : "";
+  const totalLaborDuration = onsiteMilliseconds !== null && Number(technicianCount) > 1 ? formatElapsedTime(onsiteMilliseconds * Number(technicianCount)) : "";
+  const techName = String(technicianName || existing.technician || "").trim();
+
+  if (action === "checkin") {
+    serviceChannelCheckInTimes.set(checkInKey, completedDate);
+    updateControlWorkOrder(checkInKey, {
+      state: "onsite",
+      joshuaStatus: "onsite",
+      checkInAt: completedDate.toISOString(),
+      technician: techName || existing.technician || "Technician not assigned",
+      requestedBy,
+      callSid,
+      ivrConfirmed: true,
+      ivrConfirmationTranscript: transcript,
+      lastError: ""
+    });
+    if (techName) updateTechnician(techName, { status: "onsite", currentTrackingNumber: checkInKey });
+    const data = readControlData();
+    data.tasks = data.tasks.map(task => task.trackingNumber === checkInKey && /check.?in/i.test(task.title || "") && task.status !== "closed" ? { ...task, status: "closed", completedAt: completedDate.toISOString(), updatedAt: completedDate.toISOString() } : task);
+    writeControlData(data);
+    addControlEvent({ type: "checkin_confirmed", level: "success", trackingNumber: checkInKey, requestedBy, technician: techName, callSid, transcript, completedAt: completedDate.toISOString() });
+    await syncServiceChannelJobSheets(checkInKey, { status: "onsite", check_in_at: completedDate.toISOString(), technician: techName, ivr_confirmed: true });
+  } else {
+    const normalizedStatus = normalizeServiceChannelStatus(statusText) || "";
+    const nextState = normalizedStatus === "1" || /complete/i.test(statusText) ? "completed" : /quote/i.test(statusText) ? "waiting_for_quote" : /parts/i.test(statusText) ? "parts_needed" : /return/i.test(statusText) ? "return_trip_needed" : "completed";
+    updateControlWorkOrder(checkInKey, {
+      state: nextState,
+      joshuaStatus: nextState,
+      checkOutAt: completedDate.toISOString(),
+      checkInAt: recordedCheckIn ? recordedCheckIn.toISOString() : existing.checkInAt || "",
+      onsiteMilliseconds,
+      onsiteDuration,
+      totalLaborDuration,
+      technicianCount,
+      technician: techName || existing.technician || "",
+      statusText,
+      requestedBy,
+      callSid,
+      checkoutConfirmationNumber: confirmationNumber || "",
+      ivrConfirmed: true,
+      ivrConfirmationTranscript: transcript,
+      lastError: ""
+    });
+    if (techName) updateTechnician(techName, { status: "available", currentTrackingNumber: "" });
+    serviceChannelCheckInTimes.delete(checkInKey);
+    if (/quote/i.test(statusText)) addControlTask({ title: "Prepare or follow up on proposal", trackingNumber: checkInKey, assignedTo: "Travis", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
+    else if (/parts/i.test(statusText)) addControlTask({ title: "Order parts and schedule return", trackingNumber: checkInKey, assignedTo: "Ariana", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
+    else if (/return/i.test(statusText)) addControlTask({ title: "Schedule return trip", trackingNumber: checkInKey, assignedTo: "Ariana", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
+    else addControlTask({ title: "Review job for billing", trackingNumber: checkInKey, assignedTo: "Shellie", priority: "normal", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
+    addControlEvent({ type: "checkout_confirmed", level: "success", trackingNumber: checkInKey, requestedBy, technician: techName, callSid, confirmationNumber, transcript, onsiteDuration, completedAt: completedDate.toISOString() });
+    await syncServiceChannelJobSheets(checkInKey, { status: nextState, check_out_at: completedDate.toISOString(), technician: techName, technician_count: technicianCount, onsite_duration: onsiteDuration, confirmation_number: confirmationNumber, ivr_confirmed: true });
+  }
+}
+
 function validateHttpRequest(request) {
   if (!shouldValidate) return true;
   const signature = request.headers["x-twilio-signature"];
@@ -1348,6 +1449,11 @@ Joshua added this job to Job Sheets.`;
       to: ivrNumber,
       from: voiceFrom,
       twiml: callTwiml,
+      record: true,
+      recordingChannels: "dual",
+      recordingStatusCallback: `${publicBaseUrl}/servicechannel-recording-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}&statusText=${encodeURIComponent(command.statusText || "")}&technicianCount=${encodeURIComponent(command.technicianCount || "")}&technicianName=${encodeURIComponent(command.technicianName || "")}`,
+      recordingStatusCallbackMethod: "POST",
+      recordingStatusCallbackEvent: ["completed"],
       statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}&statusText=${encodeURIComponent(command.statusText || "")}&technicianCount=${encodeURIComponent(command.technicianCount || "")}`,
       statusCallbackMethod: "POST",
       statusCallbackEvent: ["completed"]
@@ -1588,76 +1694,22 @@ app.post("/servicechannel-call-status", async (request, reply) => {
   }
 
   if (callStatus === "completed") {
-    if (action === "checkin") {
-      updateControlWorkOrder(tracking, {
-        state: "onsite",
-        checkInAt: completedDate.toISOString(),
-        requestedBy: requesterName,
-        callSid
-      });
-      addControlEvent({
-        type: "checkin_completed",
-        level: "success",
-        trackingNumber: tracking,
-        requestedBy: requesterName,
-        callSid,
-        completedAt: completedDate.toISOString()
-      });
-    } else {
-      updateControlWorkOrder(tracking, {
-        state: "completed",
-        checkOutAt: completedDate.toISOString(),
-        checkInAt: recordedCheckIn ? recordedCheckIn.toISOString() : "",
-        onsiteMilliseconds,
-        onsiteDuration,
-        totalLaborDuration,
-        technicianCount,
-        statusText,
-        requestedBy: requesterName,
-        callSid
-      });
-      const checkoutData = readControlData().workOrders[tracking] || {};
-      const documentationComplete =
-        checkoutData.photosComplete === true &&
-        checkoutData.completionNotesComplete === true &&
-        (checkoutData.proposalStatus !== "required" || checkoutData.proposalApproved === true);
-      if (readControlData().settings.autoInvoiceQueue) {
-        updateControlWorkOrder(tracking, {
-          invoiceStatus: documentationComplete ? "ready_for_review" : "documentation_missing",
-          state: documentationComplete ? "ready_to_invoice" : "completed"
-        });
-        if (!documentationComplete) {
-          addControlTask({
-            title: "Complete job documentation",
-            trackingNumber: tracking,
-            assignedTo: "Ariana",
-            priority: "urgent",
-            notes: "Checkout completed, but photos, completion notes, or proposal approval are missing."
-          });
-        } else {
-          addControlTask({
-            title: "Review and submit invoice",
-            trackingNumber: tracking,
-            assignedTo: "Shellie",
-            priority: "normal",
-            notes: "Checkout and required documentation are complete."
-          });
-        }
-      }
-      addControlEvent({
-        type: "checkout_completed",
-        level: "success",
-        trackingNumber: tracking,
-        requestedBy: requesterName,
-        callSid,
-        completedAt: completedDate.toISOString(),
-        checkInAt: recordedCheckIn ? recordedCheckIn.toISOString() : "",
-        onsiteDuration,
-        totalLaborDuration,
-        technicianCount,
-        statusText
-      });
-    }
+    updateControlWorkOrder(tracking, {
+      state: "awaiting_ivr_confirmation",
+      callSid,
+      requestedBy: requesterName,
+      statusText,
+      technicianCount,
+      lastError: ""
+    });
+    addControlEvent({
+      type: `${action}_call_completed`,
+      level: "info",
+      trackingNumber: tracking,
+      requestedBy: requesterName,
+      callSid,
+      note: "Call completed; waiting for IVR recording confirmation."
+    });
   } else {
     updateControlWorkOrder(tracking, {
       state: "attention",
@@ -1689,6 +1741,45 @@ app.post("/servicechannel-call-status", async (request, reply) => {
   return reply
     .type("text/xml")
     .send("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>");
+});
+
+
+app.post("/servicechannel-recording-status", async (request, reply) => {
+  if (!validateHttpRequest(request)) return reply.code(403).send("Invalid Twilio signature");
+  const action = String(request.query?.action || "").toLowerCase();
+  const tracking = String(request.query?.tracking || "").replace(/\D/g, "");
+  const statusText = String(request.query?.statusText || "").trim();
+  const technicianCount = String(request.query?.technicianCount || "").trim();
+  const technicianName = String(request.query?.technicianName || "").trim();
+  const requestedByPhone = normalizePhone(request.query?.requestedBy);
+  const requestedBy = requestedByPhone ? teamMemberName(requestedByPhone) : "Control Panel";
+  const recordingStatus = String(request.body?.RecordingStatus || "").toLowerCase();
+  const recordingUrl = String(request.body?.RecordingUrl || "");
+  const callSid = String(request.body?.CallSid || "");
+  if (recordingStatus !== "completed" || !recordingUrl || !tracking) return reply.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  try {
+    const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+    const audioResponse = await fetch(`${recordingUrl}.wav`, { headers: { authorization: `Basic ${auth}` } });
+    if (!audioResponse.ok) throw new Error(`Could not download IVR recording (${audioResponse.status})`);
+    const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+    const transcription = await openai.audio.transcriptions.create({ file: await toFile(audioBuffer, `servicechannel-${tracking}.wav`), model: process.env.IVR_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe" });
+    const transcript = String(transcription.text || "").trim();
+    const result = serviceChannelSuccessFromTranscript(transcript, action);
+    const confirmationNumber = action === "checkout" ? extractCheckoutConfirmationNumber(transcript) : "";
+    if (result.success) {
+      await finalizeConfirmedServiceChannelIvr({ action, tracking, statusText, technicianCount, technicianName, requestedBy, callSid, transcript, confirmationNumber });
+      if (twilioClient && requestedByPhone && process.env.TWILIO_SMS_FROM) await twilioClient.messages.create({ from: process.env.TWILIO_SMS_FROM, to: requestedByPhone, body: action === "checkout" ? `✅ ServiceChannel checkout confirmed for #${tracking}.${confirmationNumber ? ` Confirmation #: ${confirmationNumber}.` : ""}` : `✅ ServiceChannel check-in confirmed for #${tracking}. Joshua and Job Sheets were updated.` });
+    } else {
+      updateControlWorkOrder(tracking, { state: "attention", lastError: result.failure ? "ServiceChannel IVR announced an error." : "Joshua could not verify the IVR success phrase.", ivrConfirmationTranscript: transcript, callSid });
+      addControlTask({ title: `Verify ServiceChannel ${action === "checkin" ? "check-in" : "check-out"}`, trackingNumber: tracking, assignedTo: "Ariana", priority: "urgent", notes: `Joshua could not confirm success from the IVR recording. Transcript: ${transcript.slice(0, 500)}` });
+      addControlEvent({ type: `${action}_confirmation_not_verified`, level: "error", trackingNumber: tracking, requestedBy, callSid, transcript });
+    }
+  } catch (error) {
+    app.log.error(error, "Could not process ServiceChannel IVR recording");
+    updateControlWorkOrder(tracking, { state: "attention", lastError: `IVR confirmation processing failed: ${error.message}`, callSid });
+    addControlTask({ title: `Verify ServiceChannel ${action === "checkin" ? "check-in" : "check-out"}`, trackingNumber: tracking, assignedTo: "Ariana", priority: "urgent", notes: error.message });
+  }
+  return reply.type("text/xml").send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
 });
 
 app.all("/voice", async (request, reply) => {
@@ -1905,6 +1996,7 @@ app.post("/api/control/ivr", async (request, reply) => {
   const trackingNumber = String(body.trackingNumber || "").replace(/\D/g, "");
   const statusText = String(body.statusText || "").trim();
   const technicianCount = String(body.technicianCount || "").replace(/\D/g, "");
+  const technicianName = String(body.technicianName || "").trim();
   const requestedByPhone = normalizePhone(
     body.requestedByPhone || process.env.OWNER_SMS_NUMBER
   );
@@ -1927,12 +2019,13 @@ app.post("/api/control/ivr", async (request, reply) => {
 
   const command =
     action === "checkin"
-      ? { type: "checkin", trackingNumber }
+      ? { type: "checkin", trackingNumber, technicianName }
       : {
           type: "checkout",
           trackingNumber,
           statusText,
           technicianCount: Number(technicianCount),
+          technicianName,
           status: normalizeServiceChannelStatus(statusText)
         };
 
@@ -1960,6 +2053,11 @@ app.post("/api/control/ivr", async (request, reply) => {
       to: ivrNumber,
       from: voiceFrom,
       twiml: buildServiceChannelCallTwiml(command, pin),
+      record: true,
+      recordingChannels: "dual",
+      recordingStatusCallback: `${publicBaseUrl}/servicechannel-recording-status?requestedBy=${encodeURIComponent(requestedByPhone)}&action=${command.type}&tracking=${encodeURIComponent(trackingNumber)}&statusText=${encodeURIComponent(statusText)}&technicianCount=${encodeURIComponent(technicianCount)}&technicianName=${encodeURIComponent(String(body.technicianName || ""))}`,
+      recordingStatusCallbackMethod: "POST",
+      recordingStatusCallbackEvent: ["completed"],
       statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(requestedByPhone)}&action=${command.type}&tracking=${encodeURIComponent(trackingNumber)}&statusText=${encodeURIComponent(statusText)}&technicianCount=${encodeURIComponent(technicianCount)}`,
       statusCallbackMethod: "POST",
       statusCallbackEvent: ["completed"]
@@ -1973,7 +2071,8 @@ app.post("/api/control/ivr", async (request, reply) => {
       requestedByPhone,
       callSid: call.sid,
       statusText,
-      technicianCount
+      technicianCount,
+      technician: technicianName
     });
     updateControlWorkOrder(trackingNumber, {
       state: action === "checkin" ? "checkin_calling" : "checkout_calling",
