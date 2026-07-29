@@ -38,6 +38,20 @@ const serviceChannelEmailWebhookSecret =
   process.env.SERVICECHANNEL_EMAIL_WEBHOOK_SECRET || "";
 
 const recentServiceChannelEmailNotifications = new Map();
+const serviceChannelCheckInTimes = new Map();
+
+function formatElapsedTime(milliseconds) {
+  const totalMinutes = Math.max(0, Math.round(Number(milliseconds || 0) / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days} day${days === 1 ? "" : "s"}`);
+  if (hours) parts.push(`${hours} hr${hours === 1 ? "" : "s"}`);
+  if (minutes || parts.length === 0) parts.push(`${minutes} min`);
+  return parts.join(" ");
+}
+
 const SERVICECHANNEL_EMAIL_DEDUPE_MS = 24 * 60 * 60 * 1000;
 
 function isAddToJobSheetsCommand(body = "") {
@@ -307,12 +321,12 @@ function parseServiceChannelSms(body = "") {
   const text = String(body).trim().replace(/\s+/g, " ");
   if (/^(help|commands|menu)$/i.test(text)) return { type: "help" };
 
-  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
+  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci|in)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
   if (checkIn) {
     return { type: "checkin", trackingNumber: checkIn[1] };
   }
 
-  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
+  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co|out)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
   if (checkOut) {
     const statusText = checkOut[2].toLowerCase().trim();
     const status = SERVICECHANNEL_STATUS_MAP[statusText];
@@ -925,6 +939,13 @@ Joshua added this job to Job Sheets.`;
     return reply.type("text/xml").send(response.toString());
   }
 
+  if (command.type === "unknown" && /^(?:joshua\s+)?(?:out|check\s*out|checkout|co)\b/i.test(body)) {
+    response.message(
+      "Checkout needs the status and technician count. Example: Out 357659285 complete 1 tech"
+    );
+    return reply.type("text/xml").send(response.toString());
+  }
+
   if (command.type === "unknown") {
     // Native Group MMS is not generally available for new Twilio activations.
     // Relay ordinary team texts to the other authorized team members instead.
@@ -966,7 +987,7 @@ Joshua added this job to Job Sheets.`;
       to: ivrNumber,
       from: voiceFrom,
       twiml: callTwiml,
-      statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}`,
+      statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}&statusText=${encodeURIComponent(command.statusText || "")}&technicianCount=${encodeURIComponent(command.technicianCount || "")}`,
       statusCallbackMethod: "POST",
       statusCallbackEvent: ["completed"]
     });
@@ -1048,22 +1069,106 @@ app.post("/servicechannel-call-status", async (request, reply) => {
   const requestedBy = normalizePhone(request.query?.requestedBy);
   const action = String(request.query?.action || "IVR");
   const tracking = String(request.query?.tracking || "");
+  const statusText = String(request.query?.statusText || "").trim();
+  const technicianCount = String(request.query?.technicianCount || "").trim();
   const callStatus = String(request.body?.CallStatus || "unknown").toLowerCase();
   const duration = String(request.body?.CallDuration || "");
+  const callSid = String(request.body?.CallSid || "");
+  const requesterName = teamMemberName(requestedBy);
+  const actionLabel = action === "checkin" ? "CHECK-IN" : "CHECK-OUT";
+  const timeZone = process.env.BUSINESS_TIME_ZONE || "America/Chicago";
+  const completedDate = new Date();
+  const completedAt = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(completedDate);
+  const checkInKey = String(tracking).trim();
+  const recordedCheckIn = serviceChannelCheckInTimes.get(checkInKey);
+  const onsiteMilliseconds =
+    action === "checkout" && recordedCheckIn
+      ? completedDate.getTime() - recordedCheckIn.getTime()
+      : null;
+  const onsiteDuration =
+    onsiteMilliseconds !== null ? formatElapsedTime(onsiteMilliseconds) : "";
+  const checkInAt =
+    recordedCheckIn
+      ? new Intl.DateTimeFormat("en-US", {
+          timeZone,
+          dateStyle: "medium",
+          timeStyle: "short"
+        }).format(recordedCheckIn)
+      : "";
+  const totalLaborDuration =
+    onsiteMilliseconds !== null && Number(technicianCount) > 1
+      ? formatElapsedTime(onsiteMilliseconds * Number(technicianCount))
+      : "";
 
   app.log.info(
-    { requestedBy, action, tracking, callStatus, duration, callSid: request.body?.CallSid },
+    {
+      requestedBy,
+      requesterName,
+      action,
+      tracking,
+      statusText,
+      technicianCount,
+      callStatus,
+      duration,
+      onsiteDuration,
+      totalLaborDuration,
+      callSid
+    },
     "ServiceChannel IVR call ended"
   );
 
-  if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {
-    const actionLabel = action === "checkin" ? "check-in" : "check-out";
-    const detail = callStatus === "completed"
-      ? action === "checkin"
-        ? `✅ CHECK-IN COMPLETE\n\nJoshua completed the O'Reilly check-in for tracking #${tracking}${duration ? ` in ${duration} seconds` : ""}. The technician should now show IN PROGRESS / ON SITE in ServiceChannel.`
-        : `✅ CHECK-OUT COMPLETE\n\nJoshua completed the O'Reilly check-out for tracking #${tracking}${duration ? ` in ${duration} seconds` : ""}. The selected status and technician count were submitted to ServiceChannel.`
-      : `⚠️ O'Reilly ${actionLabel} for tracking #${tracking} did not complete. Twilio call status: ${callStatus}.`;
+  let detail;
 
+  if (callStatus === "completed") {
+    if (action === "checkin") {
+      serviceChannelCheckInTimes.set(checkInKey, completedDate);
+    }
+
+    const lines = [
+      `✅ JOSHUA ${actionLabel} COMPLETED`,
+      "",
+      `Tracking #: ${tracking}`,
+      `Requested by: ${requesterName}`,
+      `Completed: ${completedAt}`
+    ];
+
+    if (action === "checkout") {
+      lines.push(
+        statusText ? `Status: ${statusText}` : "",
+        technicianCount
+          ? `Technician${Number(technicianCount) === 1 ? "" : "s"} onsite: ${technicianCount}`
+          : "",
+        checkInAt ? `Check-in time: ${checkInAt}` : "",
+        onsiteDuration
+          ? `Onsite duration: ${onsiteDuration}${Number(technicianCount) > 1 ? " per technician" : ""}`
+          : "Onsite duration: unavailable — no matching Joshua check-in time was found",
+        totalLaborDuration ? `Total labor time: ${totalLaborDuration}` : ""
+      );
+      serviceChannelCheckInTimes.delete(checkInKey);
+    }
+
+    lines.push("", `Result: ServiceChannel ${action === "checkin" ? "check-in" : "check-out"} call completed.`);
+
+    detail = lines.filter(line => line !== "").join("\n");
+  } else {
+    detail = [
+      `⚠️ JOSHUA ${actionLabel} NOT COMPLETED`,
+      "",
+      `Tracking #: ${tracking}`,
+      `Requested by: ${requesterName}`,
+      `Time: ${completedAt}`,
+      `Twilio status: ${callStatus}`,
+      callSid ? `Call SID: ${callSid}` : "",
+      "",
+      `The ${action === "checkin" ? "check-in" : "check-out"} was not confirmed. Retry the command or check the Twilio voice log.`
+    ].filter(line => line !== "").join("\n");
+  }
+
+  if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {
     try {
       await twilioClient.messages.create({
         from: process.env.TWILIO_SMS_FROM,
@@ -1075,7 +1180,9 @@ app.post("/servicechannel-call-status", async (request, reply) => {
     }
   }
 
-  return reply.type("text/xml").send("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>");
+  return reply
+    .type("text/xml")
+    .send("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>");
 });
 
 app.all("/voice", async (request, reply) => {
