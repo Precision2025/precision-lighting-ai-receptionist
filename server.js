@@ -843,7 +843,16 @@ async function finalizeConfirmedServiceChannelIvr({ action, tracking, statusText
     await syncServiceChannelJobSheets(checkInKey, { status: "onsite", check_in_at: completedDate.toISOString(), technician: techName, ivr_confirmed: true });
   } else {
     const normalizedStatus = normalizeServiceChannelStatus(statusText) || "";
-    const nextState = normalizedStatus === "1" || /complete/i.test(statusText) ? "completed" : /quote/i.test(statusText) ? "waiting_for_quote" : /parts/i.test(statusText) ? "parts_needed" : /return/i.test(statusText) ? "return_trip_needed" : "completed";
+    const nextState =
+      normalizedStatus === "1" || /^complete$/i.test(String(statusText || "").trim())
+        ? "ready_to_bill"
+        : /quote|authorization/i.test(statusText)
+          ? "pending_proposal"
+          : /parts/i.test(statusText)
+            ? "parts_needed"
+            : /return/i.test(statusText)
+              ? "need_to_schedule"
+              : "ready_to_bill";
     updateControlWorkOrder(checkInKey, {
       state: nextState,
       joshuaStatus: nextState,
@@ -864,10 +873,68 @@ async function finalizeConfirmedServiceChannelIvr({ action, tracking, statusText
     });
     if (techName) updateTechnician(techName, { status: "available", currentTrackingNumber: "" });
     serviceChannelCheckInTimes.delete(checkInKey);
-    if (/quote/i.test(statusText)) addControlTask({ title: "Prepare or follow up on proposal", trackingNumber: checkInKey, assignedTo: "Travis", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
-    else if (/parts/i.test(statusText)) addControlTask({ title: "Order parts and schedule return", trackingNumber: checkInKey, assignedTo: "Ariana", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
-    else if (/return/i.test(statusText)) addControlTask({ title: "Schedule return trip", trackingNumber: checkInKey, assignedTo: "Ariana", priority: "urgent", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
-    else addControlTask({ title: "Review job for billing", trackingNumber: checkInKey, assignedTo: "Shellie", priority: "normal", notes: `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.` });
+
+    // A checkout status owns the next-step workflow. Close stale tasks that belong
+    // to a different checkout outcome before creating the correct task.
+    const taskData = readControlData();
+    const conflictingCheckoutTask = /(complete job documentation|review job for billing|prepare invoice|prepare or follow up on proposal|prepare and submit quote|order parts|schedule return trip)/i;
+    taskData.tasks = taskData.tasks.map(task =>
+      String(task.trackingNumber || "") === checkInKey &&
+      task.status !== "closed" &&
+      conflictingCheckoutTask.test(String(task.title || ""))
+        ? {
+            ...task,
+            status: "closed",
+            completedAt: completedDate.toISOString(),
+            updatedAt: completedDate.toISOString(),
+            closedReason: `Replaced by confirmed checkout status: ${statusText}`
+          }
+        : task
+    );
+    writeControlData(taskData);
+
+    const confirmationNote = `ServiceChannel checkout confirmed${confirmationNumber ? ` · Confirmation ${confirmationNumber}` : ""}.`;
+    if (/quote|authorization/i.test(statusText)) {
+      addControlTask({
+        title: "Prepare and submit quote",
+        trackingNumber: checkInKey,
+        assignedTo: "Travis",
+        priority: "urgent",
+        workflowType: "proposal",
+        actionLabel: "Mark Quote Submitted",
+        notes: confirmationNote
+      });
+    } else if (/parts/i.test(statusText)) {
+      addControlTask({
+        title: "Order parts and schedule return",
+        trackingNumber: checkInKey,
+        assignedTo: "Ariana",
+        priority: "urgent",
+        workflowType: "parts",
+        actionLabel: "Mark Parts Ordered",
+        notes: confirmationNote
+      });
+    } else if (/return/i.test(statusText)) {
+      addControlTask({
+        title: "Schedule return trip",
+        trackingNumber: checkInKey,
+        assignedTo: "Ariana",
+        priority: "urgent",
+        workflowType: "return_trip",
+        actionLabel: "Mark Return Scheduled",
+        notes: confirmationNote
+      });
+    } else {
+      addControlTask({
+        title: "Review job for billing",
+        trackingNumber: checkInKey,
+        assignedTo: "Shellie",
+        priority: "normal",
+        workflowType: "billing",
+        actionLabel: "Mark Ready to Bill",
+        notes: confirmationNote
+      });
+    }
     addControlEvent({ type: "checkout_confirmed", level: "success", trackingNumber: checkInKey, requestedBy, technician: techName, callSid, confirmationNumber, transcript, onsiteDuration, completedAt: completedDate.toISOString() });
     await syncServiceChannelJobSheets(checkInKey, { status: nextState, check_out_at: completedDate.toISOString(), technician: techName, technician_count: technicianCount, onsite_duration: onsiteDuration, confirmation_number: confirmationNumber, ivr_confirmed: true });
   }
@@ -2587,6 +2654,75 @@ app.get("/ws", { websocket: true }, (socket, request) => {
   });
 });
 
+function reconcileCheckoutWorkflowTasks() {
+  const data = readControlData();
+  const now = new Date().toISOString();
+  let changed = false;
+
+  for (const item of Object.values(data.workOrders || {})) {
+    const tracking = String(item.trackingNumber || "").trim();
+    const statusText = String(item.statusText || "").trim();
+    if (!tracking || !/quote|authorization/i.test(statusText)) continue;
+
+    // Keep the work order in the proposal queue.
+    if (item.joshuaStatus !== "pending_proposal" || item.state !== "pending_proposal") {
+      data.workOrders[tracking] = {
+        ...item,
+        state: "pending_proposal",
+        joshuaStatus: "pending_proposal",
+        updatedAt: now
+      };
+      changed = true;
+    }
+
+    // Remove billing/documentation tasks created by the former incorrect mapping.
+    data.tasks = (data.tasks || []).map(task => {
+      if (
+        String(task.trackingNumber || "") === tracking &&
+        task.status !== "closed" &&
+        /(complete job documentation|review job for billing|prepare invoice)/i.test(String(task.title || ""))
+      ) {
+        changed = true;
+        return {
+          ...task,
+          status: "closed",
+          completedAt: now,
+          updatedAt: now,
+          closedReason: "Corrected to Waiting for Quote workflow"
+        };
+      }
+      return task;
+    });
+
+    const hasQuoteTask = (data.tasks || []).some(task =>
+      String(task.trackingNumber || "") === tracking &&
+      task.status !== "closed" &&
+      /prepare and submit quote/i.test(String(task.title || ""))
+    );
+
+    if (!hasQuoteTask) {
+      data.tasks.unshift({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: now,
+        status: "open",
+        priority: "urgent",
+        title: "Prepare and submit quote",
+        trackingNumber: tracking,
+        assignedTo: "Travis",
+        workflowType: "proposal",
+        actionLabel: "Mark Quote Submitted",
+        notes: "Corrected from the previous checkout task mapping."
+      });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeControlData(data);
+    app.log.info("Reconciled Waiting for Quote work orders and tasks");
+  }
+}
+
 async function runJoshuaAutomationSweep() {
   const data = readControlData();
   const settings = data.settings || {};
@@ -2632,6 +2768,8 @@ async function runJoshuaAutomationSweep() {
     }
   }
 }
+reconcileCheckoutWorkflowTasks();
+
 setInterval(() => {
   runJoshuaAutomationSweep().catch(error => app.log.error(error, "Joshua automation sweep failed"));
 }, 5 * 60 * 1000);
