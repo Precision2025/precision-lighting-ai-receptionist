@@ -4,25 +4,26 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Joshua Control Panel</title>
 <style>
-:root{font-family:Inter,system-ui,Arial,sans-serif;color:#f7f8fa;background:#091018}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#081018,#111b27);min-height:100vh}
-header{padding:22px 4%;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #263447;position:sticky;top:0;background:#091018ee;backdrop-filter:blur(12px);z-index:10}
-h1{margin:0;font-size:25px}.muted{color:#9eb0c7}.live{color:#61e3a5;font-weight:900}
-main{padding:22px 4%;max-width:1600px;margin:auto}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
-.card{background:#141e2b;border:1px solid #2a394d;border-radius:16px;padding:17px;box-shadow:0 12px 35px #0004}.stat strong{display:block;font-size:28px;margin-top:6px}
-.tabs{display:flex;gap:8px;overflow:auto;margin:16px 0}.tab{width:auto;white-space:nowrap;background:#1d2a3a;color:#dce7f3;padding:10px 14px}.tab.active{background:#eab308;color:#111827}
-.panel{display:none}.panel.active{display:block}.two{grid-template-columns:1fr 1.5fr}.three{grid-template-columns:repeat(3,1fr)}
-h2{font-size:17px;margin:0 0 13px}label{font-size:12px;color:#aebed1;display:block;margin-bottom:5px}
-input,select,textarea,button{width:100%;padding:11px;border-radius:9px;border:1px solid #34465e;background:#0e1722;color:#fff}
-textarea{min-height:88px;resize:vertical}button{background:#eab308;color:#111827;font-weight:900;border:0;cursor:pointer}.secondary{background:#26374c;color:#fff}.danger{background:#743b32;color:#fff}
+:root{font-family:Inter,system-ui,Arial,sans-serif;color:#f7f8fa;background:#071019}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#071019,#101b28);min-height:100vh}
+header{position:sticky;top:0;z-index:20;padding:18px 4%;display:flex;justify-content:space-between;gap:18px;align-items:center;background:#08111be8;backdrop-filter:blur(14px);border-bottom:1px solid #26374b}
+h1{margin:0;font-size:24px}.muted{color:#9fb0c7}.live{color:#62e3a6;font-weight:900}.dangerText{color:#ff9f8f}.warnText{color:#f7cb63}
+main{padding:18px 4%;max-width:1700px;margin:auto}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:#131e2b;border:1px solid #2a3b50;border-radius:16px;padding:16px;box-shadow:0 12px 35px #0004}.stat strong{display:block;font-size:27px;margin-top:6px}
+.tabs{display:flex;gap:8px;overflow-x:auto;padding:4px 0 8px;position:sticky;top:82px;background:#0b1520f2;z-index:15}.tab{width:auto;white-space:nowrap;background:#1c2a3a;color:#dce7f3;padding:10px 14px}.tab.active{background:#eab308;color:#111827}
+.panel{display:none}.panel.active{display:block}.two{grid-template-columns:1fr 1.5fr}.three{grid-template-columns:repeat(3,1fr)}.four{grid-template-columns:repeat(4,1fr)}
+h2{font-size:17px;margin:0 0 13px}h3{font-size:15px;margin:0 0 10px}
+label{font-size:12px;color:#aebed1;display:block;margin-bottom:5px}input,select,textarea,button{width:100%;padding:11px;border-radius:9px;border:1px solid #34465e;background:#0e1722;color:#fff}
+textarea{min-height:86px;resize:vertical}button{background:#eab308;color:#111827;font-weight:900;border:0;cursor:pointer}.secondary{background:#27384e;color:#fff}.danger{background:#763d34;color:#fff}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.formgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #28384c;vertical-align:top}th{color:#9db0c8;position:sticky;top:0;background:#141e2b}
-.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#26374c}.onsite{background:#185a41}.attention{background:#753d32}.completed{background:#274867}
-.event,.task{padding:11px 0;border-bottom:1px solid #28384c}.event:last-child,.task:last-child{border:0}.small{font-size:12px}
-.scroll{overflow:auto;max-height:520px}.alert{border-color:#79483e}.success{border-color:#28614d}
-.actions{display:flex;gap:7px}.actions button{width:auto;padding:8px 10px}.search{margin-bottom:10px}
-dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff;width:min(720px,94vw);padding:18px}dialog::backdrop{background:#000a}
-@media(max-width:900px){.two,.three,.formgrid{grid-template-columns:1fr}table{min-width:950px}header{align-items:flex-start}.subtitle{max-width:250px}}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #28394d;vertical-align:top}th{color:#9db0c8;position:sticky;top:0;background:#131e2b}
+.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#26374c}.onsite{background:#185a41}.attention{background:#753d32}.completed,.paid{background:#274867}.scheduled{background:#5b4d1b}.available{background:#185a41}.assigned{background:#5b4d1b}
+.event,.task,.insight{padding:11px 0;border-bottom:1px solid #28384c}.event:last-child,.task:last-child,.insight:last-child{border:0}.small{font-size:12px}.scroll{overflow:auto;max-height:560px}
+.alert{border-color:#7c493f}.success{border-color:#28614d}.warning{border-color:#7a662d}.actions{display:flex;gap:7px;flex-wrap:wrap}.actions button{width:auto;padding:8px 10px}.search{margin-bottom:10px}
+.dispatch-card{display:grid;gap:8px}.dispatch-card .top{display:flex;justify-content:space-between;gap:10px}.dispatch-card strong{font-size:16px}.metric{font-size:23px;font-weight:900}.profitPositive{color:#62e3a6}.profitNegative{color:#ff9f8f}
+.tech-card{display:grid;gap:8px}.tech-row{display:flex;justify-content:space-between;gap:10px}.progress{height:8px;background:#0b141f;border-radius:99px;overflow:hidden}.progress>span{display:block;height:100%;background:#eab308}
+dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff;width:min(760px,94vw);padding:18px}dialog::backdrop{background:#000a}
+@media(max-width:1000px){.two,.three,.four,.formgrid{grid-template-columns:1fr}table{min-width:1000px}.tabs{top:75px}header{align-items:flex-start}.subtitle{max-width:240px}}
 </style>
 </head>
 <body>
@@ -31,36 +32,63 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div class="grid stats">
  <div class="card stat"><span class="muted">Joshua</span><strong id="joshua">—</strong></div>
  <div class="card stat"><span class="muted">Currently onsite</span><strong id="active">0</strong></div>
- <div class="card stat"><span class="muted">Today's check-ins</span><strong id="ins">0</strong></div>
- <div class="card stat"><span class="muted">Today's check-outs</span><strong id="outs">0</strong></div>
+ <div class="card stat"><span class="muted">Revenue today</span><strong id="revenueToday">$0</strong></div>
+ <div class="card stat"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>
  <div class="card stat"><span class="muted">Needs attention</span><strong id="fails">0</strong></div>
  <div class="card stat"><span class="muted">Open tasks</span><strong id="taskCount">0</strong></div>
 </div>
+
 <div class="tabs">
- <button class="tab active" data-tab="operations">Operations</button>
+ <button class="tab active" data-tab="executive">Executive</button>
+ <button class="tab" data-tab="dispatch">Dispatch</button>
+ <button class="tab" data-tab="technicians">Technicians</button>
  <button class="tab" data-tab="workorders">Work Orders</button>
+ <button class="tab" data-tab="billing">Profit & Billing</button>
  <button class="tab" data-tab="tasks">Tasks</button>
- <button class="tab" data-tab="billing">Billing</button>
  <button class="tab" data-tab="activity">Activity</button>
  <button class="tab" data-tab="settings">Settings</button>
 </div>
 
-<section id="operations" class="panel active">
+<section id="executive" class="panel active">
 <div class="grid two">
+ <div class="card success"><h2>Joshua Intelligence</h2><div id="insights"></div></div>
+ <div class="card alert"><h2>Exception Dashboard</h2><div id="attention" class="scroll muted">No current problems.</div></div>
+</div>
+<div class="grid four" style="margin-top:14px">
+ <div class="card"><span class="muted">Completed today</span><div id="completedToday" class="metric">0</div></div>
+ <div class="card"><span class="muted">Open work orders</span><div id="openOrders" class="metric">0</div></div>
+ <div class="card"><span class="muted">Available technicians</span><div id="availableTechs" class="metric">0</div></div>
+ <div class="card"><span class="muted">Today's check-outs</span><div id="outs" class="metric">0</div></div>
+</div>
+<div class="card" style="margin-top:14px"><h2>Currently Onsite</h2><div id="onsiteCards" class="grid three"></div></div>
+</section>
+
+<section id="dispatch" class="panel">
+<div class="grid two">
+ <div class="card"><h2>Dispatch Board</h2><div id="dispatchBoard" class="grid two"></div></div>
  <div class="card"><h2>Manual ServiceChannel Control</h2><form id="ivrForm">
   <div class="row"><div><label>Action</label><select id="action"><option value="checkin">Check in</option><option value="checkout">Check out</option></select></div><div><label>Tracking number</label><input id="tracking" inputmode="numeric" required></div></div>
   <div id="checkoutFields" style="display:none"><div class="row"><div><label>Status</label><select id="status"><option>complete</option><option>waiting for quote</option><option>parts needed</option><option>return trip needed</option></select></div><div><label>Technicians onsite</label><input id="techs" type="number" min="1" value="1"></div></div></div>
   <button type="submit">Start IVR Call</button><div id="message"></div>
  </form></div>
- <div class="card alert"><h2>Needs Attention</h2><div id="attention" class="scroll muted">No current problems.</div></div>
 </div>
-<div class="card" style="margin-top:14px"><h2>Currently Onsite</h2><div id="onsiteCards" class="grid three"></div></div>
+</section>
+
+<section id="technicians" class="panel">
+<div class="grid two">
+ <div class="card"><div class="row"><h2>Technician Command Center</h2><button id="newTech" class="secondary">Add Technician</button></div><div id="techCards" class="grid two"></div></div>
+ <div class="card"><h2>Dispatch Recommendation</h2><label>Tracking number</label><input id="recommendTracking"><button id="recommendBtn" style="margin-top:10px">Recommend Technician</button><div id="recommendations" style="margin-top:12px"></div></div>
+</div>
 </section>
 
 <section id="workorders" class="panel">
 <div class="card"><div class="row"><h2>Work Orders</h2><button id="newOrder" class="secondary">Add / Update Work Order</button></div>
 <input id="orderSearch" class="search" placeholder="Search tracking number, customer, address, technician…">
-<div class="scroll"><table><thead><tr><th>Tracking / WO</th><th>Customer / Location</th><th>Status</th><th>Technician</th><th>NTE</th><th>Estimated</th><th>Remaining</th><th>Onsite</th><th>Actions</th></tr></thead><tbody id="orders"></tbody></table></div></div>
+<div class="scroll"><table><thead><tr><th>Tracking / WO</th><th>Customer / Location</th><th>Status</th><th>Priority</th><th>Technician</th><th>NTE %</th><th>Onsite</th><th>Actions</th></tr></thead><tbody id="orders"></tbody></table></div></div>
+</section>
+
+<section id="billing" class="panel">
+<div class="card"><h2>Profit & Invoice Pipeline</h2><div class="scroll"><table><thead><tr><th>Tracking</th><th>Customer</th><th>Invoice</th><th>Estimated Cost</th><th>Gross Profit</th><th>Margin</th><th>NTE</th><th>Invoice Status</th><th>Payment</th></tr></thead><tbody id="billingRows"></tbody></table></div></div>
 </section>
 
 <section id="tasks" class="panel">
@@ -72,69 +100,107 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div class="card"><h2>Open Tasks</h2><div id="taskList" class="scroll"></div></div></div>
 </section>
 
-<section id="billing" class="panel"><div class="card"><h2>Invoice Pipeline</h2><div class="scroll"><table><thead><tr><th>Tracking</th><th>Customer</th><th>Job Status</th><th>Photos</th><th>Completion Notes</th><th>Proposal</th><th>Invoice Status</th><th>NTE</th><th>Estimate</th></tr></thead><tbody id="billingRows"></tbody></table></div></div></section>
 <section id="activity" class="panel"><div class="card"><h2>Recent Activity</h2><div id="events" class="scroll"></div></div></section>
+
 <section id="settings" class="panel"><div class="card"><h2>Automation Settings</h2><form id="settingsForm">
-<div class="row"><div><label>Flag onsite jobs after (minutes)</label><input id="maxOnsite" type="number" min="15"></div><div><label>Reminder interval (minutes)</label><input id="reminderMinutes" type="number" min="15"></div></div>
-<div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div><button>Save Settings</button></form><p class="muted small">Joshua checks active jobs every five minutes and only sends reminders when a technician phone number is stored.</p></div></section>
+<div class="formgrid">
+<div><label>Flag onsite jobs after (minutes)</label><input id="maxOnsite" type="number" min="15"></div>
+<div><label>Reminder interval (minutes)</label><input id="reminderMinutes" type="number" min="15"></div>
+<div><label>NTE warning level (%)</label><input id="nteWarningPercent" type="number" min="50" max="100"></div>
+<div><label>Weekly overtime threshold (hours)</label><input id="overtimeHours" type="number" min="1"></div>
+</div>
+<div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div>
+<button>Save Settings</button></form></div></section>
 </main>
 
 <dialog id="orderDialog"><h2>Add or Update Work Order</h2><form id="orderForm">
 <div class="formgrid">
 <div><label>Tracking number</label><input id="oTracking" required></div><div><label>Work order number</label><input id="oWorkOrder"></div>
 <div><label>Customer</label><input id="oCustomer"></div><div><label>Location</label><input id="oLocation"></div>
-<div><label>Address</label><input id="oAddress"></div><div><label>Technician</label><input id="oTechnician"></div>
+<div><label>Address</label><input id="oAddress"></div><div><label>Trade</label><input id="oTrade" placeholder="Lighting, electrical, signs…"></div>
+<div><label>Priority</label><select id="oPriority"><option>normal</option><option>urgent</option><option>emergency</option></select></div><div><label>Technician</label><input id="oTechnician"></div>
 <div><label>Technician phone</label><input id="oTechnicianPhone" inputmode="tel"></div><div><label>Customer phone</label><input id="oCustomerPhone" inputmode="tel"></div>
 <div><label>NTE ($)</label><input id="oNte" type="number" step=".01"></div><div><label>Estimated total ($)</label><input id="oEstimated" type="number" step=".01"></div>
-<div><label>State</label><select id="oState"><option value="new">New</option><option value="scheduled">Scheduled</option><option value="onsite">Onsite</option><option value="attention">Needs attention</option><option value="completed">Completed</option><option value="ready_to_invoice">Ready to invoice</option></select></div><div><label>Scheduled</label><input id="oScheduled" type="datetime-local"></div>
+<div><label>Labor hours</label><input id="oLaborHours" type="number" step=".01"></div><div><label>Billable labor rate</label><input id="oLaborRate" type="number" step=".01"></div>
+<div><label>Labor cost rate</label><input id="oLaborCostRate" type="number" step=".01"></div><div><label>Material cost</label><input id="oMaterialCost" type="number" step=".01"></div>
+<div><label>Material markup %</label><input id="oMarkup" type="number" step=".01"></div><div><label>Miscellaneous cost</label><input id="oMisc" type="number" step=".01"></div>
+<div><label>Invoice amount</label><input id="oInvoiceAmount" type="number" step=".01"></div><div><label>Payment status</label><select id="oPaymentStatus"><option value="">Unpaid</option><option value="pending">Pending</option><option value="paid">Paid</option></select></div>
+<div><label>State</label><select id="oState"><option value="new">New</option><option value="scheduled">Scheduled</option><option value="onsite">Onsite</option><option value="attention">Needs attention</option><option value="completed">Completed</option><option value="ready_to_invoice">Ready to invoice</option><option value="paid">Paid</option></select></div><div><label>Scheduled</label><input id="oScheduled" type="datetime-local"></div>
 </div>
 <div class="formgrid">
 <div><label><input id="oPhotos" type="checkbox" style="width:auto"> Photos complete</label></div>
 <div><label><input id="oCompletionNotes" type="checkbox" style="width:auto"> Completion notes complete</label></div>
 <div><label>Proposal status</label><select id="oProposalStatus"><option value="">Not required</option><option value="required">Required</option><option value="submitted">Submitted</option><option value="approved">Approved</option></select></div>
 <div><label>Invoice status</label><select id="oInvoiceStatus"><option value="">Not started</option><option value="documentation_missing">Documentation missing</option><option value="ready_for_review">Ready for review</option><option value="submitted">Submitted</option><option value="paid">Paid</option></select></div>
-</div><label>Problem description</label><textarea id="oProblem"></textarea><label>Completion notes</label><textarea id="oCompletionText"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
+</div>
+<label>Problem description</label><textarea id="oProblem"></textarea><label>Completion notes</label><textarea id="oCompletionText"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
 <div class="row"><button>Save Work Order</button><button type="button" id="closeOrder" class="secondary">Cancel</button></div></form></dialog>
+
+<dialog id="techDialog"><h2>Add or Update Technician</h2><form id="techForm">
+<div class="formgrid">
+<div><label>Name</label><input id="tName" required></div><div><label>Phone</label><input id="tPhone" inputmode="tel"></div>
+<div><label>Status</label><select id="tStatus"><option value="available">Available</option><option value="assigned">Assigned</option><option value="onsite">Onsite</option><option value="off">Off</option></select></div>
+<div><label>Current tracking number</label><input id="tCurrent"></div>
+<div><label>Hours today</label><input id="tHoursToday" type="number" step=".01"></div><div><label>Hours this week</label><input id="tHoursWeek" type="number" step=".01"></div>
+<div><label>Skills (comma separated)</label><input id="tSkills"></div><div><label>Next job tracking</label><input id="tNext"></div>
+</div><div class="row"><button>Save Technician</button><button type="button" id="closeTech" class="secondary">Cancel</button></div></form></dialog>
 
 <script>
 const key=new URLSearchParams(location.search).get("key")||localStorage.getItem("joshuaKey")||"";
 if(key)localStorage.setItem("joshuaKey",key);
 const headers={"Content-Type":"application/json","X-Control-Panel-Key":key};
-let cache={workOrders:[],openTasks:[]};
+let cache={workOrders:[],openTasks:[],technicians:[],settings:{},metrics:{},insights:[]};
 const money=v=>v===null||v===undefined||v===""?"—":new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(v));
 const fmt=v=>v?new Date(v).toLocaleString():"—";
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.getElementById(b.dataset.tab).classList.add("active")});
 async function api(url,opts={}){const r=await fetch(url,{...opts,headers});const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d}
+
 async function refresh(){
  try{
   const d=await api("/api/control/status");cache=d;
-  live.textContent="● LIVE";joshua.textContent=d.online?"ONLINE":"OFFLINE";active.textContent=d.activeCount;ins.textContent=d.todayCheckIns;outs.textContent=d.todayCheckOuts;
-  const attentionItems=[...d.failures,...d.attentionWorkOrders];fails.textContent=attentionItems.length;taskCount.textContent=d.openTasks.length;
-  attention.innerHTML=attentionItems.length?attentionItems.map(x=>`<div class="event"><strong>⚠ ${esc(x.type||x.state||"Work order needs attention")}</strong><span class="small">${esc(x.trackingNumber||"")} · ${esc(x.lastError||x.error||x.callStatus||x.liveOnsiteDuration||"Review required")}</span></div>`).join(""):"<span class='live'>No current problems.</span>";
-  onsiteCards.innerHTML=d.active.length?d.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><h2 style="margin-top:12px">${esc(x.liveOnsiteDuration)}</h2><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>";
-  renderOrders();renderTasks();renderBilling();
-  events.innerHTML=d.recentEvents.slice(0,60).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>";
-  maxOnsite.value=d.settings.maxOnsiteMinutes;reminderMinutes.value=d.settings.reminderMinutes;autoReminders.checked=d.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=d.settings.autoInvoiceQueue!==false;
+  live.textContent="● LIVE";joshua.textContent=d.online?"ONLINE":"OFFLINE";
+  active.textContent=d.activeCount;fails.textContent=d.failures.length+d.attentionWorkOrders.length;taskCount.textContent=d.openTasks.length;
+  revenueToday.textContent=money(d.metrics.revenueToday);invoiceBacklog.textContent=money(d.metrics.invoiceBacklog);
+  completedToday.textContent=d.metrics.completedToday;openOrders.textContent=d.metrics.openWorkOrders;availableTechs.textContent=d.metrics.availableTechnicians;outs.textContent=d.todayCheckOuts;
+  renderInsights();renderAttention();renderOnsite();renderDispatch();renderTechnicians();renderOrders();renderBilling();renderTasks();renderActivity();fillSettings();
  }catch(e){live.textContent="● OFFLINE / UNAUTHORIZED";live.style.color="#ff8b7d"}
+}
+function renderInsights(){insights.innerHTML=cache.insights.map(x=>`<div class="insight"><strong>${x.severity==="warning"?"⚠":x.severity==="success"?"✓":"ℹ"} ${esc(x.title)}</strong><div class="small muted">${esc(x.detail)}</div></div>`).join("")}
+function renderAttention(){const arr=[...cache.failures,...cache.attentionWorkOrders];attention.innerHTML=arr.length?arr.map(x=>`<div class="event"><strong>⚠ ${esc(x.type||x.state||"Work order needs attention")}</strong><div class="small">${esc(x.trackingNumber||"")} ${esc(x.lastError||x.error||x.callStatus||x.liveOnsiteDuration||"Review required")}</div></div>`).join(""):"<span class='live'>No current problems.</span>"}
+function renderOnsite(){onsiteCards.innerHTML=cache.active.length?cache.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><div class="metric" style="margin-top:10px">${esc(x.liveOnsiteDuration)}</div><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>"}
+function renderDispatch(){
+ const jobs=cache.workOrders.filter(x=>!["completed","paid"].includes(x.state));
+ dispatchBoard.innerHTML=jobs.length?jobs.map(x=>`<div class="card dispatch-card ${x.needsAttention?"alert":""}"><div class="top"><strong>#${esc(x.trackingNumber)}</strong><span class="badge ${esc(x.state)}">${esc((x.state||"new").replaceAll("_"," "))}</span></div><div>${esc(x.customer||"—")}</div><div class="small muted">${esc(x.address||x.locationName||"")}</div><div class="small">Priority: ${esc(x.priority||"normal")} · Tech: ${esc(x.technician||"Unassigned")}</div><div class="actions"><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button><button onclick="quickAssign('${esc(x.trackingNumber)}')">Assign</button></div></div>`).join(""):"<div class='muted'>No open work orders.</div>";
+}
+function renderTechnicians(){
+ techCards.innerHTML=cache.technicians.length?cache.technicians.map(t=>`<div class="card tech-card"><div class="tech-row"><strong>${esc(t.name)}</strong><span class="badge ${esc(t.status)}">${esc(t.status)}</span></div><div class="small muted">Current: ${esc(t.currentTrackingNumber||"None")}</div><div class="small">Today: ${Number(t.hoursToday||0).toFixed(1)} hrs · Week: ${Number(t.hoursWeek||0).toFixed(1)} hrs</div><div class="progress"><span style="width:${Math.min(100,(Number(t.hoursWeek||0)/Number(cache.settings.overtimeHours||40))*100)}%"></span></div><div class="small muted">Skills: ${esc((t.skills||[]).join(", ")||"Not listed")}</div><button class="secondary" onclick="editTech('${esc(t.name)}')">Edit Technician</button></div>`).join(""):"<div class='muted'>No technicians have been added yet.</div>";
 }
 function renderOrders(){
  const q=orderSearch.value.toLowerCase();
  const rows=cache.workOrders.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
- orders.innerHTML=rows.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong><br><span class="small muted">${esc(x.workOrderNumber||"")}</span></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.technician||"—")}</td><td>${money(x.nte)}</td><td>${money(x.estimatedTotal)}</td><td>${money(x.remainingNte)}</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><div class="actions"><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button></div></td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No matching work orders.</td></tr>";
+ orders.innerHTML=rows.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong><br><span class="small muted">${esc(x.workOrderNumber||"")}</span></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td>${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
 }
-function renderTasks(){
- taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${esc(x.priority==="urgent"?"🚨 ":"")}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>";
+function renderBilling(){
+ billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${money(x.invoiceAmount)}</td><td>${money(x.estimatedCost)}</td><td class="${Number(x.grossProfit||0)>=0?"profitPositive":"profitNegative"}">${money(x.grossProfit)}</td><td>${Number(x.grossMargin||0).toFixed(1)}%</td><td>${money(x.nte)}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${esc(x.paymentStatus||"unpaid")}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the profit pipeline.</td></tr>";
 }
-function renderBilling(){billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${esc((x.state||"new").replaceAll("_"," "))}</td><td>${x.photosComplete?"✅":"⚠"}</td><td>${x.completionNotesComplete?"✅":"⚠"}</td><td>${esc(x.proposalStatus||"not required")}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${money(x.nte)}</td><td>${money(x.estimatedTotal)}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the invoice pipeline.</td></tr>";}
+function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>"}
+function renderActivity(){events.innerHTML=cache.recentEvents.slice(0,70).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>"}
+function fillSettings(){maxOnsite.value=cache.settings.maxOnsiteMinutes;reminderMinutes.value=cache.settings.reminderMinutes;nteWarningPercent.value=cache.settings.nteWarningPercent;overtimeHours.value=cache.settings.overtimeHours;autoReminders.checked=cache.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=cache.settings.autoInvoiceQueue!==false}
+
 action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
 ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
 orderSearch.oninput=renderOrders;newOrder.onclick=()=>{orderForm.reset();orderDialog.showModal()};closeOrder.onclick=()=>orderDialog.close();
-window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTechnician.value=x.technician||"";oTechnicianPhone.value=x.technicianPhone||"";oCustomerPhone.value=x.customerPhone||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?x.scheduledAt.slice(0,16):"";oPhotos.checked=x.photosComplete===true;oCompletionNotes.checked=x.completionNotesComplete===true;oProposalStatus.value=x.proposalStatus||"";oInvoiceStatus.value=x.invoiceStatus||"";oProblem.value=x.problemDescription||"";oCompletionText.value=x.completionNotes||"";oNotes.value=x.notes||"";orderDialog.showModal()};
-orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,technician:oTechnician.value,technicianPhone:oTechnicianPhone.value,customerPhone:oCustomerPhone.value,nte:oNte.value,estimatedTotal:oEstimated.value,state:oState.value,scheduledAt:oScheduled.value,photosComplete:oPhotos.checked,completionNotesComplete:oCompletionNotes.checked,proposalStatus:oProposalStatus.value,proposalApproved:oProposalStatus.value==="approved",invoiceStatus:oInvoiceStatus.value,problemDescription:oProblem.value,completionNotes:oCompletionText.value,notes:oNotes.value})});orderDialog.close();refresh()};
+window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;orderForm.reset();oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTrade.value=x.trade||"";oPriority.value=x.priority||"normal";oTechnician.value=x.technician||"";oTechnicianPhone.value=x.technicianPhone||"";oCustomerPhone.value=x.customerPhone||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oLaborHours.value=x.laborHours??"";oLaborRate.value=x.laborRate??"";oLaborCostRate.value=x.laborCostRate??"";oMaterialCost.value=x.materialCost??"";oMarkup.value=x.materialMarkupPercent??"";oMisc.value=x.miscCost??"";oInvoiceAmount.value=x.invoiceAmount??"";oPaymentStatus.value=x.paymentStatus||"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?String(x.scheduledAt).slice(0,16):"";oPhotos.checked=x.photosComplete===true;oCompletionNotes.checked=x.completionNotesComplete===true;oProposalStatus.value=x.proposalStatus||"";oInvoiceStatus.value=x.invoiceStatus||"";oProblem.value=x.problemDescription||"";oCompletionText.value=x.completionNotes||"";oNotes.value=x.notes||"";orderDialog.showModal()};
+orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,trade:oTrade.value,priority:oPriority.value,technician:oTechnician.value,technicianPhone:oTechnicianPhone.value,customerPhone:oCustomerPhone.value,nte:oNte.value,estimatedTotal:oEstimated.value,laborHours:oLaborHours.value,laborRate:oLaborRate.value,laborCostRate:oLaborCostRate.value,materialCost:oMaterialCost.value,materialMarkupPercent:oMarkup.value,miscCost:oMisc.value,invoiceAmount:oInvoiceAmount.value,paymentStatus:oPaymentStatus.value,state:oState.value,scheduledAt:oScheduled.value,photosComplete:oPhotos.checked,completionNotesComplete:oCompletionNotes.checked,proposalStatus:oProposalStatus.value,proposalApproved:oProposalStatus.value==="approved",invoiceStatus:oInvoiceStatus.value,problemDescription:oProblem.value,completionNotes:oCompletionText.value,notes:oNotes.value})});orderDialog.close();refresh()};
 taskForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/tasks",{method:"POST",body:JSON.stringify({title:taskTitle.value,trackingNumber:taskTracking.value,assignedTo:taskAssigned.value,priority:taskPriority.value,dueAt:taskDue.value,notes:taskNotes.value})});taskForm.reset();refresh()};
 window.closeTask=async id=>{await api(`/api/control/tasks/${id}/close`,{method:"POST",body:"{}"});refresh()};
-settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value,autoTechnicianReminders:autoReminders.checked,autoInvoiceQueue:autoInvoiceQueue.checked})});refresh()};
+newTech.onclick=()=>{techForm.reset();techDialog.showModal()};closeTech.onclick=()=>techDialog.close();
+window.editTech=name=>{const t=cache.technicians.find(x=>x.name===name);if(!t)return;tName.value=t.name;tPhone.value=t.phone||"";tStatus.value=t.status||"available";tCurrent.value=t.currentTrackingNumber||"";tHoursToday.value=t.hoursToday||0;tHoursWeek.value=t.hoursWeek||0;tSkills.value=(t.skills||[]).join(", ");tNext.value=t.nextJobTrackingNumber||"";techDialog.showModal()};
+techForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/technicians/${encodeURIComponent(tName.value)}`,{method:"POST",body:JSON.stringify({phone:tPhone.value,status:tStatus.value,currentTrackingNumber:tCurrent.value,hoursToday:tHoursToday.value,hoursWeek:tHoursWeek.value,skills:tSkills.value,nextJobTrackingNumber:tNext.value})});techDialog.close();refresh()};
+window.quickAssign=async tracking=>{const tech=prompt("Enter technician name");if(!tech)return;await api("/api/control/dispatch/assign",{method:"POST",body:JSON.stringify({trackingNumber:tracking,technician:tech,state:"scheduled"})});refresh()};
+recommendBtn.onclick=async()=>{recommendations.textContent="Checking…";try{const d=await api(`/api/control/dispatch/recommend/${recommendTracking.value}`);recommendations.innerHTML=d.recommendations.map((x,i)=>`<div class="event"><strong>${i+1}. ${esc(x.name)} — Score ${x.score}</strong><div class="small muted">${esc(x.status)} · ${x.hoursWeek} hrs this week · ${esc((x.skills||[]).join(", "))}</div></div>`).join("")||"<span class='muted'>No technicians available.</span>"}catch(e){recommendations.textContent=e.message}};
+settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value,nteWarningPercent:nteWarningPercent.value,overtimeHours:overtimeHours.value,autoTechnicianReminders:autoReminders.checked,autoInvoiceQueue:autoInvoiceQueue.checked})});refresh()};
 refresh();setInterval(refresh,15000);
 </script>
 </body></html>
