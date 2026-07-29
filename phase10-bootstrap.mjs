@@ -215,20 +215,21 @@ setTimeout(renderWishlist,400);
 }
 
 
-const DASHBOARD_FIX_MARKER = "JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2";
+const DASHBOARD_FIX_MARKER = "JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V3";
 if (!panel.includes(DASHBOARD_FIX_MARKER)) {
   panel = panel.replace('</style>', `
-/* JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2 */
+/* JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V3 */
 .dashboard-ivr-card{margin:0 0 16px;border-color:#3f5872}.dashboard-ivr-card h2{display:flex;align-items:center;gap:8px}.dashboard-ivr-card h2:before{content:"☎";color:#eab308}.dashboard-ivr-card button[type="submit"]{margin-top:12px}
+.office-welcome{position:relative;z-index:2}.office-welcome-actions{position:relative;z-index:5}.office-welcome-actions button{pointer-events:auto!important;touch-action:manipulation;position:relative;z-index:6}
+@media(max-width:760px){.office-welcome{display:grid!important;grid-template-columns:1fr!important}.office-welcome-actions{display:grid!important;grid-template-columns:1fr 1fr!important;width:100%;margin-top:12px}.office-welcome-actions button{width:100%!important;min-width:0!important;white-space:normal}.dashboard-ivr-card .row{grid-template-columns:1fr!important}}
 </style>`);
   panel = panel.replace('</body>', `<script>
-// JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V2
+// JOSHUA_DASHBOARD_IVR_AND_BUTTON_FIX_V3
 (function(){
- function openOfficeTabSafe(tab){
-  if(typeof window.officeOpenTab==='function'){window.officeOpenTab(tab);return;}
-  const native=document.querySelector('.tab[data-tab="'+tab+'"]');
-  if(native){native.click();return;}
-  document.querySelectorAll('.panel').forEach(function(p){p.classList.toggle('active',p.id===tab)});
+ function forceOpenOfficeTab(tab){
+  document.querySelectorAll('.panel').forEach(function(panel){panel.classList.toggle('active',panel.id===tab)});
+  document.querySelectorAll('.tab').forEach(function(button){button.classList.toggle('active',button.dataset.tab===tab)});
+  document.querySelectorAll('.office-nav-btn').forEach(function(button){button.classList.toggle('active',button.dataset.officeTab===tab)});
   window.scrollTo({top:0,behavior:'smooth'});
  }
  function installDashboardFix(){
@@ -237,21 +238,30 @@ if (!panel.includes(DASHBOARD_FIX_MARKER)) {
   const welcome=executive&&executive.querySelector('.office-welcome');
   if(executive&&ivrForm){
    const card=ivrForm.closest('.card');
-   if(card&&!card.classList.contains('dashboard-ivr-card')){
+   if(card){
     card.classList.add('dashboard-ivr-card');
     const title=card.querySelector('h2');if(title)title.textContent='ServiceChannel IVR Check In / Check Out';
-    if(welcome)welcome.insertAdjacentElement('afterend',card);else executive.insertBefore(card,executive.firstChild);
+    if(welcome&&card.previousElementSibling!==welcome)welcome.insertAdjacentElement('afterend',card);
+    else if(!welcome&&card.parentElement!==executive)executive.insertBefore(card,executive.firstChild);
    }
   }
-  document.querySelectorAll('[data-office-tab="operations"]').forEach(function(btn){
-   if(btn.closest('.office-welcome-actions'))btn.onclick=function(e){e.preventDefault();e.stopPropagation();openOfficeTabSafe('operations')};
-  });
-  document.querySelectorAll('[data-office-tab="activity"]').forEach(function(btn){
-   if(btn.closest('.office-welcome-actions'))btn.onclick=function(e){e.preventDefault();e.stopPropagation();openOfficeTabSafe('activity')};
-  });
+  const actions=welcome&&welcome.querySelector('.office-welcome-actions');
+  if(actions){
+   const buttons=actions.querySelectorAll('button');
+   const start=buttons[0],activity=buttons[1];
+   if(start){start.id='startTodaysWorkBtn';start.removeAttribute('data-office-tab');start.type='button';}
+   if(activity){activity.id='viewJoshuaActivityBtn';activity.removeAttribute('data-office-tab');activity.type='button';}
+  }
  }
+ document.addEventListener('click',function(e){
+  const start=e.target.closest('#startTodaysWorkBtn');
+  if(start){e.preventDefault();e.stopImmediatePropagation();forceOpenOfficeTab('operations');return;}
+  const activity=e.target.closest('#viewJoshuaActivityBtn');
+  if(activity){e.preventDefault();e.stopImmediatePropagation();forceOpenOfficeTab('activity');return;}
+ },true);
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',installDashboardFix);else installDashboardFix();
- setTimeout(installDashboardFix,500);
+ setTimeout(installDashboardFix,250);
+ setTimeout(installDashboardFix,1000);
 })();
 </script></body>`);
 }
