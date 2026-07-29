@@ -5,6 +5,8 @@ import formbody from "@fastify/formbody";
 import OpenAI from "openai";
 import twilio from "twilio";
 import nodemailer from "nodemailer";
+import fs from "node:fs";
+import path from "node:path";
 import { SYSTEM_PROMPT, SUMMARY_PROMPT } from "./prompt.js";
 
 const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"];
@@ -50,6 +52,122 @@ function formatElapsedTime(milliseconds) {
   if (hours) parts.push(`${hours} hr${hours === 1 ? "" : "s"}`);
   if (minutes || parts.length === 0) parts.push(`${minutes} min`);
   return parts.join(" ");
+}
+
+const controlDataFile =
+  process.env.CONTROL_DATA_FILE || path.join("/tmp", "joshua-control-data.json");
+const controlPanelKey = process.env.CONTROL_PANEL_KEY || "";
+
+function emptyControlData() {
+  return {
+    events: [],
+    workOrders: {},
+    callbacks: [],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function readControlData() {
+  try {
+    if (!fs.existsSync(controlDataFile)) return emptyControlData();
+    const parsed = JSON.parse(fs.readFileSync(controlDataFile, "utf8"));
+    return {
+      ...emptyControlData(),
+      ...parsed,
+      events: Array.isArray(parsed.events) ? parsed.events : [],
+      workOrders: parsed.workOrders && typeof parsed.workOrders === "object"
+        ? parsed.workOrders
+        : {}
+    };
+  } catch (error) {
+    app.log.error(error, "Could not read Joshua control data");
+    return emptyControlData();
+  }
+}
+
+function writeControlData(data) {
+  try {
+    fs.mkdirSync(path.dirname(controlDataFile), { recursive: true });
+    data.updatedAt = new Date().toISOString();
+    fs.writeFileSync(controlDataFile, JSON.stringify(data, null, 2));
+  } catch (error) {
+    app.log.error(error, "Could not write Joshua control data");
+  }
+}
+
+function addControlEvent(event) {
+  const data = readControlData();
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    ...event
+  };
+  data.events.unshift(item);
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+  return item;
+}
+
+function updateControlWorkOrder(tracking, updates = {}) {
+  const key = String(tracking || "").trim();
+  if (!key) return null;
+  const data = readControlData();
+  const current = data.workOrders[key] || {
+    trackingNumber: key,
+    createdAt: new Date().toISOString()
+  };
+  data.workOrders[key] = {
+    ...current,
+    ...updates,
+    trackingNumber: key,
+    updatedAt: new Date().toISOString()
+  };
+  writeControlData(data);
+  return data.workOrders[key];
+}
+
+function controlAuthorized(request) {
+  if (!controlPanelKey) return false;
+  const headerKey = String(request.headers["x-control-panel-key"] || "");
+  const queryKey = String(request.query?.key || "");
+  const auth = String(request.headers.authorization || "");
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  return [headerKey, queryKey, bearer].some(value => value && value === controlPanelKey);
+}
+
+function controlSummary() {
+  const data = readControlData();
+  const workOrders = Object.values(data.workOrders);
+  const active = workOrders.filter(item => item.state === "onsite");
+  const failures = data.events.filter(item =>
+    item.level === "error" &&
+    Date.now() - new Date(item.createdAt).getTime() < 24 * 60 * 60 * 1000
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    online: true,
+    twilioConfigured: Boolean(twilioClient),
+    serviceChannelConfigured: Boolean(
+      process.env.SERVICECHANNEL_IVR_NUMBER &&
+      process.env.SERVICECHANNEL_PIN &&
+      (process.env.SERVICECHANNEL_VOICE_FROM || process.env.TWILIO_SMS_FROM)
+    ),
+    clockSharkConfigured: Boolean(clockSharkZapierWebhookUrl),
+    activeCount: active.length,
+    active,
+    failures: failures.slice(0, 20),
+    todayCheckIns: data.events.filter(item =>
+      item.type === "checkin_completed" && item.createdAt.startsWith(today)
+    ).length,
+    todayCheckOuts: data.events.filter(item =>
+      item.type === "checkout_completed" && item.createdAt.startsWith(today)
+    ).length,
+    recentEvents: data.events.slice(0, 100),
+    workOrders: workOrders.sort((a, b) =>
+      new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
+    ),
+    updatedAt: data.updatedAt
+  };
 }
 
 const SERVICECHANNEL_EMAIL_DEDUPE_MS = 24 * 60 * 60 * 1000;
@@ -997,6 +1115,24 @@ Joshua added this job to Job Sheets.`;
       "ServiceChannel IVR call started"
     );
 
+    addControlEvent({
+      type: `${command.type}_started`,
+      level: "info",
+      trackingNumber: command.trackingNumber,
+      requestedBy: teamMemberName(from),
+      requestedByPhone: from,
+      callSid: call.sid,
+      statusText: command.statusText || "",
+      technicianCount: command.technicianCount || ""
+    });
+    updateControlWorkOrder(command.trackingNumber, {
+      state: command.type === "checkin" ? "checkin_calling" : "checkout_calling",
+      requestedBy: teamMemberName(from),
+      callSid: call.sid,
+      statusText: command.statusText || "",
+      technicianCount: command.technicianCount || ""
+    });
+
     if (command.type === "checkin") {
       response.message(
         `Joshua started the O'Reilly check-in call for tracking #${command.trackingNumber}. Call SID: ${call.sid}. I will text you when the call ends.`
@@ -1166,6 +1302,65 @@ app.post("/servicechannel-call-status", async (request, reply) => {
       "",
       `The ${action === "checkin" ? "check-in" : "check-out"} was not confirmed. Retry the command or check the Twilio voice log.`
     ].filter(line => line !== "").join("\n");
+  }
+
+  if (callStatus === "completed") {
+    if (action === "checkin") {
+      updateControlWorkOrder(tracking, {
+        state: "onsite",
+        checkInAt: completedDate.toISOString(),
+        requestedBy: requesterName,
+        callSid
+      });
+      addControlEvent({
+        type: "checkin_completed",
+        level: "success",
+        trackingNumber: tracking,
+        requestedBy: requesterName,
+        callSid,
+        completedAt: completedDate.toISOString()
+      });
+    } else {
+      updateControlWorkOrder(tracking, {
+        state: "completed",
+        checkOutAt: completedDate.toISOString(),
+        checkInAt: recordedCheckIn ? recordedCheckIn.toISOString() : "",
+        onsiteMilliseconds,
+        onsiteDuration,
+        totalLaborDuration,
+        technicianCount,
+        statusText,
+        requestedBy: requesterName,
+        callSid
+      });
+      addControlEvent({
+        type: "checkout_completed",
+        level: "success",
+        trackingNumber: tracking,
+        requestedBy: requesterName,
+        callSid,
+        completedAt: completedDate.toISOString(),
+        checkInAt: recordedCheckIn ? recordedCheckIn.toISOString() : "",
+        onsiteDuration,
+        totalLaborDuration,
+        technicianCount,
+        statusText
+      });
+    }
+  } else {
+    updateControlWorkOrder(tracking, {
+      state: "attention",
+      lastError: `Twilio status: ${callStatus}`,
+      callSid
+    });
+    addControlEvent({
+      type: `${action}_failed`,
+      level: "error",
+      trackingNumber: tracking,
+      requestedBy: requesterName,
+      callSid,
+      callStatus
+    });
   }
 
   if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {
@@ -1368,6 +1563,145 @@ app.post("/dial-result", async (request, reply) => {
 <Response>
   <Say voice="Polly.Joanna-Neural">I’m sorry, no one is available right now. Your callback information has been sent to the team.</Say>
 </Response>`);
+});
+
+
+app.get("/control-panel", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply
+      .code(401)
+      .type("text/html")
+      .send("<h2>Joshua Control Panel</h2><p>Open this page with your secure key: <code>/control-panel?key=YOUR_KEY</code></p>");
+  }
+  const htmlPath = path.join(process.cwd(), "public", "control-panel.html");
+  return reply.type("text/html").send(fs.readFileSync(htmlPath, "utf8"));
+});
+
+app.get("/api/control/status", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  return reply.send({ ok: true, ...controlSummary() });
+});
+
+app.post("/api/control/ivr", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const body = request.body || {};
+  const action = String(body.action || "").toLowerCase();
+  const trackingNumber = String(body.trackingNumber || "").replace(/\D/g, "");
+  const statusText = String(body.statusText || "").trim();
+  const technicianCount = String(body.technicianCount || "").replace(/\D/g, "");
+  const requestedByPhone = normalizePhone(
+    body.requestedByPhone || process.env.OWNER_SMS_NUMBER
+  );
+
+  if (!["checkin", "checkout"].includes(action) || trackingNumber.length < 4) {
+    return reply.code(400).send({
+      ok: false,
+      error: "Enter a valid action and tracking number."
+    });
+  }
+  if (action === "checkout" && (!statusText || !technicianCount)) {
+    return reply.code(400).send({
+      ok: false,
+      error: "Checkout requires a status and technician count."
+    });
+  }
+  if (!twilioClient) {
+    return reply.code(503).send({ ok: false, error: "Twilio is not configured." });
+  }
+
+  const command =
+    action === "checkin"
+      ? { type: "checkin", trackingNumber }
+      : {
+          type: "checkout",
+          trackingNumber,
+          statusText,
+          technicianCount: Number(technicianCount),
+          status: normalizeServiceChannelStatus(statusText)
+        };
+
+  if (action === "checkout" && !command.status) {
+    return reply.code(400).send({
+      ok: false,
+      error: "Use complete, waiting for quote, parts needed, or return trip needed."
+    });
+  }
+
+  const ivrNumber = normalizePhone(process.env.SERVICECHANNEL_IVR_NUMBER);
+  const voiceFrom = normalizePhone(
+    process.env.SERVICECHANNEL_VOICE_FROM || process.env.TWILIO_SMS_FROM
+  );
+  const pin = String(process.env.SERVICECHANNEL_PIN || "").replace(/\D/g, "");
+  if (!ivrNumber || !voiceFrom || !pin) {
+    return reply.code(503).send({
+      ok: false,
+      error: "ServiceChannel IVR settings are incomplete."
+    });
+  }
+
+  try {
+    const call = await twilioClient.calls.create({
+      to: ivrNumber,
+      from: voiceFrom,
+      twiml: buildServiceChannelCallTwiml(command, pin),
+      statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(requestedByPhone)}&action=${command.type}&tracking=${encodeURIComponent(trackingNumber)}&statusText=${encodeURIComponent(statusText)}&technicianCount=${encodeURIComponent(technicianCount)}`,
+      statusCallbackMethod: "POST",
+      statusCallbackEvent: ["completed"]
+    });
+
+    addControlEvent({
+      type: `${action}_started`,
+      level: "info",
+      trackingNumber,
+      requestedBy: "Control Panel",
+      requestedByPhone,
+      callSid: call.sid,
+      statusText,
+      technicianCount
+    });
+    updateControlWorkOrder(trackingNumber, {
+      state: action === "checkin" ? "checkin_calling" : "checkout_calling",
+      requestedBy: "Control Panel",
+      callSid: call.sid,
+      statusText,
+      technicianCount
+    });
+
+    return reply.send({ ok: true, callSid: call.sid });
+  } catch (error) {
+    addControlEvent({
+      type: `${action}_failed`,
+      level: "error",
+      trackingNumber,
+      requestedBy: "Control Panel",
+      error: error.message
+    });
+    return reply.code(500).send({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/control/work-orders/:tracking/resolve", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const tracking = String(request.params.tracking || "");
+  const item = updateControlWorkOrder(tracking, {
+    state: "resolved",
+    resolvedAt: new Date().toISOString(),
+    lastError: ""
+  });
+  addControlEvent({
+    type: "attention_resolved",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: "Control Panel"
+  });
+  return reply.send({ ok: true, workOrder: item });
 });
 
 app.get("/ws", { websocket: true }, (socket, request) => {
