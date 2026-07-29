@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node dashboard-hotfix.mjs",
+    "start": "node phase10-bootstrap.mjs",
     "start:legacy": "node phase8-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
