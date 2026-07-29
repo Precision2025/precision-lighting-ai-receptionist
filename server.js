@@ -764,8 +764,11 @@ function buildServiceChannelCallTwiml(command, serviceChannelPin) {
     response.play({ digits: "#" });
   }
 
-  // Leave enough time for the IVR to announce acceptance or an error.
-  response.pause({ length: positiveSeconds("SERVICECHANNEL_AFTER_FINAL_ENTRY_SECONDS", 12) });
+  // Checkout needs extra time for ServiceChannel to announce success and speak the confirmation number.
+  const afterFinalEntrySeconds = command.type === "checkout"
+    ? positiveSeconds("SERVICECHANNEL_AFTER_CHECKOUT_SECONDS", 24)
+    : positiveSeconds("SERVICECHANNEL_AFTER_FINAL_ENTRY_SECONDS", 12);
+  response.pause({ length: afterFinalEntrySeconds });
   return response.toString();
 }
 
