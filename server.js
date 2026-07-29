@@ -307,12 +307,12 @@ function parseServiceChannelSms(body = "") {
   const text = String(body).trim().replace(/\s+/g, " ");
   if (/^(help|commands|menu)$/i.test(text)) return { type: "help" };
 
-  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci|in)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
+  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
   if (checkIn) {
     return { type: "checkin", trackingNumber: checkIn[1] };
   }
 
-  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co|out)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
+  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
   if (checkOut) {
     const statusText = checkOut[2].toLowerCase().trim();
     const status = SERVICECHANNEL_STATUS_MAP[statusText];
@@ -925,13 +925,6 @@ Joshua added this job to Job Sheets.`;
     return reply.type("text/xml").send(response.toString());
   }
 
-  if (command.type === "unknown" && /^(?:joshua\s+)?(?:out|check\s*out|checkout|co)\b/i.test(body)) {
-    response.message(
-      "Checkout needs the status and technician count. Example: Out 357659285 complete 1 tech"
-    );
-    return reply.type("text/xml").send(response.toString());
-  }
-
   if (command.type === "unknown") {
     // Native Group MMS is not generally available for new Twilio activations.
     // Relay ordinary team texts to the other authorized team members instead.
@@ -975,15 +968,7 @@ Joshua added this job to Job Sheets.`;
       twiml: callTwiml,
       statusCallback: `${publicBaseUrl}/servicechannel-call-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}`,
       statusCallbackMethod: "POST",
-      statusCallbackEvent: ["completed"],
-      // Record the IVR side of the call so we can hear exactly which prompt
-      // rejected or missed the digits. This is diagnostic and avoids blind
-      // timing changes.
-      record: true,
-      recordingChannels: "mono",
-      recordingStatusCallback: `${publicBaseUrl}/servicechannel-recording-status?requestedBy=${encodeURIComponent(from)}&action=${command.type}&tracking=${encodeURIComponent(command.trackingNumber)}`,
-      recordingStatusCallbackMethod: "POST",
-      recordingStatusCallbackEvent: ["completed"]
+      statusCallbackEvent: ["completed"]
     });
 
     app.log.info(
@@ -1053,37 +1038,6 @@ app.post("/servicechannel-email", async (request, reply) => {
     app.log.error(error, "Could not process ServiceChannel email webhook");
     return reply.code(500).send({ ok: false, error: error.message });
   }
-});
-
-app.post("/servicechannel-recording-status", async (request, reply) => {
-  if (!validateHttpRequest(request)) {
-    return reply.code(403).send("Invalid Twilio signature");
-  }
-
-  const requestedBy = normalizePhone(request.query?.requestedBy);
-  const tracking = String(request.query?.tracking || "");
-  const recordingStatus = String(request.body?.RecordingStatus || "unknown");
-  const recordingSid = String(request.body?.RecordingSid || "");
-  const recordingUrl = String(request.body?.RecordingUrl || "");
-
-  app.log.info(
-    { requestedBy, tracking, recordingStatus, recordingSid, recordingUrl },
-    "ServiceChannel IVR recording ready"
-  );
-
-  if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM && recordingStatus === "completed") {
-    try {
-      await twilioClient.messages.create({
-        from: process.env.TWILIO_SMS_FROM,
-        to: requestedBy,
-        body: `Diagnostic recording is ready for tracking #${tracking}. Open Twilio Voice Logs and select the newest outbound call. Recording SID: ${recordingSid}.`
-      });
-    } catch (error) {
-      app.log.error(error, "Could not send recording-ready SMS");
-    }
-  }
-
-  return reply.code(204).send();
 });
 
 app.post("/servicechannel-call-status", async (request, reply) => {
