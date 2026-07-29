@@ -65,7 +65,7 @@ main{max-width:none;margin:0;padding:22px 28px 42px}
   const welcome = `
 <div class="office-welcome">
  <div><h2 id="officeGreeting">Good morning.</h2><div id="officeBrief" class="muted">Joshua is preparing today's office workload.</div></div>
- <div class="office-welcome-actions"><button onclick="officeOpenTab('operations')">Start Today's Work</button><button class="secondary" onclick="officeOpenTab('activity')">View Joshua Activity</button></div>
+ <div class="office-welcome-actions"><button type="button" data-office-tab="operations">Start Today's Work</button><button type="button" class="secondary" data-office-tab="activity">View Joshua Activity</button></div>
 </div>
 `;
   panel = panel.replace('<section id="executive" class="panel active">', '<section id="executive" class="panel active">\n' + welcome);
@@ -93,8 +93,8 @@ main{max-width:none;margin:0;padding:22px 28px 42px}
 
   const dialog = `
 <dialog id="officeQueueDialog" class="queue-dialog">
- <div class="office-section-title"><div><h2 id="officeQueueTitle">Office Queue</h2><div id="officeQueueSummary" class="small muted"></div></div><button class="secondary" onclick="officeQueueDialog.close()">Close</button></div>
- <div class="queue-toolbar"><input id="officeQueueSearch" placeholder="Search work order, customer, location or technician"><select id="officeQueueSort"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="customer">Customer A–Z</option></select><button class="secondary" onclick="officeOpenAllWorkOrders()">Open Work Orders</button></div>
+ <div class="office-section-title"><div><h2 id="officeQueueTitle">Office Queue</h2><div id="officeQueueSummary" class="small muted"></div></div><button type="button" class="secondary" data-office-close-queue>Close</button></div>
+ <div class="queue-toolbar"><input id="officeQueueSearch" placeholder="Search work order, customer, location or technician"><select id="officeQueueSort"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="customer">Customer A–Z</option></select><button type="button" class="secondary" data-office-open-workorders>Open Work Orders</button></div>
  <div id="officeQueueList" class="queue-list"></div>
 </dialog>
 <div id="officeToast" class="office-toast"></div>
@@ -111,53 +111,75 @@ const officeQueueConfig={
  parts:{title:"Parts Queue",key:"partsNeeded",action:"order_parts",actionLabel:"Parts Follow-up"},
  billing:{title:"Billing Queue",key:"readyToBill",action:"prepare_invoice",actionLabel:"Prepare Invoice"}
 };
+const officeEl=id=>document.getElementById(id);
 function officeOpenTab(tab){
  const native=document.querySelector('.tab[data-tab="'+tab+'"]');
  if(native)native.click();
+ else{
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===tab));
+ }
  document.querySelectorAll('.office-nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.officeTab===tab));
  window.scrollTo({top:0,behavior:'smooth'});
 }
 window.officeOpenTab=officeOpenTab;
 function officeAge(item){const d=new Date(item.lastSheetSyncAt||item.updatedAt||item.createdAt||0);return Number.isFinite(d.getTime())?Math.max(0,Math.round((Date.now()-d.getTime())/3600000)):0}
-function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...((cache.workflowQueues||{})[cfg.key]||[])]:[]}
+function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...(((window.cache||cache||{}).workflowQueues||{})[cfg.key]||[])]:[]}
 function officeRenderQueue(){
  const cfg=officeQueueConfig[officeActiveQueue];if(!cfg)return;
+ const search=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort'),title=officeEl('officeQueueTitle'),summary=officeEl('officeQueueSummary'),list=officeEl('officeQueueList');
+ if(!search||!sortEl||!title||!summary||!list)return;
  let items=officeQueueItems(officeActiveQueue);
- const term=(officeQueueSearch.value||'').toLowerCase().trim();
+ const term=(search.value||'').toLowerCase().trim();
  if(term)items=items.filter(x=>[x.trackingNumber,x.workOrderNumber,x.customer,x.locationName,x.address,x.assignedTechnician].some(v=>String(v||'').toLowerCase().includes(term)));
- const sort=officeQueueSort.value;
+ const sort=sortEl.value;
  items.sort((a,b)=>sort==='customer'?String(a.customer||'').localeCompare(String(b.customer||'')):sort==='newest'?officeAge(a)-officeAge(b):officeAge(b)-officeAge(a));
- officeQueueTitle.textContent=cfg.title;
- officeQueueSummary.textContent=items.length+' work order'+(items.length===1?'':'s')+' ready for review';
- officeQueueList.innerHTML=items.length?items.map(x=>{
+ title.textContent=cfg.title;
+ summary.textContent=items.length+' work order'+(items.length===1?'':'s')+' ready for review';
+ list.innerHTML=items.length?items.map(x=>{
   const tracking=esc(x.trackingNumber||'');
   const customer=esc(x.customer||x.locationName||'Unknown customer');
   const location=esc(x.locationName||x.address||'');
   const tech=esc(x.assignedTechnician||'Unassigned');
-  return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location?' · '+location:'')+'</div></div><div><span class="badge">'+esc(String(x.joshuaStatus||'').replaceAll('_',' '))+'</span><div class="small muted" style="margin-top:5px">'+officeAge(x)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button onclick="createOpsAction(\''+tracking+'\',\''+cfg.action+'\')">'+cfg.actionLabel+'</button><button onclick="editJobSheet(\''+tracking+'\')">Update Job Sheet</button><button class="secondary" onclick="showTimeline(\''+tracking+'\')">Timeline</button></div></div>'
+  return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location?' · '+location:'')+'</div></div><div><span class="badge">'+esc(String(x.joshuaStatus||'').replaceAll('_',' '))+'</span><div class="small muted" style="margin-top:5px">'+officeAge(x)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="'+cfg.action+'" data-tracking="'+tracking+'">'+cfg.actionLabel+'</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>'
  }).join(''):'<div class="queue-empty">No work orders are currently in this queue.</div>';
 }
-function officeOpenQueue(type){officeActiveQueue=type;officeQueueSearch.value='';officeQueueSort.value='oldest';officeRenderQueue();officeQueueDialog.showModal()}
-window.officeOpenQueue=officeOpenQueue;
-function officeOpenAllWorkOrders(){officeQueueDialog.close();officeOpenTab('workorders');const cfg=officeQueueConfig[officeActiveQueue];if(cfg&&window.orderSearch){orderSearch.value=officeActiveQueue;orderSearch.dispatchEvent(new Event('input'))}}
-window.officeOpenAllWorkOrders=officeOpenAllWorkOrders;
-function officeShowSheetLog(){officeOpenTab('activity');setTimeout(()=>{if(window.events){events.scrollIntoView({behavior:'smooth',block:'start'})}},100)}
-function officeUpdateChrome(){
- const q=cache.workflowQueues||{},sw=cache.jobSheetsWriteback||{},attention=cache.actionableItems||[];
- const set=(id,value)=>{const el=document.getElementById(id);if(el)el.textContent=value||0};
- set('navAttentionCount',attention.length);set('navProposalCount',(q.pendingProposals||[]).length);set('navBillingCount',(q.readyToBill||[]).length);set('navPartsCount',(q.partsNeeded||[]).length);set('navSheetCount',sw.pending||0);
- const hour=new Date().getHours();const greeting=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
- const user='Precision Lighting Team';officeGreeting.textContent=greeting+', '+user+'.';
- const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+(q.partsNeeded||[]).length+(q.readyToBill||[]).length;
- officeBrief.textContent=total?('Joshua has '+total+' workflow item'+(total===1?'':'s')+' organized for review.'):"Joshua has no queued workflow items requiring review.";
+function officeOpenQueue(type){
+ if(!officeQueueConfig[type])return;
+ officeActiveQueue=type;
+ const search=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort'),dialog=officeEl('officeQueueDialog');
+ if(search)search.value='';if(sortEl)sortEl.value='oldest';officeRenderQueue();
+ if(dialog){if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','open')}
 }
-document.querySelectorAll('.office-nav-btn[data-office-tab]').forEach(btn=>btn.addEventListener('click',()=>officeOpenTab(btn.dataset.officeTab)));
-document.querySelectorAll('.office-nav-btn[data-office-queue]').forEach(btn=>btn.addEventListener('click',()=>officeOpenQueue(btn.dataset.officeQueue)));
-document.querySelectorAll('[data-office-sheetlog],[data-sheet-log]').forEach(el=>el.addEventListener('click',officeShowSheetLog));
-document.querySelectorAll('.queue-launcher[data-queue]').forEach(el=>{el.addEventListener('click',()=>officeOpenQueue(el.dataset.queue));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();officeOpenQueue(el.dataset.queue)}})});
-officeQueueSearch.addEventListener('input',officeRenderQueue);officeQueueSort.addEventListener('change',officeRenderQueue);
+window.officeOpenQueue=officeOpenQueue;
+function officeCloseQueue(){const d=officeEl('officeQueueDialog');if(d){if(typeof d.close==='function')d.close();else d.removeAttribute('open')}}
+function officeOpenAllWorkOrders(){officeCloseQueue();officeOpenTab('workorders');const search=officeEl('orderSearch');if(search){search.value='';search.dispatchEvent(new Event('input',{bubbles:true}))}}
+window.officeOpenAllWorkOrders=officeOpenAllWorkOrders;
+function officeShowSheetLog(){officeOpenTab('activity');setTimeout(()=>{const e=officeEl('events');if(e)e.scrollIntoView({behavior:'smooth',block:'start'})},100)}
+function officeUpdateChrome(){
+ const data=window.cache||cache||{},q=data.workflowQueues||{},sw=data.jobSheetsWriteback||{},attention=data.actionableItems||[];
+ const set=(id,value)=>{const el=officeEl(id);if(el)el.textContent=value||0};
+ set('navAttentionCount',attention.length);set('navProposalCount',(q.pendingProposals||[]).length);set('navBillingCount',(q.readyToBill||[]).length);set('navPartsCount',(q.partsNeeded||[]).length);set('navSheetCount',sw.pending||0);
+ const hour=new Date().getHours(),greeting=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+ const greetingEl=officeEl('officeGreeting'),briefEl=officeEl('officeBrief');
+ if(greetingEl)greetingEl.textContent=greeting+', Precision Lighting Team.';
+ const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+(q.partsNeeded||[]).length+(q.readyToBill||[]).length;
+ if(briefEl)briefEl.textContent=total?('Joshua has '+total+' workflow item'+(total===1?'':'s')+' organized for review.'):"Joshua has no queued workflow items requiring review.";
+}
+document.addEventListener('click',e=>{
+ const tab=e.target.closest('[data-office-tab]');if(tab){e.preventDefault();officeOpenTab(tab.dataset.officeTab);return}
+ const queue=e.target.closest('[data-office-queue],[data-queue]');if(queue){e.preventDefault();officeOpenQueue(queue.dataset.officeQueue||queue.dataset.queue);return}
+ if(e.target.closest('[data-office-sheetlog],[data-sheet-log]')){e.preventDefault();officeShowSheetLog();return}
+ if(e.target.closest('[data-office-close-queue]')){e.preventDefault();officeCloseQueue();return}
+ if(e.target.closest('[data-office-open-workorders]')){e.preventDefault();officeOpenAllWorkOrders();return}
+ const action=e.target.closest('[data-office-action]');if(action){e.preventDefault();window.createOpsAction?.(action.dataset.tracking,action.dataset.officeAction);return}
+ const sheet=e.target.closest('[data-office-job-sheet]');if(sheet){e.preventDefault();window.editJobSheet?.(sheet.dataset.tracking);return}
+ const timeline=e.target.closest('[data-office-timeline]');if(timeline){e.preventDefault();window.showTimeline?.(timeline.dataset.tracking);return}
+});
+document.addEventListener('keydown',e=>{const q=e.target.closest?.('[data-queue]');if(q&&(e.key==='Enter'||e.key===' ')){e.preventDefault();officeOpenQueue(q.dataset.queue)}});
+const searchEl=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort');
+if(searchEl)searchEl.addEventListener('input',officeRenderQueue);if(sortEl)sortEl.addEventListener('change',officeRenderQueue);
 const officeOriginalRefresh=window.refresh;
-if(typeof officeOriginalRefresh==='function'){window.refresh=async(...args)=>{const r=await officeOriginalRefresh(...args);officeUpdateChrome();if(officeQueueDialog.open)officeRenderQueue();return r}}
+if(typeof officeOriginalRefresh==='function'){window.refresh=async(...args)=>{const r=await officeOriginalRefresh(...args);officeUpdateChrome();const d=officeEl('officeQueueDialog');if(d?.open)officeRenderQueue();return r}}
 setTimeout(officeUpdateChrome,250);
 </script>
 `;
