@@ -375,6 +375,59 @@ if (!panel.includes(IVR_CONFIRM_SYNC_MARKER)) {
 </script></body>`);
 }
 
+
+const HOME_SEARCH_MARKER = "JOSHUA_HOME_WORK_ORDER_SEARCH_NATIVE_V1";
+if (!panel.includes(HOME_SEARCH_MARKER)) {
+  panel = panel.replace('</style>', `
+/* JOSHUA_HOME_WORK_ORDER_SEARCH_NATIVE_V1 */
+.home-work-order-search{margin:0 0 16px;padding:18px 20px;border:1px solid #3f5872;border-radius:14px;background:#111d2a}
+.home-work-order-search h2{margin:0 0 10px}.home-work-order-search-row{display:grid;grid-template-columns:1fr auto;gap:10px}.home-work-order-search-row button{width:auto;min-width:130px}
+.home-work-order-results{display:grid;gap:8px;margin-top:10px}.home-work-order-result{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:12px 14px;border:1px solid #2d4158;border-radius:11px;background:#0f1925;cursor:pointer;touch-action:manipulation}.home-work-order-result:hover{border-color:#eab308;background:#172536}.home-work-order-result strong{display:block}
+.job-action-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.job-action-card{padding:14px;border:1px solid #2d4158;border-radius:12px;background:#101a27}.job-action-card h3{margin:0 0 10px}.job-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.job-detail-item{padding:10px 12px;border:1px solid #2d4158;border-radius:10px;background:#101a27}.job-detail-item .muted{font-size:12px}.job-detail-item strong{display:block;margin-top:3px}
+@media(max-width:760px){.home-work-order-search-row{grid-template-columns:1fr}.home-work-order-search-row button{width:100%}.job-action-grid,.job-detail-grid{grid-template-columns:1fr}}
+</style>`);
+
+  const homeSearchBlock = `
+<div class="home-work-order-search" id="homeWorkOrderSearch">
+ <h2>🔎 Work Order Search</h2>
+ <div class="home-work-order-search-row"><input id="homeWorkOrderSearchInput" placeholder="Search tracking number, work order, customer, store or address" autocomplete="off"><button type="button" id="homeWorkOrderSearchBtn">Search</button></div>
+ <div id="homeWorkOrderSearchResults" class="home-work-order-results"></div>
+</div>`;
+  panel = panel.replace('<div class="office-welcome">', homeSearchBlock + '\n<div class="office-welcome">');
+
+  panel = panel.replace('</main>', `</main>
+<dialog id="homeWorkOrderDialog" class="queue-dialog">
+ <div class="office-section-title"><div><h2 id="homeWorkOrderTitle">Work Order</h2><div id="homeWorkOrderSubtitle" class="small muted"></div></div><button type="button" class="secondary" id="closeHomeWorkOrderDialog">Close</button></div>
+ <div id="homeWorkOrderDetails" class="job-detail-grid"></div>
+ <div class="job-action-grid">
+  <div class="job-action-card"><h3>Check In</h3><label>Technician<select id="jobCheckinTechnician"><option value="Unassigned Technician">Office / Unassigned</option></select></label><button type="button" id="jobCheckinBtn">Start Check-In</button></div>
+  <div class="job-action-card"><h3>Check Out</h3><label>Status<select id="jobCheckoutStatus"><option value="complete">Complete</option><option value="waiting for quote">Waiting for quote</option><option value="parts needed">Parts needed</option><option value="return trip needed">Return trip needed</option></select></label><label>Technicians<input id="jobCheckoutTechCount" type="number" min="1" value="1" inputmode="numeric"></label><label>Technician<select id="jobCheckoutTechnician"><option value="Unassigned Technician">Office / Unassigned</option></select></label><button type="button" id="jobCheckoutBtn">Start Check-Out</button></div>
+ </div>
+ <div id="homeWorkOrderActionMessage" class="small muted" style="margin-top:12px"></div>
+</dialog>`);
+
+  panel = panel.replace('</body>', `<script>
+// JOSHUA_HOME_WORK_ORDER_SEARCH_NATIVE_V1
+(function(){
+ let selectedWorkOrder=null;const el=id=>document.getElementById(id);const safe=v=>String(v==null?'':v);const esc2=v=>safe(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ function orders(){const d=window.cache||{};return Array.isArray(d.workOrders)?d.workOrders:[]}
+ function techOptions(){const d=window.cache||{},ts=Array.isArray(d.technicians)?d.technicians:[];return '<option value="Unassigned Technician">Office / Unassigned</option>'+ts.filter(t=>t&&t.name&&t.active!==false&&t.status!=='inactive').map(t=>'<option value="'+esc2(t.name)+'">'+esc2(t.name)+'</option>').join('')}
+ function refreshTechs(){const h=techOptions();['jobCheckinTechnician','jobCheckoutTechnician'].forEach(id=>{const s=el(id);if(!s)return;const v=s.value;s.innerHTML=h;if(v&&Array.from(s.options).some(o=>o.value===v))s.value=v})}
+ function matches(o,t){return [o.trackingNumber,o.workOrderNumber,o.customer,o.locationName,o.address,o.city,o.stateProvince,o.postalCode,o.description,o.problemDescription,o.technician,o.assignedTechnician].map(safe).join(' ').toLowerCase().includes(t)}
+ function renderSearch(){const i=el('homeWorkOrderSearchInput'),r=el('homeWorkOrderSearchResults');if(!i||!r)return;const t=i.value.trim().toLowerCase();if(!t){r.innerHTML='';return}const found=orders().filter(o=>matches(o,t)).slice(0,25);r.innerHTML=found.length?found.map(o=>{const tr=esc2(o.trackingNumber||''),cu=esc2(o.customer||o.locationName||'Unknown customer'),lo=esc2(o.locationName||o.address||''),st=esc2(safe(o.joshuaStatus||o.state||'unknown').replaceAll('_',' '));return '<div class="home-work-order-result" role="button" tabindex="0" data-home-work-order="'+tr+'"><div><strong>#'+tr+' — '+cu+'</strong><div class="small muted">'+lo+'</div></div><span class="badge">'+st+'</span></div>'}).join(''):'<div class="queue-empty">No matching work orders found.</div>'}
+ function detail(l,v){return '<div class="job-detail-item"><div class="muted">'+esc2(l)+'</div><strong>'+esc2(v||'—')+'</strong></div>'}
+ function openOrder(tr){selectedWorkOrder=orders().find(o=>safe(o.trackingNumber)===safe(tr))||null;if(!selectedWorkOrder)return;refreshTechs();el('homeWorkOrderTitle').textContent='Work Order #'+safe(selectedWorkOrder.trackingNumber);el('homeWorkOrderSubtitle').textContent=safe(selectedWorkOrder.customer||selectedWorkOrder.locationName||'');el('homeWorkOrderDetails').innerHTML=detail('Status',safe(selectedWorkOrder.joshuaStatus||selectedWorkOrder.state||'unknown').replaceAll('_',' '))+detail('Work-order number',selectedWorkOrder.workOrderNumber)+detail('Customer',selectedWorkOrder.customer)+detail('Location',selectedWorkOrder.locationName)+detail('Address',selectedWorkOrder.address)+detail('Technician',selectedWorkOrder.technician||selectedWorkOrder.assignedTechnician)+detail('Check-in',selectedWorkOrder.checkInAt?new Date(selectedWorkOrder.checkInAt).toLocaleString():'')+detail('Check-out',selectedWorkOrder.checkOutAt?new Date(selectedWorkOrder.checkOutAt).toLocaleString():'');el('homeWorkOrderActionMessage').textContent='';const d=el('homeWorkOrderDialog');if(d){if(typeof d.showModal==='function')d.showModal();else d.setAttribute('open','open')}}
+ function closeOrder(){const d=el('homeWorkOrderDialog');if(d){if(typeof d.close==='function')d.close();else d.removeAttribute('open')}}
+ async function startIvr(action){if(!selectedWorkOrder)return;const checkout=action==='checkout',m=el('homeWorkOrderActionMessage'),payload={action,trackingNumber:safe(selectedWorkOrder.trackingNumber),statusText:checkout?el('jobCheckoutStatus').value:'',technicianCount:checkout?el('jobCheckoutTechCount').value:'',technicianName:(el(checkout?'jobCheckoutTechnician':'jobCheckinTechnician').value||'Unassigned Technician')};m.textContent='Starting '+(checkout?'check-out':'check-in')+' call…';try{const d=await api('/api/control/ivr',{method:'POST',body:JSON.stringify(payload)});m.textContent='✅ Call started: '+d.callSid+'. Joshua will update the work order after ServiceChannel confirms success.';if(typeof refresh==='function')await refresh()}catch(e){m.textContent='⚠ '+e.message}}
+ function install(){const b=el('homeWorkOrderSearchBtn'),i=el('homeWorkOrderSearchInput');if(b&&!b.dataset.bound){b.dataset.bound='1';b.addEventListener('click',renderSearch)}if(i&&!i.dataset.bound){i.dataset.bound='1';i.addEventListener('input',renderSearch);i.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();renderSearch()}})}refreshTechs()}
+ document.addEventListener('click',e=>{const row=e.target.closest('[data-home-work-order]');if(row){e.preventDefault();openOrder(row.dataset.homeWorkOrder);return}if(e.target.closest('#closeHomeWorkOrderDialog')){e.preventDefault();closeOrder();return}if(e.target.closest('#jobCheckinBtn')){e.preventDefault();startIvr('checkin');return}if(e.target.closest('#jobCheckoutBtn')){e.preventDefault();startIvr('checkout');return}});
+ document.addEventListener('keydown',e=>{const row=e.target.closest&&e.target.closest('[data-home-work-order]');if(row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openOrder(row.dataset.homeWorkOrder)}});
+ const old=window.refresh;if(typeof old==='function')window.refresh=async function(){const r=await old.apply(this,arguments);install();if(el('homeWorkOrderSearchInput')&&el('homeWorkOrderSearchInput').value.trim())renderSearch();return r};
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install);else install();setTimeout(install,300);setTimeout(install,1200);
+})();
+</script></body>`);
+}
+
 fs.writeFileSync(panelPath, panel);
 console.log("Joshua Office Suite v3.1 installed: stable Phase 10 + Create Job + ClockShark roster + Wishlist.");
 await import("./server.js");
