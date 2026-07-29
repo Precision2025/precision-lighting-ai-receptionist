@@ -347,19 +347,18 @@ if (!panel.includes(IVR_CONFIRM_SYNC_MARKER)) {
   const form=document.getElementById('ivrForm');if(!form)return;
   if(!document.getElementById('ivrTechnician')){
    const wrap=document.createElement('div');wrap.className='dashboard-ivr-tech';
-   wrap.innerHTML='<label>Technician</label><select id="ivrTechnician"><option value="">Select technician</option></select><div class="ivr-sync-note">Joshua updates onsite status, Job Sheets, activity, and tasks only after the ServiceChannel success confirmation is detected.</div>';
+   wrap.innerHTML='<label>Technician</label><select id="ivrTechnician"><option value="Unassigned Technician">Office / Unassigned</option></select><div class="ivr-sync-note">Joshua updates onsite status, Job Sheets, activity, and tasks only after the ServiceChannel success confirmation is detected.</div>';
    const button=form.querySelector('button[type="submit"]');form.insertBefore(wrap,button);
   }
   const select=document.getElementById('ivrTechnician');
   const data=(window.cache||{}).technicians||[];
   const current=select.value;
-  select.innerHTML='<option value="">Select technician</option>'+data.map(function(t){return '<option value="'+esc(t.name)+'">'+esc(t.name)+'</option>'}).join('');
+  select.innerHTML='<option value="Unassigned Technician">Office / Unassigned</option>'+data.map(function(t){return '<option value="'+esc(t.name)+'">'+esc(t.name)+'</option>'}).join('');
   if(current)select.value=current;
   form.onsubmit=async function(e){
    e.preventDefault();
    const msg=document.getElementById('message');
    const actionEl=document.getElementById('action'),trackingEl=document.getElementById('tracking'),statusEl=document.getElementById('status'),techsEl=document.getElementById('techs');
-   if(!select.value){msg.textContent='⚠ Select the technician before starting the IVR call.';return;}
    msg.textContent='Starting call and listening for ServiceChannel confirmation…';
    try{
     const d=await api('/api/control/ivr',{method:'POST',body:JSON.stringify({action:actionEl.value,trackingNumber:trackingEl.value,statusText:statusEl.value,technicianCount:techsEl.value,technicianName:select.value})});
