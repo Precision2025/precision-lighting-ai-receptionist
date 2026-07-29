@@ -66,7 +66,9 @@ function emptyControlData() {
     tasks: [],
     settings: {
       maxOnsiteMinutes: 240,
-      reminderMinutes: 30
+      reminderMinutes: 30,
+      autoTechnicianReminders: true,
+      autoInvoiceQueue: true
     },
     updatedAt: new Date().toISOString()
   };
@@ -87,6 +89,8 @@ function readControlData() {
       settings: {
         maxOnsiteMinutes: 240,
         reminderMinutes: 30,
+        autoTechnicianReminders: true,
+        autoInvoiceQueue: true,
         ...(parsed.settings || {})
       }
     };
@@ -472,6 +476,17 @@ function buildServiceChannelEmailNotification(payload = {}) {
 
   return {
     tracking,
+    customer,
+    location,
+    scheduled,
+    scheduledDate,
+    scheduledTime,
+    nte,
+    requestedBy,
+    city,
+    address: firstValue(payload.address, payload.job_address, payload.jobAddress, location),
+    workOrderNumber: firstValue(payload.work_order_number, payload.workOrderNumber, payload.wo_number, payload.woNumber),
+    problemDescription: firstValue(payload.problem_description, payload.problemDescription, payload.description, payload.issue),
     text: `📋 NEW SERVICECHANNEL JOB ADDED\n\nTracking: ${tracking}\nCustomer: ${customer}\nLocation: ${location}\nScheduled: ${scheduled}\nNTE: ${nte}\nRequested by: ${requestedBy}${clockSharkLine}`
   };
 }
@@ -1254,6 +1269,46 @@ app.post("/servicechannel-email", async (request, reply) => {
       });
     }
 
+    const parsedNte = Number(String(notification.nte || "").replace(/[^0-9.]/g, ""));
+    const existing = readControlData().workOrders[notification.tracking] || {};
+    updateControlWorkOrder(notification.tracking, {
+      ...existing,
+      workOrderNumber: notification.workOrderNumber || existing.workOrderNumber || "",
+      customer: notification.customer || existing.customer || "",
+      locationName: notification.location || existing.locationName || "",
+      address: notification.address || existing.address || "",
+      problemDescription: notification.problemDescription || existing.problemDescription || "",
+      scheduledAt: notification.scheduled || existing.scheduledAt || "",
+      nte: Number.isFinite(parsedNte) && parsedNte > 0 ? parsedNte : (existing.nte || ""),
+      requester: notification.requestedBy || existing.requester || "",
+      state: existing.state || "new",
+      source: "ServiceChannel Email"
+    });
+    addControlEvent({
+      type: "servicechannel_work_order_received",
+      level: "success",
+      trackingNumber: notification.tracking,
+      requestedBy: notification.requestedBy,
+      customer: notification.customer
+    });
+    if (!notification.address || notification.address === "Unknown location") {
+      addControlTask({
+        title: "Confirm work-order address",
+        trackingNumber: notification.tracking,
+        assignedTo: "Ariana",
+        priority: "urgent",
+        notes: "ServiceChannel email did not include a usable address."
+      });
+    }
+    if (!Number.isFinite(parsedNte) || parsedNte <= 0) {
+      addControlTask({
+        title: "Confirm NTE",
+        trackingNumber: notification.tracking,
+        assignedTo: "Ariana",
+        priority: "urgent",
+        notes: "ServiceChannel email did not include a usable NTE."
+      });
+    }
     await sendJoshuaTeamUpdate(notification.text);
     if (dedupeKey) recentServiceChannelEmailNotifications.set(dedupeKey, Date.now());
 
@@ -1406,6 +1461,34 @@ app.post("/servicechannel-call-status", async (request, reply) => {
         requestedBy: requesterName,
         callSid
       });
+      const checkoutData = readControlData().workOrders[tracking] || {};
+      const documentationComplete =
+        checkoutData.photosComplete === true &&
+        checkoutData.completionNotesComplete === true &&
+        (checkoutData.proposalStatus !== "required" || checkoutData.proposalApproved === true);
+      if (readControlData().settings.autoInvoiceQueue) {
+        updateControlWorkOrder(tracking, {
+          invoiceStatus: documentationComplete ? "ready_for_review" : "documentation_missing",
+          state: documentationComplete ? "ready_to_invoice" : "completed"
+        });
+        if (!documentationComplete) {
+          addControlTask({
+            title: "Complete job documentation",
+            trackingNumber: tracking,
+            assignedTo: "Ariana",
+            priority: "urgent",
+            notes: "Checkout completed, but photos, completion notes, or proposal approval are missing."
+          });
+        } else {
+          addControlTask({
+            title: "Review and submit invoice",
+            trackingNumber: tracking,
+            assignedTo: "Shellie",
+            priority: "normal",
+            notes: "Checkout and required documentation are complete."
+          });
+        }
+      }
       addControlEvent({
         type: "checkout_completed",
         level: "success",
@@ -1771,10 +1854,15 @@ app.post("/api/control/work-orders/:tracking", async (request, reply) => {
   const updates = {};
   const textFields = [
     "workOrderNumber", "customer", "locationName", "address", "technician",
-    "problemDescription", "statusText", "scheduledAt", "requester", "notes"
+    "problemDescription", "statusText", "scheduledAt", "requester", "notes",
+    "technicianPhone", "invoiceStatus", "proposalStatus", "customerPhone",
+    "customerEmail", "completionNotes"
   ];
   for (const field of textFields) {
     if (body[field] !== undefined) updates[field] = String(body[field] || "").trim();
+  }
+  for (const field of ["photosComplete", "completionNotesComplete", "proposalApproved", "customerUpdated"]) {
+    if (body[field] !== undefined) updates[field] = body[field] === true || body[field] === "true";
   }
   for (const field of ["nte", "estimatedTotal"]) {
     if (body[field] !== undefined) {
@@ -1831,7 +1919,9 @@ app.post("/api/control/settings", async (request, reply) => {
   data.settings = {
     ...data.settings,
     maxOnsiteMinutes: Math.max(15, Number(body.maxOnsiteMinutes || data.settings.maxOnsiteMinutes || 240)),
-    reminderMinutes: Math.max(15, Number(body.reminderMinutes || data.settings.reminderMinutes || 30))
+    reminderMinutes: Math.max(15, Number(body.reminderMinutes || data.settings.reminderMinutes || 30)),
+    autoTechnicianReminders: body.autoTechnicianReminders === undefined ? data.settings.autoTechnicianReminders : body.autoTechnicianReminders === true || body.autoTechnicianReminders === "true",
+    autoInvoiceQueue: body.autoInvoiceQueue === undefined ? data.settings.autoInvoiceQueue : body.autoInvoiceQueue === true || body.autoInvoiceQueue === "true"
   };
   writeControlData(data);
   return reply.send({ ok: true, settings: data.settings });
@@ -1999,6 +2089,58 @@ app.get("/ws", { websocket: true }, (socket, request) => {
     app.log.error(error, "ConversationRelay WebSocket error");
   });
 });
+
+async function runJoshuaAutomationSweep() {
+  const data = readControlData();
+  const settings = data.settings || {};
+  const now = Date.now();
+  for (const item of Object.values(data.workOrders)) {
+    if (item.state !== "onsite" || !item.checkInAt) continue;
+    const elapsed = now - new Date(item.checkInAt).getTime();
+    const elapsedMinutes = Math.floor(elapsed / 60000);
+    if (elapsedMinutes < Number(settings.maxOnsiteMinutes || 240)) continue;
+    const lastReminderAt = item.lastTechnicianReminderAt ? new Date(item.lastTechnicianReminderAt).getTime() : 0;
+    const reminderDue = now - lastReminderAt >= Number(settings.reminderMinutes || 30) * 60000;
+    updateControlWorkOrder(item.trackingNumber, {
+      state: "attention",
+      lastError: `Technician onsite ${formatElapsedTime(elapsed)}`
+    });
+    if (settings.autoTechnicianReminders && reminderDue && item.technicianPhone && twilioClient && process.env.TWILIO_SMS_FROM) {
+      try {
+        const message = await twilioClient.messages.create({
+          from: process.env.TWILIO_SMS_FROM,
+          to: normalizePhone(item.technicianPhone),
+          body: `Joshua reminder: You have been onsite for ${formatElapsedTime(elapsed)} on tracking #${item.trackingNumber}. Reply COMPLETE, PARTS, RETURN, or PROPOSAL with the technician count.`
+        });
+        updateControlWorkOrder(item.trackingNumber, {
+          lastTechnicianReminderAt: new Date().toISOString(),
+          lastTechnicianReminderSid: message.sid
+        });
+        addControlEvent({
+          type: "automatic_technician_reminder",
+          level: "success",
+          trackingNumber: item.trackingNumber,
+          requestedBy: "Joshua Automation",
+          messageSid: message.sid
+        });
+      } catch (error) {
+        addControlEvent({
+          type: "automatic_reminder_failed",
+          level: "error",
+          trackingNumber: item.trackingNumber,
+          requestedBy: "Joshua Automation",
+          error: error.message
+        });
+      }
+    }
+  }
+}
+setInterval(() => {
+  runJoshuaAutomationSweep().catch(error => app.log.error(error, "Joshua automation sweep failed"));
+}, 5 * 60 * 1000);
+setTimeout(() => {
+  runJoshuaAutomationSweep().catch(error => app.log.error(error, "Initial Joshua automation sweep failed"));
+}, 30 * 1000);
 
 const port = Number(process.env.PORT || 3000);
 await app.listen({ port, host: "0.0.0.0" });
