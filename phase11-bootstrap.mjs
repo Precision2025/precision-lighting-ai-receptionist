@@ -6,8 +6,11 @@ const serverPath = new URL("./server.js", import.meta.url);
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
 
 let prior = fs.readFileSync(priorPath, "utf8");
-prior = prior.replace(/\nawait import\("\.\/server\.js"\);\s*$/m, "\n");
-if (prior.includes('await import("./server.js")')) {
+// Remove Phase 10's server startup wherever it appears. Some earlier button-fix
+// versions append code after this line, so it cannot safely be matched only at EOF.
+const beforeServerRemoval = prior;
+prior = prior.replace(/await\s+import\s*\(\s*["']\.\/server\.js["']\s*\)\s*;?/g, "");
+if (prior === beforeServerRemoval || /import\s*\(\s*["']\.\/server\.js["']\s*\)/.test(prior)) {
   throw new Error("Could not disable Phase 10 server startup before Phase 11 patching.");
 }
 fs.writeFileSync(runtimePath, prior);
