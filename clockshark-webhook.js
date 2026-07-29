@@ -21,6 +21,9 @@ export function buildClockSharkJobPayload(job = {}) {
     customer_name: clean(job.customer_name || job.customerName),
     caller_name: clean(job.caller_name || job.callerName),
     caller_phone: clean(job.caller_phone || job.callerPhone),
+    assigned_technician: clean(job.assigned_technician || job.assignedTechnician || job.technician),
+    clockshark_technician_id: clean(job.clockshark_technician_id || job.clockSharkTechnicianId),
+    idempotency_key: clean(job.idempotency_key || job.idempotencyKey || job.workOrderNumber || job.jobNumber),
     source: "Joshua AI Assistant"
   };
 

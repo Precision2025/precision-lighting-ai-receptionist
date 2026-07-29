@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Joshua Control Panel</title>
+<style>
+:root{font-family:Inter,system-ui,Arial,sans-serif;color:#f7f8fa;background:#071019}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#071019,#101b28);min-height:100vh}
+header{position:sticky;top:0;z-index:20;padding:18px 4%;display:flex;justify-content:space-between;gap:18px;align-items:center;background:#08111be8;backdrop-filter:blur(14px);border-bottom:1px solid #26374b}
+h1{margin:0;font-size:24px}.muted{color:#9fb0c7}.live{color:#62e3a6;font-weight:900}.dangerText{color:#ff9f8f}.warnText{color:#f7cb63}
+main{padding:18px 4%;max-width:1700px;margin:auto}.grid{display:grid;gap:14px}.stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:#131e2b;border:1px solid #2a3b50;border-radius:16px;padding:16px;box-shadow:0 12px 35px #0004}.stat strong{display:block;font-size:27px;margin-top:6px}
+.tabs{display:flex;gap:8px;overflow-x:auto;padding:4px 0 8px;position:sticky;top:82px;background:#0b1520f2;z-index:15}.tab{width:auto;white-space:nowrap;background:#1c2a3a;color:#dce7f3;padding:10px 14px}.tab.active{background:#eab308;color:#111827}
+.panel{display:none}.panel.active{display:block}.two{grid-template-columns:1fr 1.5fr}.three{grid-template-columns:repeat(3,1fr)}.four{grid-template-columns:repeat(4,1fr)}
+h2{font-size:17px;margin:0 0 13px}h3{font-size:15px;margin:0 0 10px}
+label{font-size:12px;color:#aebed1;display:block;margin-bottom:5px}input,select,textarea,button{width:100%;padding:11px;border-radius:9px;border:1px solid #34465e;background:#0e1722;color:#fff}
+textarea{min-height:86px;resize:vertical}button{background:#eab308;color:#111827;font-weight:900;border:0;cursor:pointer}.secondary{background:#27384e;color:#fff}.danger{background:#763d34;color:#fff}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.formgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #28394d;vertical-align:top}th{color:#9db0c8;position:sticky;top:0;background:#131e2b}
+.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#26374c}.onsite{background:#185a41}.attention{background:#753d32}.completed,.paid{background:#274867}.scheduled{background:#5b4d1b}.available{background:#185a41}.assigned{background:#5b4d1b}
+.event,.task,.insight{padding:11px 0;border-bottom:1px solid #28384c}.event:last-child,.task:last-child,.insight:last-child{border:0}.small{font-size:12px}.scroll{overflow:auto;max-height:560px}
+.alert{border-color:#7c493f}.success{border-color:#28614d}.warning{border-color:#7a662d}.actions{display:flex;gap:7px;flex-wrap:wrap}.actions button{width:auto;padding:8px 10px}.search{margin-bottom:10px}
+.dispatch-card{display:grid;gap:8px}.dispatch-card .top{display:flex;justify-content:space-between;gap:10px}.dispatch-card strong{font-size:16px}.metric{font-size:23px;font-weight:900}.profitPositive{color:#62e3a6}.profitNegative{color:#ff9f8f}
+.tech-card{display:grid;gap:8px}.tech-row{display:flex;justify-content:space-between;gap:10px}.progress{height:8px;background:#0b141f;border-radius:99px;overflow:hidden}.progress>span{display:block;height:100%;background:#eab308}
+dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff;width:min(760px,94vw);padding:18px}dialog::backdrop{background:#000a}
+@media(max-width:1000px){.two,.three,.four,.formgrid{grid-template-columns:1fr}table{min-width:1000px}.tabs{top:75px}header{align-items:flex-start}.subtitle{max-width:240px}}
+
+/* JOSHUA_OFFICE_SUITE_V3_DESKTOP */
+:root{--sidebar:250px;--gold:#eab308;--surface:#131e2b;--surface2:#172536;--line:#2a3b50}
+body{padding-left:var(--sidebar)}
+header{left:var(--sidebar);padding:16px 28px}
+main{max-width:none;margin:0;padding:22px 28px 42px}
+.office-sidebar{position:fixed;left:0;top:0;bottom:0;width:var(--sidebar);z-index:60;background:#08111b;border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column;overflow:auto}
+.office-brand{padding:8px 10px 20px;border-bottom:1px solid var(--line);margin-bottom:12px}.office-brand strong{display:block;font-size:20px}.office-brand span{font-size:12px;color:#9fb0c7}
+.office-nav{display:grid;gap:5px}.office-nav button{display:flex;align-items:center;gap:11px;text-align:left;background:transparent;color:#dce7f3;padding:12px 13px;border:1px solid transparent;font-weight:750}.office-nav button:hover{background:#142132;border-color:#2c4058}.office-nav button.active{background:#eab308;color:#111827}
+.office-nav .nav-count{margin-left:auto;min-width:25px;text-align:center;border-radius:999px;background:#26374c;color:#fff;padding:2px 7px;font-size:11px}.office-nav button.active .nav-count{background:#111827;color:#fff}
+.office-footer{margin-top:auto;padding:14px 10px 4px;color:#8295ad;font-size:11px}
+.tabs{display:none}
+.office-welcome{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:16px;padding:20px 22px;background:linear-gradient(110deg,#172536,#101a27);border:1px solid #31465f;border-radius:16px}.office-welcome h2{font-size:22px;margin:0 0 5px}.office-welcome-actions{display:flex;gap:9px}.office-welcome-actions button{width:auto;min-width:145px}
+.queue-launcher{cursor:pointer;position:relative;transition:transform .14s ease,border-color .14s ease,background .14s ease;padding:20px!important}.queue-launcher:hover{transform:translateY(-2px);border-color:#eab308;background:#172536}.queue-launcher:focus-visible{outline:3px solid #eab308;outline-offset:2px}.queue-launcher .queue-arrow{position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:25px;color:#eab308}.queue-launcher .metric{font-size:30px;margin-top:4px}.queue-launcher .small{margin-top:6px}
+#operations .four{grid-template-columns:repeat(4,minmax(190px,1fr))}
+.office-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.office-section-title h2{margin:0}.office-section-title button{width:auto}
+.queue-dialog{width:min(1180px,95vw);max-height:88vh}.queue-toolbar{display:grid;grid-template-columns:1fr 210px auto;gap:10px;margin:12px 0}.queue-list{display:grid;gap:10px;max-height:62vh;overflow:auto;padding-right:3px}.queue-row{display:grid;grid-template-columns:1.2fr 1.2fr 1fr auto;gap:14px;align-items:center;padding:14px;border:1px solid #2d4158;border-radius:12px;background:#101a27}.queue-row:hover{border-color:#eab308}.queue-row .actions{justify-content:flex-end}.queue-row .actions button{white-space:nowrap}.queue-empty{padding:34px;text-align:center;color:#9fb0c7;border:1px dashed #34465e;border-radius:12px}
+.office-toast{position:fixed;right:24px;bottom:24px;z-index:100;background:#172536;border:1px solid #42617f;border-radius:12px;padding:13px 16px;box-shadow:0 15px 40px #0008;display:none}.office-toast.show{display:block}
+@media(max-width:1100px){:root{--sidebar:210px}#operations .four{grid-template-columns:repeat(2,1fr)}.queue-row{grid-template-columns:1fr 1fr}.queue-row .actions{justify-content:flex-start}.office-welcome{align-items:flex-start}.office-welcome-actions{flex-direction:column}}
+@media(max-width:760px){body{padding-left:0}header{left:0;padding:14px 4%}.office-sidebar{display:none}.tabs{display:flex}main{padding:16px 4%}.office-welcome{display:block}.office-welcome-actions{margin-top:12px;flex-direction:row;flex-wrap:wrap}.office-welcome-actions button{min-width:0}.queue-toolbar{grid-template-columns:1fr}.queue-row{grid-template-columns:1fr}#operations .four{grid-template-columns:1fr}.queue-launcher:hover{transform:none}}
+
+
+/* JOSHUA_V4_NATIVE_FEATURES */
+.v4-actions{display:flex;gap:10px;flex-wrap:wrap}.v4-actions button{width:auto}.v4-dialog{width:min(980px,96vw);max-height:92vh;overflow:auto}.v4-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.v4-grid .wide{grid-column:1/-1}.system-result{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid #34465e;border-radius:10px;margin-top:9px}.system-result.ok{border-color:#28614d}.system-result.fail{border-color:#7c493f}@media(max-width:760px){.v4-grid{grid-template-columns:1fr}.v4-grid .wide{grid-column:auto}}
+</style>
+</head>
+<body>
+
+<aside class="office-sidebar" aria-label="Joshua Office navigation">
+ <div class="office-brand"><strong>Joshua</strong><span>Precision Lighting Office Suite</span></div>
+ <nav class="office-nav">
+  <button class="office-nav-btn active" data-office-tab="executive">⌂ <span>Dashboard</span></button>
+  <button class="office-nav-btn" data-office-tab="operations">◎ <span>Office Inbox</span><span id="navAttentionCount" class="nav-count">0</span></button>
+  <button class="office-nav-btn" data-office-tab="workorders">▦ <span>Work Orders</span></button>
+  <button class="office-nav-btn" data-office-tab="dispatch">◉ <span>Dispatch</span></button>
+  <button class="office-nav-btn" data-office-tab="technicians">♟ <span>Technicians</span></button>
+  <button class="office-nav-btn" data-office-queue="proposal">▤ <span>Proposals</span><span id="navProposalCount" class="nav-count">0</span></button>
+  <button class="office-nav-btn" data-office-queue="billing">$ <span>Billing</span><span id="navBillingCount" class="nav-count">0</span></button>
+  <button class="office-nav-btn" data-office-queue="parts">□ <span>Parts</span><span id="navPartsCount" class="nav-count">0</span></button>
+  <button class="office-nav-btn" data-office-sheetlog="true">↻ <span>Job Sheets</span><span id="navSheetCount" class="nav-count">0</span></button>
+  <button class="office-nav-btn" data-office-tab="activity">◇ <span>Joshua Activity</span></button>
+  <button class="office-nav-btn" data-office-tab="tasks">✓ <span>Tasks</span></button>
+  <button class="office-nav-btn" data-office-tab="billing">↗ <span>Reports</span></button>
+  <button class="office-nav-btn" id="wishlistNavButton" type="button">☆ <span>Wishlist</span><span id="navWishlistCount" class="nav-count">0</span></button>
+   <button class="office-nav-btn" data-office-tab="settings">⚙ <span>Settings</span></button>
+ </nav>
+ <div class="office-footer">Office Suite v3 · Desktop-first<br>Existing Job Sheets workflow remains active.</div>
+</aside>
+
+<header><div><h1>Joshua Control Panel</h1><div class="muted subtitle">Precision Lighting Operations Command Center</div></div><div id="live" class="live">● CONNECTING</div></header>
+<main>
+<div class="grid stats">
+ <div class="card stat"><span class="muted">Joshua</span><strong id="joshua">—</strong></div>
+ <div class="card stat"><span class="muted">Currently onsite</span><strong id="active">0</strong></div>
+ <div class="card stat"><span class="muted">Revenue today</span><strong id="revenueToday">$0</strong></div>
+ <div class="card stat"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>
+ <div class="card stat"><span class="muted">Needs attention</span><strong id="fails">0</strong></div>
+ <div class="card stat"><span class="muted">Open tasks</span><strong id="taskCount">0</strong></div>
+</div>
+
+<div class="tabs">
+ <button class="tab active" data-tab="executive">Executive</button>
+ <button class="tab" data-tab="dispatch">Dispatch</button>
+ <button class="tab" data-tab="technicians">Technicians</button>
+ <button class="tab" data-tab="workorders">Work Orders</button>
+ <button class="tab" data-tab="billing">Profit & Billing</button>
+ <button class="tab" data-tab="tasks">Tasks</button>
+ <button class="tab" data-tab="activity">Activity</button>
+ <button class="tab" data-tab="operations">Operations</button>
+ <button class="tab" data-tab="settings">Settings</button>
+</div>
+
+<section id="executive" class="panel active">
+
+<div class="office-welcome">
+ <div><h2 id="officeGreeting">Good morning.</h2><div id="officeBrief" class="muted">Joshua is preparing today's office workload.</div></div>
+ <div class="office-welcome-actions"><button type="button" id="createJobWelcome">＋ Create Job</button><button type="button" data-office-tab="operations">Start Today's Work</button><button type="button" class="secondary" data-office-tab="activity">View Joshua Activity</button></div>
+</div>
+
+<div class="grid two">
+ <div class="card success"><h2>Joshua Intelligence</h2><div id="insights"></div></div>
+ <div class="card alert"><h2>Exception Dashboard</h2><div id="attention" class="scroll muted">No current problems.</div></div>
+</div>
+<div class="grid four" style="margin-top:14px">
+ <div class="card"><span class="muted">Completed today</span><div id="completedToday" class="metric">0</div></div>
+ <div class="card"><span class="muted">Open work orders</span><div id="openOrders" class="metric">0</div></div>
+ <div class="card"><span class="muted">Available technicians</span><div id="availableTechs" class="metric">0</div></div>
+ <div class="card"><span class="muted">Today's check-outs</span><div id="outs" class="metric">0</div></div>
+ </div>
+ <div class="grid four" style="margin-top:14px" id="joshuaStatusCards">
+  <div class="card"><span class="muted">Awaiting authorization</span><div id="awaitingAuth" class="metric">0</div></div>
+  <div class="card"><span class="muted">Pending proposals</span><div id="pendingProposal" class="metric">0</div></div>
+  <div class="card"><span class="muted">Parts needed</span><div id="partsNeeded" class="metric">0</div></div>
+  <div class="card"><span class="muted">Ready to bill</span><div id="readyToBill" class="metric">0</div></div>
+</div>
+<div class="card" style="margin-top:14px"><h2>Currently Onsite</h2><div id="onsiteCards" class="grid three"></div></div>
+</section>
+
+<section id="dispatch" class="panel">
+<div class="grid two">
+ <div class="card"><h2>Dispatch Board</h2><div id="dispatchBoard" class="grid two"></div></div>
+ <div class="card"><h2>Manual ServiceChannel Control</h2><form id="ivrForm">
+  <div class="row"><div><label>Action</label><select id="action"><option value="checkin">Check in</option><option value="checkout">Check out</option></select></div><div><label>Tracking number</label><input id="tracking" inputmode="numeric" required></div></div>
+  <div id="checkoutFields" style="display:none"><div class="row"><div><label>Status</label><select id="status"><option>complete</option><option>waiting for quote</option><option>parts needed</option><option>return trip needed</option></select></div><div><label>Technicians onsite</label><input id="techs" type="number" min="1" value="1"></div></div></div>
+  <button type="submit">Start IVR Call</button><div id="message"></div>
+ </form></div>
+</div>
+</section>
+
+<section id="technicians" class="panel">
+<div class="grid two">
+ <div class="card"><div class="row"><h2>Technician Command Center</h2><button id="newTech" class="secondary">Add Technician</button></div><div id="techCards" class="grid two"></div></div>
+ <div class="card"><h2>Dispatch Recommendation</h2><label>Tracking number</label><input id="recommendTracking"><button id="recommendBtn" style="margin-top:10px">Recommend Technician</button><div id="recommendations" style="margin-top:12px"></div></div>
+</div>
+</section>
+
+<section id="workorders" class="panel">
+<div class="card"><div class="row"><h2>Work Orders</h2><button id="newOrder" class="secondary">＋ Create Job</button></div>
+<input id="orderSearch" class="search" placeholder="Search tracking number, customer, address, technician…">
+<div class="scroll"><table><thead><tr><th>Tracking / WO</th><th>Customer / Location</th><th>Status</th><th>Priority</th><th>Technician</th><th>NTE %</th><th>Onsite</th><th>Actions</th></tr></thead><tbody id="orders"></tbody></table></div></div>
+</section>
+
+<section id="billing" class="panel">
+<div class="card"><h2>Profit & Invoice Pipeline</h2><div class="scroll"><table><thead><tr><th>Tracking</th><th>Customer</th><th>Invoice</th><th>Estimated Cost</th><th>Gross Profit</th><th>Margin</th><th>NTE</th><th>Invoice Status</th><th>Payment</th></tr></thead><tbody id="billingRows"></tbody></table></div></div>
+</section>
+
+<section id="tasks" class="panel">
+<div class="grid two"><div class="card"><h2>Create Follow-up Task</h2><form id="taskForm">
+<label>Task</label><input id="taskTitle" required placeholder="Example: Call customer with job update">
+<div class="row"><div><label>Tracking number</label><input id="taskTracking"></div><div><label>Assigned to</label><select id="taskAssigned"><option>Travis</option><option>Ariana</option><option>Shellie</option><option>Technician</option></select></div></div>
+<div class="row"><div><label>Priority</label><select id="taskPriority"><option>normal</option><option>urgent</option></select></div><div><label>Due</label><input id="taskDue" type="datetime-local"></div></div>
+<label>Notes</label><textarea id="taskNotes"></textarea><button>Create Task</button></form></div>
+<div class="card"><h2>Open Tasks</h2><div id="taskList" class="scroll"></div></div></div>
+</section>
+
+<section id="activity" class="panel"><div class="card"><h2>Recent Activity</h2><div id="events" class="scroll"></div></div></section>
+
+<section id="operations" class="panel">
+ <div class="grid two">
+  <div class="card alert"><h2>Immediate Attention</h2><div id="immediateActions" class="scroll"></div></div>
+  <div class="card warning"><h2>Aging Workflow</h2><div id="agingWorkflow" class="scroll"></div></div>
+ </div>
+ <div class="grid four" style="margin-top:14px">
+  <div class="card queue-launcher" role="button" tabindex="0" data-queue="authorization"><span class="muted">Authorization Queue</span><div id="queueAuth" class="metric">0</div><div class="small muted">Click to open this queue</div><span class="queue-arrow">›</span></div>
+  <div class="card queue-launcher" role="button" tabindex="0" data-queue="proposal"><span class="muted">Proposal Queue</span><div id="queueProposal" class="metric">0</div><div class="small muted">Click to open this queue</div><span class="queue-arrow">›</span></div>
+  <div class="card queue-launcher" role="button" tabindex="0" data-queue="parts"><span class="muted">Parts Queue</span><div id="queueParts" class="metric">0</div><div class="small muted">Click to open this queue</div><span class="queue-arrow">›</span></div>
+  <div class="card queue-launcher" role="button" tabindex="0" data-queue="billing"><span class="muted">Billing Queue</span><div id="queueBilling" class="metric">0</div><div class="small muted">Click to open this queue</div><span class="queue-arrow">›</span></div>
+   <div class="card queue-launcher" role="button" tabindex="0" data-sheet-log="true"><span class="muted">Job Sheets Sync</span><div id="sheetWritesPending" class="metric">0</div><div id="sheetWriteLast" class="small muted"></div><span class="queue-arrow">›</span></div>
+ </div>
+ </section>
+
+<section id="settings" class="panel"><div class="card"><h2>Automation Settings</h2><form id="settingsForm">
+<div class="formgrid">
+<div><label>Flag onsite jobs after (minutes)</label><input id="maxOnsite" type="number" min="15"></div>
+<div><label>Reminder interval (minutes)</label><input id="reminderMinutes" type="number" min="15"></div>
+<div><label>NTE warning level (%)</label><input id="nteWarningPercent" type="number" min="50" max="100"></div>
+<div><label>Weekly overtime threshold (hours)</label><input id="overtimeHours" type="number" min="1"></div>
+</div>
+<div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div>
+<button>Save Settings</button></form></div></section>
+</main>
+
+<dialog id="officeQueueDialog" class="queue-dialog">
+ <div class="office-section-title"><div><h2 id="officeQueueTitle">Office Queue</h2><div id="officeQueueSummary" class="small muted"></div></div><button type="button" class="secondary" data-office-close-queue>Close</button></div>
+ <div class="queue-toolbar"><input id="officeQueueSearch" placeholder="Search work order, customer, location or technician"><select id="officeQueueSort"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="customer">Customer A–Z</option></select><button type="button" class="secondary" data-office-open-workorders>Open Work Orders</button></div>
+ <div id="officeQueueList" class="queue-list"></div>
+</dialog>
+<div id="officeToast" class="office-toast"></div>
+
+
+<dialog id="orderDialog"><h2>Add or Update Work Order</h2><form id="orderForm">
+<div class="formgrid">
+<div><label>Tracking number</label><input id="oTracking" required></div><div><label>Work order number</label><input id="oWorkOrder"></div>
+<div><label>Customer</label><input id="oCustomer"></div><div><label>Location</label><input id="oLocation"></div>
+<div><label>Address</label><input id="oAddress"></div><div><label>Trade</label><input id="oTrade" placeholder="Lighting, electrical, signs…"></div>
+<div><label>Priority</label><select id="oPriority"><option>normal</option><option>urgent</option><option>emergency</option></select></div><div><label>Technician</label><input id="oTechnician"></div>
+<div><label>Technician phone</label><input id="oTechnicianPhone" inputmode="tel"></div><div><label>Customer phone</label><input id="oCustomerPhone" inputmode="tel"></div>
+<div><label>NTE ($)</label><input id="oNte" type="number" step=".01"></div><div><label>Estimated total ($)</label><input id="oEstimated" type="number" step=".01"></div>
+<div><label>Labor hours</label><input id="oLaborHours" type="number" step=".01"></div><div><label>Billable labor rate</label><input id="oLaborRate" type="number" step=".01"></div>
+<div><label>Labor cost rate</label><input id="oLaborCostRate" type="number" step=".01"></div><div><label>Material cost</label><input id="oMaterialCost" type="number" step=".01"></div>
+<div><label>Material markup %</label><input id="oMarkup" type="number" step=".01"></div><div><label>Miscellaneous cost</label><input id="oMisc" type="number" step=".01"></div>
+<div><label>Invoice amount</label><input id="oInvoiceAmount" type="number" step=".01"></div><div><label>Payment status</label><select id="oPaymentStatus"><option value="">Unpaid</option><option value="pending">Pending</option><option value="paid">Paid</option></select></div>
+<div><label>State</label><select id="oState"><option value="new">New</option><option value="scheduled">Scheduled</option><option value="onsite">Onsite</option><option value="attention">Needs attention</option><option value="completed">Completed</option><option value="ready_to_invoice">Ready to invoice</option><option value="paid">Paid</option></select></div><div><label>Scheduled</label><input id="oScheduled" type="datetime-local"></div>
+</div>
+<div class="formgrid">
+<div><label><input id="oPhotos" type="checkbox" style="width:auto"> Photos complete</label></div>
+<div><label><input id="oCompletionNotes" type="checkbox" style="width:auto"> Completion notes complete</label></div>
+<div><label>Proposal status</label><select id="oProposalStatus"><option value="">Not required</option><option value="required">Required</option><option value="submitted">Submitted</option><option value="approved">Approved</option></select></div>
+<div><label>Invoice status</label><select id="oInvoiceStatus"><option value="">Not started</option><option value="documentation_missing">Documentation missing</option><option value="ready_for_review">Ready for review</option><option value="submitted">Submitted</option><option value="paid">Paid</option></select></div>
+</div>
+<label>Problem description</label><textarea id="oProblem"></textarea><label>Completion notes</label><textarea id="oCompletionText"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
+<div class="row"><button>Save Work Order</button><button type="button" id="closeOrder" class="secondary">Cancel</button></div></form></dialog>
+
+
+<dialog id="createJobDialog" class="v4-dialog">
+ <div class="office-section-title"><div><h2>Create a New Job</h2><div class="small muted">Creates the job in Joshua, queues Job Sheets, and sends it to ClockShark.</div></div><button id="closeCreateJob" type="button" class="secondary">Close</button></div>
+ <form id="createJobForm"><div class="v4-grid">
+  <div><label>Tracking / work-order number *</label><input id="cjTracking" required></div><div><label>Customer *</label><input id="cjCustomer" required></div>
+  <div><label>Location / Store</label><input id="cjLocation"></div><div><label>Trade</label><input id="cjTrade"></div>
+  <div class="wide"><label>Street address</label><input id="cjAddress"></div><div><label>City</label><input id="cjCity"></div><div><label>State</label><input id="cjState" value="TX"></div>
+  <div><label>ZIP code</label><input id="cjZip"></div><div><label>Contact name</label><input id="cjContact"></div><div><label>Customer phone</label><input id="cjPhone"></div>
+  <div><label>Priority</label><select id="cjPriority"><option value="normal">Normal</option><option value="urgent">Urgent</option><option value="emergency">Emergency</option></select></div><div><label>NTE ($)</label><input id="cjNte" type="number" min="0" step=".01"></div>
+  <div><label>Scheduled date/time</label><input id="cjScheduled" type="datetime-local"></div><div><label>Assigned technician</label><select id="cjTech"><option value="">Unassigned</option></select><div id="cjTechSource" class="small muted"></div></div>
+  <div class="wide"><label>Job description / scope *</label><textarea id="cjDescription" required></textarea></div><div class="wide"><label>Office notes</label><textarea id="cjNotes"></textarea></div>
+ </div><div style="margin-top:14px"><button id="createJobSubmit" type="submit">Create Job in All Systems</button></div></form><div id="createJobResult" style="display:none;margin-top:16px"></div>
+</dialog>
+
+<dialog id="wishlistDialog" class="v4-dialog">
+ <div class="office-section-title"><div><h2>Office Wishlist</h2><div class="small muted">Request a feature or change. Joshua saves it and texts Travis.</div></div><button id="closeWishlist" type="button" class="secondary">Close</button></div>
+ <form id="wishlistForm"><div class="v4-grid"><div><label>Requested by *</label><input id="wishRequestedBy" required></div><div><label>Priority</label><select id="wishPriority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div><div class="wide"><label>Feature or change *</label><input id="wishTitle" required></div><div class="wide"><label>What should Joshua do? *</label><textarea id="wishDescription" required></textarea></div></div><div style="margin-top:14px"><button id="wishlistSubmit" type="submit">Send Request to Travis</button></div></form>
+ <div id="wishlistResult" style="display:none;margin-top:14px"></div><div class="office-section-title" style="margin-top:24px"><div><h3 style="margin:0">Submitted Requests</h3></div><button id="refreshWishlist" type="button" class="secondary">Refresh</button></div><div id="wishlistList" class="queue-list"></div>
+</dialog>
+
+<dialog id="techDialog"><h2>Add or Update Technician</h2><form id="techForm">
+<div class="formgrid">
+<div><label>Name</label><input id="tName" required></div><div><label>Phone</label><input id="tPhone" inputmode="tel"></div>
+<div><label>Status</label><select id="tStatus"><option value="available">Available</option><option value="assigned">Assigned</option><option value="onsite">Onsite</option><option value="off">Off</option></select></div>
+<div><label>Current tracking number</label><input id="tCurrent"></div>
+<div><label>Hours today</label><input id="tHoursToday" type="number" step=".01"></div><div><label>Hours this week</label><input id="tHoursWeek" type="number" step=".01"></div>
+<div><label>Skills (comma separated)</label><input id="tSkills"></div><div><label>Next job tracking</label><input id="tNext"></div>
+</div><div class="row"><button>Save Technician</button><button type="button" id="closeTech" class="secondary">Cancel</button></div></form></dialog>
+
+<script>
+// JOSHUA_PHASE6_DASHBOARD
+// JOSHUA_PHASE7_OPERATIONS_DASHBOARD
+// JOSHUA_PHASE8_JOB_SHEETS_CONTROLS
+const key=new URLSearchParams(location.search).get("key")||localStorage.getItem("joshuaKey")||"";
+if(key)localStorage.setItem("joshuaKey",key);
+const headers={"Content-Type":"application/json","X-Control-Panel-Key":key};
+let cache={workOrders:[],openTasks:[],technicians:[],settings:{},metrics:{},insights:[]};
+const money=v=>v===null||v===undefined||v===""?"—":new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(v));
+const fmt=v=>v?new Date(v).toLocaleString():"—";
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.panel").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.getElementById(b.dataset.tab).classList.add("active")});
+async function api(url,opts={}){const r=await fetch(url,{...opts,headers});const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d}
+
+async function refresh(){
+ try{
+  const d=await api("/api/control/status");cache=d;
+  live.textContent="● LIVE";joshua.textContent=d.online?"ONLINE":"OFFLINE";
+  active.textContent=d.activeCount;fails.textContent=d.failures.length+d.attentionWorkOrders.length;taskCount.textContent=d.openTasks.length;
+  revenueToday.textContent=money(d.metrics.revenueToday);invoiceBacklog.textContent=money(d.metrics.invoiceBacklog);
+  completedToday.textContent=d.metrics.completedToday;openOrders.textContent=d.metrics.openWorkOrders;availableTechs.textContent=d.metrics.availableTechnicians;outs.textContent=d.todayCheckOuts;
+   const sc=d.metrics.statusCounts||{};
+   awaitingAuth.textContent=sc.awaiting_authorization||0;
+   pendingProposal.textContent=sc.pending_proposal||0;
+   partsNeeded.textContent=sc.parts_needed||0;
+   readyToBill.textContent=sc.ready_to_bill||0;
+  renderInsights();renderAttention();renderOnsite();renderDispatch();renderTechnicians();renderOrders();renderBilling();renderTasks();renderActivity();renderOperations();fillSettings();
+ }catch(e){live.textContent="● OFFLINE / UNAUTHORIZED";live.style.color="#ff8b7d"}
+}
+function renderInsights(){insights.innerHTML=cache.insights.map(x=>`<div class="insight"><strong>${x.severity==="warning"?"⚠":x.severity==="success"?"✓":"ℹ"} ${esc(x.title)}</strong><div class="small muted">${esc(x.detail)}</div></div>`).join("")}
+function renderAttention(){const arr=[...cache.failures,...cache.attentionWorkOrders];attention.innerHTML=arr.length?arr.map(x=>{const label=(x.joshuaStatus||x.type||x.state||"Work order needs attention").replaceAll("_"," ");const detail=x.lastError||x.error||x.callStatus||(x.checkInAt?x.liveOnsiteDuration:"Review required");return `<div class="event"><strong>⚠ ${esc(label)}</strong><div class="small">${esc(x.trackingNumber||"")} ${esc(detail)}</div></div>`}).join(""):"<span class='live'>No current problems.</span>"}
+function renderOnsite(){onsiteCards.innerHTML=cache.active.length?cache.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><div class="metric" style="margin-top:10px">${esc(x.liveOnsiteDuration)}</div><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>"}
+function renderDispatch(){
+ const jobs=cache.workOrders.filter(x=>!["completed","paid"].includes(x.state));
+ dispatchBoard.innerHTML=jobs.length?jobs.map(x=>`<div class="card dispatch-card ${x.needsAttention?"alert":""}"><div class="top"><strong>#${esc(x.trackingNumber)}</strong><span class="badge ${esc(x.state)}">${esc((x.joshuaStatus||x.state||"new").replaceAll("_"," "))}</span></div><div>${esc(x.customer||"—")}</div><div class="small muted">${esc(x.address||x.locationName||"")}</div><div class="small">Priority: ${esc(x.priority||"normal")} · Tech: ${esc(x.technician||"Unassigned")}</div><div class="actions"><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button><button onclick="quickAssign('${esc(x.trackingNumber)}')">Assign</button></div></div>`).join(""):"<div class='muted'>No open work orders.</div>";
+}
+function renderTechnicians(){
+ techCards.innerHTML=cache.technicians.length?cache.technicians.map(t=>`<div class="card tech-card"><div class="tech-row"><strong>${esc(t.name)}</strong><span class="badge ${esc(t.status)}">${esc(t.status)}</span></div><div class="small muted">Current: ${esc(t.currentTrackingNumber||"None")}</div><div class="small">Today: ${Number(t.hoursToday||0).toFixed(1)} hrs · Week: ${Number(t.hoursWeek||0).toFixed(1)} hrs</div><div class="progress"><span style="width:${Math.min(100,(Number(t.hoursWeek||0)/Number(cache.settings.overtimeHours||40))*100)}%"></span></div><div class="small muted">Skills: ${esc((t.skills||[]).join(", ")||"Not listed")}</div><button class="secondary" onclick="editTech('${esc(t.name)}')">Edit Technician</button></div>`).join(""):"<div class='muted'>No technicians have been added yet.</div>";
+}
+function renderOrders(){
+ const q=orderSearch.value.toLowerCase();
+ const rows=cache.workOrders.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
+ orders.innerHTML=rows.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong><br><span class="small muted">${esc(x.workOrderNumber||"")}</span></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.joshuaStatus||x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td>${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.checkInAt||x.onsiteMilliseconds?x.liveOnsiteDuration:"—")}</td><td><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
+}
+function renderBilling(){
+ billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${money(x.invoiceAmount)}</td><td>${money(x.estimatedCost)}</td><td class="${Number(x.grossProfit||0)>=0?"profitPositive":"profitNegative"}">${money(x.grossProfit)}</td><td>${Number(x.grossMargin||0).toFixed(1)}%</td><td>${money(x.nte)}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${esc(x.paymentStatus||"unpaid")}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the profit pipeline.</td></tr>";
+}
+function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>"}
+function renderActivity(){events.innerHTML=cache.recentEvents.slice(0,70).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>"}
+
+function actionButtons(x){
+ const tracking=esc(x.trackingNumber);
+ const status=x.joshuaStatus||"";
+ const buttons=[];
+ if(status==="awaiting_authorization")buttons.push(`<button onclick="createOpsAction('${tracking}','request_authorization')">Request Authorization</button>`);
+ if(status==="pending_proposal")buttons.push(`<button onclick="createOpsAction('${tracking}','follow_up_proposal')">Proposal Follow-up</button>`);
+ if(status==="parts_needed")buttons.push(`<button onclick="createOpsAction('${tracking}','order_parts')">Parts Follow-up</button>`);
+ if(status==="ready_to_bill")buttons.push(`<button onclick="createOpsAction('${tracking}','prepare_invoice')">Prepare Invoice</button>`);
+ buttons.push(`<button onclick="editJobSheet('${tracking}')">Update Job Sheet</button>`);
+ buttons.push(`<button class="secondary" onclick="showTimeline('${tracking}')">Timeline</button>`);
+ return buttons.join("");
+}
+
+function renderOperations(){
+ const actionable=cache.actionableItems||[];
+ const aging=cache.agingWorkflowItems||[];
+ immediateActions.innerHTML=actionable.length?actionable.map(x=>`<div class="event"><strong>🚨 #${esc(x.trackingNumber)} — ${esc(x.actionableReason)}</strong><div class="small muted">${esc(x.customer||x.locationName||"")} · ${Math.round(Number(x.ageHours||0))} hrs old</div><div class="actions" style="margin-top:8px">${actionButtons(x)}<button class="danger" onclick="createOpsAction('${esc(x.trackingNumber)}','review_exception')">Assign Review</button></div></div>`).join(""):"<span class='live'>No immediate operational exceptions.</span>";
+ agingWorkflow.innerHTML=aging.length?aging.map(x=>`<div class="event"><strong>⚠ #${esc(x.trackingNumber)} — ${esc(x.workflowAgeWarning)}</strong><div class="small muted">${esc(x.customer||x.locationName||"")} · ${Math.round(Number(x.ageHours||0))} hrs old</div><div class="actions" style="margin-top:8px">${actionButtons(x)}</div></div>`).join(""):"<span class='live'>No aging workflow items.</span>";
+ const q=cache.workflowQueues||{};
+ queueAuth.textContent=(q.awaitingAuthorization||[]).length;
+ queueProposal.textContent=(q.pendingProposals||[]).length;
+ queueParts.textContent=(q.partsNeeded||[]).length;
+ queueBilling.textContent=(q.readyToBill||[]).length;
+ const sw=cache.jobSheetsWriteback||{};
+ sheetWritesPending.textContent=sw.pending||0;
+ sheetWriteLast.textContent=sw.lastAcknowledgedAt?"Last sheet update: "+fmt(sw.lastAcknowledgedAt):"Waiting for first writeback";
+}
+
+
+function sheetStatusOptions(current){
+ const options=[
+  ["new","New"],
+  ["scheduled","Scheduled"],
+  ["onsite","On Site"],
+  ["parts_needed","Parts Needed"],
+  ["awaiting_authorization","Awaiting Authorization"],
+  ["pending_proposal","Pending Proposal"],
+  ["ready_to_bill","Ready to Bill"],
+  ["completed","Completed"],
+  ["on_hold","On Hold"],
+  ["closed","Closed"],
+  ["paid","Paid"]
+ ];
+ return options.map(([value,label])=>`<option value="${value}" ${value===current?"selected":""}>${label}</option>`).join("");
+}
+
+window.editJobSheet=async tracking=>{
+ const item=(cache.workOrders||[]).find(x=>String(x.trackingNumber)===String(tracking));
+ if(!item)return alert("Work order not found");
+ const status=prompt(
+  "Enter Joshua Status:\nnew, scheduled, onsite, parts_needed, awaiting_authorization, pending_proposal, ready_to_bill, completed, on_hold, closed, paid",
+  item.joshuaStatus||"new"
+ );
+ if(status===null)return;
+ const documentation=prompt(
+  "Enter Joshua Documentation:\ncomplete, missing_photos, missing_notes, missing_photos_and_notes, not_required",
+  item.joshuaDocumentation||""
+ );
+ if(documentation===null)return;
+ const assignedTechnician=prompt("Assigned technician:",item.assignedTechnician||"");
+ if(assignedTechnician===null)return;
+ const officeNotes=prompt("Office notes:",item.officeNotes||"");
+ if(officeNotes===null)return;
+
+ await api(`/api/control/work-orders/${encodeURIComponent(tracking)}/job-sheet`,{
+  method:"POST",
+  body:JSON.stringify({joshuaStatus:status,joshuaDocumentation:documentation,assignedTechnician,officeNotes})
+ });
+ alert("Joshua queued this change for Job Sheets.");
+ await refresh();
+};
+
+window.createOpsAction=async(tracking,action)=>{
+ const assignedTo=prompt("Assign this task to:","Ariana")||"Ariana";
+ const notes=prompt("Optional notes:","")||"";
+ await api(`/api/control/work-orders/${encodeURIComponent(tracking)}/action`,{method:"POST",body:JSON.stringify({action,assignedTo,notes})});
+ await refresh();
+};
+
+window.showTimeline=async tracking=>{
+ try{
+  const d=await api(`/api/control/work-orders/${encodeURIComponent(tracking)}/timeline`);
+  const text=d.timeline.length?d.timeline.map(x=>`${fmt(x.at)} — ${x.label}`).join("\n"):"No timeline activity found.";
+  alert(`Work Order ${tracking}\n\n${text}`);
+ }catch(e){alert(e.message)}
+};
+
+function fillSettings(){maxOnsite.value=cache.settings.maxOnsiteMinutes;reminderMinutes.value=cache.settings.reminderMinutes;nteWarningPercent.value=cache.settings.nteWarningPercent;overtimeHours.value=cache.settings.overtimeHours;autoReminders.checked=cache.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=cache.settings.autoInvoiceQueue!==false}
+
+action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
+ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
+orderSearch.oninput=renderOrders;newOrder.onclick=()=>openCreateJob();closeOrder.onclick=()=>orderDialog.close();
+window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;orderForm.reset();oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTrade.value=x.trade||"";oPriority.value=x.priority||"normal";oTechnician.value=x.technician||"";oTechnicianPhone.value=x.technicianPhone||"";oCustomerPhone.value=x.customerPhone||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oLaborHours.value=x.laborHours??"";oLaborRate.value=x.laborRate??"";oLaborCostRate.value=x.laborCostRate??"";oMaterialCost.value=x.materialCost??"";oMarkup.value=x.materialMarkupPercent??"";oMisc.value=x.miscCost??"";oInvoiceAmount.value=x.invoiceAmount??"";oPaymentStatus.value=x.paymentStatus||"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?String(x.scheduledAt).slice(0,16):"";oPhotos.checked=x.photosComplete===true;oCompletionNotes.checked=x.completionNotesComplete===true;oProposalStatus.value=x.proposalStatus||"";oInvoiceStatus.value=x.invoiceStatus||"";oProblem.value=x.problemDescription||"";oCompletionText.value=x.completionNotes||"";oNotes.value=x.notes||"";orderDialog.showModal()};
+orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,trade:oTrade.value,priority:oPriority.value,technician:oTechnician.value,technicianPhone:oTechnicianPhone.value,customerPhone:oCustomerPhone.value,nte:oNte.value,estimatedTotal:oEstimated.value,laborHours:oLaborHours.value,laborRate:oLaborRate.value,laborCostRate:oLaborCostRate.value,materialCost:oMaterialCost.value,materialMarkupPercent:oMarkup.value,miscCost:oMisc.value,invoiceAmount:oInvoiceAmount.value,paymentStatus:oPaymentStatus.value,state:oState.value,scheduledAt:oScheduled.value,photosComplete:oPhotos.checked,completionNotesComplete:oCompletionNotes.checked,proposalStatus:oProposalStatus.value,proposalApproved:oProposalStatus.value==="approved",invoiceStatus:oInvoiceStatus.value,problemDescription:oProblem.value,completionNotes:oCompletionText.value,notes:oNotes.value})});orderDialog.close();refresh()};
+taskForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/tasks",{method:"POST",body:JSON.stringify({title:taskTitle.value,trackingNumber:taskTracking.value,assignedTo:taskAssigned.value,priority:taskPriority.value,dueAt:taskDue.value,notes:taskNotes.value})});taskForm.reset();refresh()};
+window.closeTask=async id=>{await api(`/api/control/tasks/${id}/close`,{method:"POST",body:"{}"});refresh()};
+newTech.onclick=()=>{techForm.reset();techDialog.showModal()};closeTech.onclick=()=>techDialog.close();
+window.editTech=name=>{const t=cache.technicians.find(x=>x.name===name);if(!t)return;tName.value=t.name;tPhone.value=t.phone||"";tStatus.value=t.status||"available";tCurrent.value=t.currentTrackingNumber||"";tHoursToday.value=t.hoursToday||0;tHoursWeek.value=t.hoursWeek||0;tSkills.value=(t.skills||[]).join(", ");tNext.value=t.nextJobTrackingNumber||"";techDialog.showModal()};
+techForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/technicians/${encodeURIComponent(tName.value)}`,{method:"POST",body:JSON.stringify({phone:tPhone.value,status:tStatus.value,currentTrackingNumber:tCurrent.value,hoursToday:tHoursToday.value,hoursWeek:tHoursWeek.value,skills:tSkills.value,nextJobTrackingNumber:tNext.value})});techDialog.close();refresh()};
+window.quickAssign=async tracking=>{const tech=prompt("Enter technician name");if(!tech)return;await api("/api/control/dispatch/assign",{method:"POST",body:JSON.stringify({trackingNumber:tracking,technician:tech,state:"scheduled"})});refresh()};
+recommendBtn.onclick=async()=>{recommendations.textContent="Checking…";try{const d=await api(`/api/control/dispatch/recommend/${recommendTracking.value}`);recommendations.innerHTML=d.recommendations.map((x,i)=>`<div class="event"><strong>${i+1}. ${esc(x.name)} — Score ${x.score}</strong><div class="small muted">${esc(x.status)} · ${x.hoursWeek} hrs this week · ${esc((x.skills||[]).join(", "))}</div></div>`).join("")||"<span class='muted'>No technicians available.</span>"}catch(e){recommendations.textContent=e.message}};
+settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value,nteWarningPercent:nteWarningPercent.value,overtimeHours:overtimeHours.value,autoTechnicianReminders:autoReminders.checked,autoInvoiceQueue:autoInvoiceQueue.checked})});refresh()};
+refresh();setInterval(refresh,15000);
+</script>
+
+<script>
+// JOSHUA_OFFICE_SUITE_V3_DESKTOP
+let officeActiveQueue="";
+const officeQueueConfig={
+ authorization:{title:"Authorization Queue",key:"awaitingAuthorization",action:"request_authorization",actionLabel:"Request Authorization"},
+ proposal:{title:"Proposal Queue",key:"pendingProposals",action:"follow_up_proposal",actionLabel:"Proposal Follow-up"},
+ parts:{title:"Parts Queue",key:"partsNeeded",action:"order_parts",actionLabel:"Parts Follow-up"},
+ billing:{title:"Billing Queue",key:"readyToBill",action:"prepare_invoice",actionLabel:"Prepare Invoice"}
+};
+const officeEl=id=>document.getElementById(id);
+function officeOpenTab(tab){
+ const native=document.querySelector('.tab[data-tab="'+tab+'"]');
+ if(native)native.click();
+ else{
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===tab));
+ }
+ document.querySelectorAll('.office-nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.officeTab===tab));
+ window.scrollTo({top:0,behavior:'smooth'});
+}
+window.officeOpenTab=officeOpenTab;
+function officeAge(item){const d=new Date(item.lastSheetSyncAt||item.updatedAt||item.createdAt||0);return Number.isFinite(d.getTime())?Math.max(0,Math.round((Date.now()-d.getTime())/3600000)):0}
+function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...(((window.cache||cache||{}).workflowQueues||{})[cfg.key]||[])]:[]}
+function officeRenderQueue(){
+ const cfg=officeQueueConfig[officeActiveQueue];if(!cfg)return;
+ const search=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort'),title=officeEl('officeQueueTitle'),summary=officeEl('officeQueueSummary'),list=officeEl('officeQueueList');
+ if(!search||!sortEl||!title||!summary||!list)return;
+ let items=officeQueueItems(officeActiveQueue);
+ const term=(search.value||'').toLowerCase().trim();
+ if(term)items=items.filter(x=>[x.trackingNumber,x.workOrderNumber,x.customer,x.locationName,x.address,x.assignedTechnician].some(v=>String(v||'').toLowerCase().includes(term)));
+ const sort=sortEl.value;
+ items.sort((a,b)=>sort==='customer'?String(a.customer||'').localeCompare(String(b.customer||'')):sort==='newest'?officeAge(a)-officeAge(b):officeAge(b)-officeAge(a));
+ title.textContent=cfg.title;
+ summary.textContent=items.length+' work order'+(items.length===1?'':'s')+' ready for review';
+ list.innerHTML=items.length?items.map(x=>{
+  const tracking=esc(x.trackingNumber||'');
+  const customer=esc(x.customer||x.locationName||'Unknown customer');
+  const location=esc(x.locationName||x.address||'');
+  const tech=esc(x.assignedTechnician||'Unassigned');
+  return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location?' · '+location:'')+'</div></div><div><span class="badge">'+esc(String(x.joshuaStatus||'').replaceAll('_',' '))+'</span><div class="small muted" style="margin-top:5px">'+officeAge(x)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="'+cfg.action+'" data-tracking="'+tracking+'">'+cfg.actionLabel+'</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>'
+ }).join(''):'<div class="queue-empty">No work orders are currently in this queue.</div>';
+}
+function officeOpenQueue(type){
+ if(!officeQueueConfig[type])return;
+ officeActiveQueue=type;
+ const search=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort'),dialog=officeEl('officeQueueDialog');
+ if(search)search.value='';if(sortEl)sortEl.value='oldest';officeRenderQueue();
+ if(dialog){if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','open')}
+}
+window.officeOpenQueue=officeOpenQueue;
+function officeCloseQueue(){const d=officeEl('officeQueueDialog');if(d){if(typeof d.close==='function')d.close();else d.removeAttribute('open')}}
+function officeOpenAllWorkOrders(){officeCloseQueue();officeOpenTab('workorders');const search=officeEl('orderSearch');if(search){search.value='';search.dispatchEvent(new Event('input',{bubbles:true}))}}
+window.officeOpenAllWorkOrders=officeOpenAllWorkOrders;
+function officeShowSheetLog(){officeOpenTab('activity');setTimeout(()=>{const e=officeEl('events');if(e)e.scrollIntoView({behavior:'smooth',block:'start'})},100)}
+function officeUpdateChrome(){
+ const data=window.cache||cache||{},q=data.workflowQueues||{},sw=data.jobSheetsWriteback||{},attention=data.actionableItems||[];
+ const set=(id,value)=>{const el=officeEl(id);if(el)el.textContent=value||0};
+ set('navAttentionCount',attention.length);set('navProposalCount',(q.pendingProposals||[]).length);set('navBillingCount',(q.readyToBill||[]).length);set('navPartsCount',(q.partsNeeded||[]).length);set('navSheetCount',sw.pending||0);
+ const hour=new Date().getHours(),greeting=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+ const greetingEl=officeEl('officeGreeting'),briefEl=officeEl('officeBrief');
+ if(greetingEl)greetingEl.textContent=greeting+', Precision Lighting Team.';
+ const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+(q.partsNeeded||[]).length+(q.readyToBill||[]).length;
+ if(briefEl)briefEl.textContent=total?('Joshua has '+total+' workflow item'+(total===1?'':'s')+' organized for review.'):"Joshua has no queued workflow items requiring review.";
+}
+document.addEventListener('click',e=>{
+ const tab=e.target.closest('[data-office-tab]');if(tab){e.preventDefault();officeOpenTab(tab.dataset.officeTab);return}
+ const queue=e.target.closest('[data-office-queue],[data-queue]');if(queue){e.preventDefault();officeOpenQueue(queue.dataset.officeQueue||queue.dataset.queue);return}
+ if(e.target.closest('[data-office-sheetlog],[data-sheet-log]')){e.preventDefault();officeShowSheetLog();return}
+ if(e.target.closest('[data-office-close-queue]')){e.preventDefault();officeCloseQueue();return}
+ if(e.target.closest('[data-office-open-workorders]')){e.preventDefault();officeOpenAllWorkOrders();return}
+ const action=e.target.closest('[data-office-action]');if(action){e.preventDefault();window.createOpsAction?.(action.dataset.tracking,action.dataset.officeAction);return}
+ const sheet=e.target.closest('[data-office-job-sheet]');if(sheet){e.preventDefault();window.editJobSheet?.(sheet.dataset.tracking);return}
+ const timeline=e.target.closest('[data-office-timeline]');if(timeline){e.preventDefault();window.showTimeline?.(timeline.dataset.tracking);return}
+});
+document.addEventListener('keydown',e=>{const q=e.target.closest?.('[data-queue]');if(q&&(e.key==='Enter'||e.key===' ')){e.preventDefault();officeOpenQueue(q.dataset.queue)}});
+const searchEl=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort');
+if(searchEl)searchEl.addEventListener('input',officeRenderQueue);if(sortEl)sortEl.addEventListener('change',officeRenderQueue);
+const officeOriginalRefresh=window.refresh;
+if(typeof officeOriginalRefresh==='function'){window.refresh=async(...args)=>{const r=await officeOriginalRefresh(...args);officeUpdateChrome();const d=officeEl('officeQueueDialog');if(d?.open)officeRenderQueue();return r}}
+setTimeout(officeUpdateChrome,250);
+</script>
+
+
+<script>
+// JOSHUA_V4_NATIVE_FEATURES
+(function(){
+ const el=id=>document.getElementById(id);
+ const row=(name,x)=>'<div class="system-result '+(x&&x.ok?'ok':'fail')+'"><strong>'+(x&&x.ok?'✓ ':'⚠ ')+name+'</strong><span class="small">'+esc(x&&x.ok?(x.status||'Complete'):(x&&x.error||'Failed'))+'</span></div>';
+ async function loadTechs(){const sel=el('cjTech'),note=el('cjTechSource');try{const d=await api('/api/control/clockshark-technicians');sel.innerHTML='<option value="">Unassigned</option>'+d.technicians.map(t=>'<option value="'+esc(t.name)+'" data-id="'+esc(t.clockSharkId||'')+'">'+esc(t.name)+'</option>').join('');note.textContent=d.technicians.length+' active technician'+(d.technicians.length===1?'':'s')+' available';}catch(e){note.textContent='Technician list unavailable';}}
+ window.openCreateJob=async function(){el('createJobForm').reset();el('cjState').value='TX';el('createJobResult').style.display='none';await loadTechs();el('createJobDialog').showModal();};
+ el('createJobWelcome')?.addEventListener('click',openCreateJob);el('closeCreateJob').onclick=()=>el('createJobDialog').close();
+ el('createJobForm').onsubmit=async e=>{e.preventDefault();const tracking=el('cjTracking').value.trim();if(!confirm('Create job #'+tracking+' in Joshua, Job Sheets, and ClockShark?'))return;const btn=el('createJobSubmit'),out=el('createJobResult');btn.disabled=true;btn.textContent='Creating…';out.style.display='block';out.innerHTML='<div class="muted">Creating job…</div>';try{const opt=el('cjTech').selectedOptions[0];const d=await api('/api/control/jobs/create',{method:'POST',body:JSON.stringify({trackingNumber:tracking,workOrderNumber:tracking,customer:el('cjCustomer').value,locationName:el('cjLocation').value,trade:el('cjTrade').value,address:el('cjAddress').value,city:el('cjCity').value,stateProvince:el('cjState').value,postalCode:el('cjZip').value,contactName:el('cjContact').value,customerPhone:el('cjPhone').value,priority:el('cjPriority').value,nte:el('cjNte').value,scheduledAt:el('cjScheduled').value,assignedTechnician:el('cjTech').value,clockSharkTechnicianId:opt?.dataset.id||'',description:el('cjDescription').value,officeNotes:el('cjNotes').value})});out.innerHTML='<h3>Job Creation Results</h3>'+row('Joshua',d.systems.joshua)+row('Job Sheets',d.systems.jobSheets)+row('ClockShark',d.systems.clockShark)+(d.systems.clockShark.ok?'':'<button id="retryCs" type="button" class="secondary" style="margin-top:10px">Retry ClockShark</button>');el('retryCs')?.addEventListener('click',async()=>{try{await api('/api/control/jobs/'+encodeURIComponent(tracking)+'/retry-clockshark',{method:'POST',body:'{}'});el('retryCs').textContent='✓ ClockShark Sent';}catch(err){alert(err.message)}});await refresh();}catch(err){out.innerHTML='<div class="system-result fail"><strong>Job not created</strong><span>'+esc(err.message)+'</span></div>';}finally{btn.disabled=false;btn.textContent='Create Job in All Systems';}};
+ async function loadWishlist(){const list=el('wishlistList');list.innerHTML='<div class="muted">Loading…</div>';try{const d=await api('/api/control/wishlist');const open=d.items.filter(x=>!['completed','declined'].includes(x.status)).length;el('navWishlistCount').textContent=open;list.innerHTML=d.items.length?d.items.map(x=>'<div class="queue-row" style="grid-template-columns:1fr 2fr .8fr auto"><div><strong>'+esc(x.title)+'</strong><div class="small muted">'+esc(x.requestedBy||'Office')+' · '+fmt(x.createdAt)+'</div></div><div>'+esc(x.description)+'<div class="small muted">'+(x.textStatus==='failed'?'⚠ Text failed':'✓ Text '+esc(x.textStatus||'pending'))+'</div></div><div>'+esc((x.priority||'normal').toUpperCase())+'</div><select class="wish-status" data-id="'+esc(x.id)+'">'+['requested','reviewing','planned','in_progress','completed','declined'].map(s=>'<option value="'+s+'" '+(s===x.status?'selected':'')+'>'+s.replaceAll('_',' ')+'</option>').join('')+'</select></div>').join(''):'<div class="queue-empty">No requests yet.</div>';}catch(e){list.innerHTML='<div class="system-result fail">'+esc(e.message)+'</div>';}}
+ function openWishlist(){el('wishlistResult').style.display='none';el('wishlistDialog').showModal();loadWishlist();}el('wishlistNavButton').onclick=openWishlist;el('closeWishlist').onclick=()=>el('wishlistDialog').close();el('refreshWishlist').onclick=loadWishlist;
+ el('wishlistForm').onsubmit=async e=>{e.preventDefault();const btn=el('wishlistSubmit'),out=el('wishlistResult');btn.disabled=true;out.style.display='block';out.innerHTML='<div class="muted">Saving and texting Travis…</div>';try{const d=await api('/api/control/wishlist',{method:'POST',body:JSON.stringify({requestedBy:el('wishRequestedBy').value,priority:el('wishPriority').value,title:el('wishTitle').value,description:el('wishDescription').value})});out.innerHTML='<div class="system-result '+(d.textMessage.ok?'ok':'fail')+'"><strong>✓ Request saved</strong><span class="small">'+(d.textMessage.ok?'Text sent to Travis.':'Saved, but text failed: '+esc(d.textMessage.error))+'</span></div>';el('wishlistForm').reset();loadWishlist();}catch(err){out.innerHTML='<div class="system-result fail">'+esc(err.message)+'</div>';}finally{btn.disabled=false;}};
+ document.addEventListener('change',async e=>{const s=e.target.closest('.wish-status');if(!s)return;try{await api('/api/control/wishlist/'+encodeURIComponent(s.dataset.id),{method:'PATCH',body:JSON.stringify({status:s.value})});}catch(err){alert(err.message)}});
+ setTimeout(()=>{api('/api/control/wishlist').then(d=>{el('navWishlistCount').textContent=d.items.filter(x=>!['completed','declined'].includes(x.status)).length}).catch(()=>{})},500);
+})();
+</script>
+</body></html>

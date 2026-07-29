@@ -8,6 +8,7 @@ import nodemailer from "nodemailer";
 import fs from "node:fs";
 import path from "node:path";
 import { SYSTEM_PROMPT, SUMMARY_PROMPT } from "./prompt.js";
+import { sendJobToClockSharkZapier } from "./clockshark-webhook.js";
 
 const required = ["OPENAI_API_KEY", "PUBLIC_BASE_URL"];
 for (const key of required) {
@@ -180,8 +181,99 @@ function updateControlTask(id, updates = {}) {
   return data.tasks[index];
 }
 
+
+// JOSHUA_PHASE6_CANONICAL_STATUS
+function canonicalJoshuaStatus(item = {}) {
+  const raw = String(
+    item.joshuaStatus ||
+    item.joshua_status ||
+    item.sheetStatus ||
+    item.status ||
+    item.state ||
+    ""
+  ).trim().toLowerCase();
+
+  const map = {
+    "aa": "awaiting_authorization",
+    "awaiting authorization": "awaiting_authorization",
+    "pp": "pending_proposal",
+    "pending proposal": "pending_proposal",
+    "parts": "parts_needed",
+    "parts needed": "parts_needed",
+    "schedule": "scheduled",
+    "scheduled": "scheduled",
+    "bill": "ready_to_bill",
+    "ready to bill": "ready_to_bill",
+    "hold": "on_hold",
+    "on hold": "on_hold",
+    "open": "new",
+    "servicechannel": "new",
+    "new": "new",
+    "onsite": "onsite",
+    "complete": "completed",
+    "completed": "completed",
+    "closed": "closed",
+    "paid": "paid"
+  };
+
+  return map[raw] || raw.replaceAll(" ", "_") || "new";
+}
+
+function canonicalJoshuaDocumentation(item = {}) {
+  const raw = String(
+    item.joshuaDocumentation ||
+    item.joshua_documentation ||
+    ""
+  ).trim().toLowerCase();
+
+  const map = {
+    "not required": "not_required",
+    "missing photos": "missing_photos",
+    "missing notes": "missing_notes",
+    "missing photos & notes": "missing_photos_and_notes",
+    "missing photos and notes": "missing_photos_and_notes",
+    "complete": "complete"
+  };
+
+  if (map[raw]) return map[raw];
+  if (item.photosComplete === true && item.completionNotesComplete === true) return "complete";
+  return "";
+}
+
+function applyJoshuaStatusFields(item = {}) {
+  const joshuaStatus = canonicalJoshuaStatus(item);
+  const joshuaDocumentation = canonicalJoshuaDocumentation(item);
+
+  const stateMap = {
+    new: "open",
+    need_to_schedule: "open",
+    scheduled: "scheduled",
+    onsite: "onsite",
+    parts_needed: "open",
+    awaiting_authorization: "open",
+    pending_proposal: "open",
+    ready_to_bill: "completed",
+    completed: "completed",
+    closed: "closed",
+    on_hold: "on_hold",
+    paid: "paid"
+  };
+
+  return {
+    ...item,
+    joshuaStatus,
+    joshuaDocumentation,
+    state: stateMap[joshuaStatus] || item.state || "open",
+    invoiceStatus:
+      joshuaStatus === "ready_to_bill"
+        ? "ready_for_review"
+        : item.invoiceStatus
+  };
+}
+
 function workOrderNeedsAttention(item, settings) {
-  if (item.state === "attention") return true;
+  item = applyJoshuaStatusFields(item);
+  if (["awaiting_authorization", "pending_proposal", "parts_needed"].includes(item.joshuaStatus)) return true;
   if (item.state === "onsite" && item.checkInAt) {
     const elapsed = Date.now() - new Date(item.checkInAt).getTime();
     return elapsed > Number(settings.maxOnsiteMinutes || 240) * 60000;
@@ -251,8 +343,8 @@ function getJoshuaInsights(workOrders, technicians, settings) {
       Number(settings.nteWarningPercent || 90)
   );
   const missingDocs = workOrders.filter(item =>
-    item.state === "completed" &&
-    (!item.photosComplete || !item.completionNotesComplete)
+    ["ready_to_bill", "completed"].includes(item.joshuaStatus) &&
+    ["missing_photos", "missing_notes", "missing_photos_and_notes"].includes(item.joshuaDocumentation)
   );
   const idleTechs = technicians.filter(item => item.status === "available" && !item.currentTrackingNumber);
 
@@ -311,10 +403,128 @@ function controlAuthorized(request) {
   return [headerKey, queryKey, bearer].some(value => value && value === controlPanelKey);
 }
 
+
+// JOSHUA_PHASE7_OPERATIONS_ENGINE
+function hoursSince(value) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? Math.max(0, (Date.now() - time) / 3600000) : 0;
+}
+
+function workOrderAgeHours(item = {}) {
+  return hoursSince(item.lastSheetSyncAt || item.updatedAt || item.createdAt);
+}
+
+function actionableReason(item = {}, settings = {}) {
+  if (item.state === "onsite" && item.checkInAt) {
+    const minutes = (Date.now() - new Date(item.checkInAt).getTime()) / 60000;
+    if (minutes > Number(settings.maxOnsiteMinutes || 240)) {
+      return "Technician may have missed checkout";
+    }
+  }
+
+  const nte = Number(item.nte || 0);
+  const total = Number(item.estimatedTotal || item.invoiceAmount || 0);
+  if (nte > 0 && total > nte) return "Estimated total exceeds NTE";
+
+  if (item.lastError || item.syncError || item.invoiceRejected) {
+    return item.lastError || item.syncError || "Invoice requires correction";
+  }
+
+  if (
+    ["ready_to_bill", "completed"].includes(item.joshuaStatus) &&
+    ["missing_photos", "missing_notes", "missing_photos_and_notes"].includes(item.joshuaDocumentation)
+  ) {
+    return "Required completion documentation is missing";
+  }
+
+  if (item.customerCallbackRequested === true) return "Customer callback requested";
+  return "";
+}
+
+function workflowAgeWarning(item = {}) {
+  const age = workOrderAgeHours(item);
+  if (item.joshuaStatus === "awaiting_authorization" && age >= 48) return "Authorization pending over 48 hours";
+  if (item.joshuaStatus === "pending_proposal" && age >= 48) return "Proposal pending over 48 hours";
+  if (item.joshuaStatus === "parts_needed" && age >= 72) return "Parts status unchanged over 72 hours";
+  if (item.joshuaStatus === "ready_to_bill" && age >= 24) return "Ready to bill over 24 hours";
+  return "";
+}
+
+function buildWorkOrderTimeline(item = {}, events = []) {
+  const timeline = [];
+
+  if (item.createdAt) timeline.push({ type: "created", at: item.createdAt, label: "Work order created" });
+  if (item.scheduledAt) timeline.push({ type: "scheduled", at: item.scheduledAt, label: "Scheduled" });
+  if (item.checkInAt) timeline.push({ type: "checkin", at: item.checkInAt, label: "Technician checked in" });
+  if (item.checkOutAt) timeline.push({ type: "checkout", at: item.checkOutAt, label: "Technician checked out" });
+  if (item.lastSheetSyncAt) timeline.push({ type: "sheet_sync", at: item.lastSheetSyncAt, label: "Job Sheets synchronized" });
+  if (item.invoiceStatus === "ready_for_review") timeline.push({ type: "invoice_ready", at: item.updatedAt, label: "Invoice ready for review" });
+  if (item.invoiceStatus === "submitted") timeline.push({ type: "invoice_submitted", at: item.updatedAt, label: "Invoice submitted" });
+  if (item.paymentStatus === "paid") timeline.push({ type: "paid", at: item.updatedAt, label: "Payment recorded" });
+
+  for (const event of events) {
+    if (String(event.trackingNumber || "") !== String(item.trackingNumber || "")) continue;
+    timeline.push({
+      type: event.type || "event",
+      at: event.createdAt,
+      label: event.title || String(event.type || "Activity").replaceAll("_", " ")
+    });
+  }
+
+  return timeline
+    .filter(entry => entry.at)
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 40);
+}
+
+
+// JOSHUA_PHASE8_TWO_WAY_JOB_SHEETS
+function ensureSheetOutbox(data) {
+  if (!Array.isArray(data.sheetOutbox)) data.sheetOutbox = [];
+  return data.sheetOutbox;
+}
+
+function queueJobSheetWrite(data, trackingNumber, updates = {}, source = "joshua") {
+  const outbox = ensureSheetOutbox(data);
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([, value]) => value !== undefined)
+  );
+
+  const entry = {
+    id: crypto.randomUUID(),
+    trackingNumber: String(trackingNumber || "").trim(),
+    updates: cleanUpdates,
+    source,
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    acknowledgedAt: ""
+  };
+
+  outbox.push(entry);
+  if (outbox.length > 2000) data.sheetOutbox = outbox.slice(-2000);
+  return entry;
+}
+
+function sheetWriteSummary(data) {
+  const outbox = ensureSheetOutbox(data);
+  return {
+    pending: outbox.filter(item => !item.acknowledgedAt).length,
+    deliveredToday: outbox.filter(item =>
+      item.acknowledgedAt &&
+      new Date(item.acknowledgedAt).toDateString() === new Date().toDateString()
+    ).length,
+    lastAcknowledgedAt:
+      outbox.filter(item => item.acknowledgedAt)
+        .sort((a, b) => new Date(b.acknowledgedAt) - new Date(a.acknowledgedAt))[0]?.acknowledgedAt || ""
+  };
+}
+
 function controlSummary() {
   const data = readControlData();
   const technicians = Object.values(data.technicians);
-  const workOrders = Object.values(data.workOrders).map(item => {
+  const workOrders = Object.values(data.workOrders).map(rawItem => {
+    const item = applyJoshuaStatusFields(rawItem);
     const onsiteMilliseconds =
       item.state === "onsite" && item.checkInAt
         ? Math.max(0, Date.now() - new Date(item.checkInAt).getTime())
@@ -381,7 +591,13 @@ function controlSummary() {
       revenueToday,
       invoiceBacklog,
       completedToday: completedToday.length,
-      openWorkOrders: workOrders.filter(item => !["completed", "paid"].includes(item.state)).length,
+      openWorkOrders: workOrders.filter(item =>
+        !["ready_to_bill", "completed", "closed", "paid"].includes(item.joshuaStatus)
+      ).length,
+      statusCounts: workOrders.reduce((counts, item) => {
+        counts[item.joshuaStatus] = (counts[item.joshuaStatus] || 0) + 1;
+        return counts;
+      }, {}),
       availableTechnicians: technicians.filter(item => item.status === "available").length
     },
     todayCheckIns: data.events.filter(item =>
@@ -391,7 +607,34 @@ function controlSummary() {
       item.type === "checkout_completed" && item.createdAt.startsWith(today)
     ).length,
     recentEvents: data.events.slice(0, 100),
-    workOrders: workOrders.sort((a, b) =>
+    jobSheetsWriteback: sheetWriteSummary(data),
+    workflowQueues: {
+      awaitingAuthorization: workOrders.filter(item => item.joshuaStatus === "awaiting_authorization"),
+      pendingProposals: workOrders.filter(item => item.joshuaStatus === "pending_proposal"),
+      partsNeeded: workOrders.filter(item => item.joshuaStatus === "parts_needed"),
+      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill")
+    },
+    actionableItems: workOrders
+      .map(item => ({
+        ...item,
+        actionableReason: actionableReason(item, data.settings),
+        workflowAgeWarning: workflowAgeWarning(item),
+        ageHours: workOrderAgeHours(item)
+      }))
+      .filter(item => item.actionableReason),
+    agingWorkflowItems: workOrders
+      .map(item => ({
+        ...item,
+        workflowAgeWarning: workflowAgeWarning(item),
+        ageHours: workOrderAgeHours(item)
+      }))
+      .filter(item => item.workflowAgeWarning),
+    workOrders: workOrders.map(item => ({
+      ...item,
+      ageHours: workOrderAgeHours(item),
+      actionableReason: actionableReason(item, data.settings),
+      workflowAgeWarning: workflowAgeWarning(item)
+    })).sort((a, b) =>
       new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
     ),
     updatedAt: data.updatedAt
@@ -476,6 +719,215 @@ async function addToJobSheets({ from, body, mediaUrl, mediaContentType }) {
   }
   return payload;
 }
+
+
+// JOSHUA_PHASE6_SHEET_WEBHOOK
+app.post("/api/job-sheets/status-sync", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const body = request.body || {};
+  const trackingNumber = String(
+    body.trackingNumber ||
+    body.tracking_number ||
+    body.jobNumber ||
+    body.job_number ||
+    ""
+  ).trim();
+
+  if (!trackingNumber) {
+    return reply.code(400).send({ ok: false, error: "Missing tracking number" });
+  }
+
+  const updates = applyJoshuaStatusFields({
+    joshuaStatus: body.joshuaStatus || body.joshua_status || "",
+    joshuaDocumentation: body.joshuaDocumentation || body.joshua_documentation || "",
+    sheetStatus: body.sheetStatus || body.sheet_status || "",
+    sourceSheetRow: body.sourceSheetRow || body.source_sheet_row || "",
+    lastSheetSyncAt: new Date().toISOString()
+  });
+
+  const workOrder = updateControlWorkOrder(trackingNumber, updates);
+
+  addControlEvent({
+    type: "job_sheets_status_sync",
+    level: "success",
+    trackingNumber,
+    title: `Job #${trackingNumber} synchronized from Job Sheets`,
+    detail: [
+      workOrder?.joshuaStatus?.replaceAll("_", " "),
+      workOrder?.joshuaDocumentation?.replaceAll("_", " ")
+    ].filter(Boolean).join(" • ")
+  });
+
+  return reply.send({ ok: true, workOrder });
+});
+
+
+app.get("/api/control/work-orders/:tracking/timeline", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const tracking = String(request.params.tracking || "").trim();
+  const data = readControlData();
+  const item = data.workOrders?.[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Work order not found" });
+
+  return reply.send({
+    ok: true,
+    trackingNumber: tracking,
+    timeline: buildWorkOrderTimeline(applyJoshuaStatusFields(item), data.events)
+  });
+});
+
+app.post("/api/control/work-orders/:tracking/action", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const tracking = String(request.params.tracking || "").trim();
+  const action = String(request.body?.action || "").trim();
+  const assignedTo = String(request.body?.assignedTo || "Ariana").trim();
+  const notes = String(request.body?.notes || "").trim();
+
+  const data = readControlData();
+  const item = data.workOrders?.[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Work order not found" });
+
+  const labels = {
+    request_authorization: "Request authorization",
+    follow_up_proposal: "Follow up on proposal",
+    order_parts: "Order or confirm parts",
+    prepare_invoice: "Prepare invoice",
+    contact_customer: "Contact customer",
+    review_exception: "Review operational exception"
+  };
+
+  const title = labels[action] || action.replaceAll("_", " ") || "Review work order";
+  const task = addControlTask({
+    title,
+    trackingNumber: tracking,
+    assignedTo,
+    priority: action === "review_exception" ? "urgent" : "normal",
+    notes
+  });
+
+  addControlEvent({
+    type: "operations_action_created",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: assignedTo,
+    title: `${title} task created`,
+    detail: notes
+  });
+
+  return reply.send({ ok: true, task });
+});
+
+
+app.get("/api/job-sheets/outbound", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const data = readControlData();
+  const limit = Math.min(250, Math.max(1, Number(request.query?.limit || 100)));
+  const pending = ensureSheetOutbox(data)
+    .filter(item => !item.acknowledgedAt)
+    .slice(0, limit)
+    .map(item => ({ ...item, attempts: Number(item.attempts || 0) + 1 }));
+
+  const pendingIds = new Set(pending.map(item => item.id));
+  for (const item of data.sheetOutbox) {
+    if (pendingIds.has(item.id)) item.attempts = Number(item.attempts || 0) + 1;
+  }
+  writeControlData(data);
+
+  return reply.send({ ok: true, changes: pending });
+});
+
+app.post("/api/job-sheets/outbound/ack", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const ids = Array.isArray(request.body?.ids) ? request.body.ids.map(String) : [];
+  const errors = Array.isArray(request.body?.errors) ? request.body.errors : [];
+  const data = readControlData();
+  const now = new Date().toISOString();
+
+  for (const item of ensureSheetOutbox(data)) {
+    if (ids.includes(String(item.id))) item.acknowledgedAt = now;
+    const matchingError = errors.find(error => String(error.id) === String(item.id));
+    if (matchingError) item.lastError = String(matchingError.error || "Unknown Google Sheets error");
+  }
+
+  writeControlData(data);
+  return reply.send({ ok: true, acknowledged: ids.length, errors: errors.length });
+});
+
+app.post("/api/control/work-orders/:tracking/job-sheet", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const tracking = String(request.params.tracking || "").trim();
+  const body = request.body || {};
+  const data = readControlData();
+  const current = data.workOrders?.[tracking];
+
+  if (!current) {
+    return reply.code(404).send({ ok: false, error: "Work order not found" });
+  }
+
+  const allowed = {
+    joshuaStatus: body.joshuaStatus,
+    joshuaDocumentation: body.joshuaDocumentation,
+    assignedTechnician: body.assignedTechnician,
+    officeNotes: body.officeNotes,
+    scheduledAt: body.scheduledAt,
+    customerUpdate: body.customerUpdate
+  };
+
+  const updates = Object.fromEntries(
+    Object.entries(allowed).filter(([, value]) => value !== undefined)
+  );
+
+  const normalized = applyJoshuaStatusFields({ ...current, ...updates });
+  data.workOrders[tracking] = {
+    ...current,
+    ...updates,
+    joshuaStatus: normalized.joshuaStatus,
+    joshuaDocumentation: normalized.joshuaDocumentation,
+    state: normalized.state,
+    invoiceStatus: normalized.invoiceStatus,
+    updatedAt: new Date().toISOString(),
+    lastJoshuaWriteAt: new Date().toISOString()
+  };
+
+  const queued = queueJobSheetWrite(data, tracking, {
+    "Joshua Status": data.workOrders[tracking].joshuaStatus.replaceAll("_", " "),
+    "Joshua Documentation": data.workOrders[tracking].joshuaDocumentation.replaceAll("_", " "),
+    "Assigned Technician": updates.assignedTechnician,
+    "Office Notes": updates.officeNotes,
+    "Scheduled Date": updates.scheduledAt,
+    "Customer Update": updates.customerUpdate
+  }, "control_panel");
+
+  writeControlData(data);
+
+  addControlEvent({
+    type: "job_sheets_write_queued",
+    level: "success",
+    trackingNumber: tracking,
+    title: `Job Sheets update queued for #${tracking}`,
+    detail: Object.keys(updates).join(", ")
+  });
+
+  return reply.send({ ok: true, workOrder: data.workOrders[tracking], queued });
+});
 
 const shouldValidate =
   (process.env.VALIDATE_TWILIO_SIGNATURE || "true").toLowerCase() === "true";
@@ -1889,6 +2341,187 @@ app.get("/api/control/status", async (request, reply) => {
     return reply.code(401).send({ ok: false, error: "Unauthorized" });
   }
   return reply.send({ ok: true, ...controlSummary() });
+});
+
+
+// JOSHUA_V4_NATIVE_CREATE_JOB_AND_WISHLIST
+app.get("/api/control/clockshark-technicians", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const data = readControlData();
+  const technicians = Object.values(data.technicians || {})
+    .filter(tech => !["inactive", "disabled", "off"].includes(String(tech.status || "available").toLowerCase()))
+    .map(tech => ({
+      name: tech.name || tech.displayName || "",
+      clockSharkId: tech.clockSharkId || tech.clocksharkId || tech.id || "",
+      status: tech.status || "available",
+      phone: tech.phone || ""
+    }))
+    .filter(tech => tech.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return reply.send({ ok: true, source: "Joshua technician sync", technicians });
+});
+
+app.post("/api/control/jobs/create", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const body = request.body || {};
+  const tracking = String(body.trackingNumber || body.workOrderNumber || "").trim();
+  const description = String(body.description || body.problemDescription || "").trim();
+  if (!tracking) return reply.code(400).send({ ok: false, error: "Tracking/work-order number is required." });
+  if (!description) return reply.code(400).send({ ok: false, error: "Job description is required." });
+
+  const data = readControlData();
+  if (data.workOrders?.[tracking]) {
+    return reply.code(409).send({ ok: false, error: "That tracking/work-order number already exists in Joshua.", existing: data.workOrders[tracking] });
+  }
+
+  const now = new Date().toISOString();
+  const workOrder = applyJoshuaStatusFields({
+    trackingNumber: tracking,
+    workOrderNumber: String(body.workOrderNumber || tracking).trim(),
+    customer: String(body.customer || "").trim(),
+    locationName: String(body.locationName || "").trim(),
+    address: String(body.address || "").trim(),
+    city: String(body.city || "").trim(),
+    stateProvince: String(body.stateProvince || body.state || "").trim(),
+    postalCode: String(body.postalCode || body.zip || "").trim(),
+    customerPhone: String(body.customerPhone || "").trim(),
+    contactName: String(body.contactName || "").trim(),
+    trade: String(body.trade || "").trim(),
+    problemDescription: description,
+    description,
+    priority: String(body.priority || "normal").trim(),
+    nte: Number(body.nte || 0),
+    scheduledAt: String(body.scheduledAt || "").trim(),
+    technician: String(body.assignedTechnician || body.technician || "").trim(),
+    assignedTechnician: String(body.assignedTechnician || body.technician || "").trim(),
+    clockSharkTechnicianId: String(body.clockSharkTechnicianId || "").trim(),
+    notes: String(body.officeNotes || body.notes || "").trim(),
+    state: body.scheduledAt ? "scheduled" : "new",
+    joshuaStatus: body.scheduledAt ? "scheduled" : "new",
+    joshuaDocumentation: "not_required",
+    source: "Control Panel",
+    clockSharkStatus: "pending",
+    jobSheetsStatus: "pending",
+    createdAt: now,
+    updatedAt: now
+  });
+
+  data.workOrders[tracking] = workOrder;
+  const queued = queueJobSheetWrite(data, tracking, {
+    "Tracking Number": tracking,
+    "Work Order Number": workOrder.workOrderNumber,
+    "Customer": workOrder.customer,
+    "Location": workOrder.locationName,
+    "Address": workOrder.address,
+    "City": workOrder.city,
+    "State": workOrder.stateProvince,
+    "Postal Code": workOrder.postalCode,
+    "Customer Phone": workOrder.customerPhone,
+    "Trade": workOrder.trade,
+    "Description": workOrder.description,
+    "Priority": workOrder.priority,
+    "NTE": workOrder.nte || "",
+    "Scheduled Date": workOrder.scheduledAt,
+    "Assigned Technician": workOrder.assignedTechnician,
+    "Office Notes": workOrder.notes,
+    "Joshua Status": String(workOrder.joshuaStatus || "new").replaceAll("_", " "),
+    "Created By": "Joshua Control Panel"
+  }, "control_panel_create_job");
+  workOrder.jobSheetsStatus = "queued";
+  workOrder.jobSheetsQueueId = queued.id;
+  writeControlData(data);
+  addControlEvent({ type: "job_created_control_panel", level: "success", trackingNumber: tracking, title: `Job #${tracking} created`, detail: `${workOrder.customer || "Customer"} · ${description}` });
+
+  let clockShark = { ok: false, status: "failed", error: "" };
+  try {
+    const result = await sendJobToClockSharkZapier({
+      name: [workOrder.customer, workOrder.locationName, `#${tracking}`].filter(Boolean).join(" — "),
+      jobNumber: workOrder.workOrderNumber || tracking,
+      workOrderNumber: tracking,
+      description,
+      address: workOrder.address,
+      city: workOrder.city,
+      stateProvince: workOrder.stateProvince,
+      postalCode: workOrder.postalCode,
+      customerName: workOrder.customer,
+      callerName: workOrder.contactName,
+      callerPhone: workOrder.customerPhone,
+      assignedTechnician: workOrder.assignedTechnician,
+      clockSharkTechnicianId: workOrder.clockSharkTechnicianId,
+      idempotencyKey: `joshua-${tracking}`
+    });
+    const latest = readControlData();
+    Object.assign(latest.workOrders[tracking], { clockSharkStatus: "sent", clockSharkSentAt: new Date().toISOString(), clockSharkError: "", clockSharkResponse: result.response || "" });
+    writeControlData(latest);
+    clockShark = { ok: true, status: "sent" };
+    addControlEvent({ type: "clockshark_job_sent", level: "success", trackingNumber: tracking, title: `ClockShark job sent for #${tracking}` });
+  } catch (error) {
+    const latest = readControlData();
+    Object.assign(latest.workOrders[tracking], { clockSharkStatus: "failed", clockSharkError: String(error.message || error) });
+    writeControlData(latest);
+    clockShark = { ok: false, status: "failed", error: String(error.message || error) };
+    addControlEvent({ type: "clockshark_job_failed", level: "error", trackingNumber: tracking, title: `ClockShark job failed for #${tracking}`, detail: clockShark.error });
+  }
+
+  return reply.send({ ok: true, job: readControlData().workOrders[tracking], systems: { joshua: { ok: true, status: "created" }, jobSheets: { ok: true, status: "queued", queueId: queued.id }, clockShark } });
+});
+
+app.post("/api/control/jobs/:tracking/retry-clockshark", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const tracking = String(request.params.tracking || "").trim();
+  const data = readControlData();
+  const item = data.workOrders?.[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Job not found." });
+  try {
+    const result = await sendJobToClockSharkZapier({ ...item, jobNumber: item.workOrderNumber || tracking, workOrderNumber: tracking, idempotencyKey: `joshua-${tracking}` });
+    Object.assign(item, { clockSharkStatus: "sent", clockSharkSentAt: new Date().toISOString(), clockSharkError: "", clockSharkResponse: result.response || "" });
+    writeControlData(data);
+    addControlEvent({ type: "clockshark_retry_success", level: "success", trackingNumber: tracking, title: `ClockShark retry succeeded for #${tracking}` });
+    return reply.send({ ok: true, status: "sent" });
+  } catch (error) {
+    item.clockSharkStatus = "failed";
+    item.clockSharkError = String(error.message || error);
+    writeControlData(data);
+    return reply.code(502).send({ ok: false, error: item.clockSharkError });
+  }
+});
+
+app.get("/api/control/wishlist", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const items = (readControlData().tasks || []).filter(item => item.type === "feature_request").sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  return reply.send({ ok: true, items });
+});
+
+app.post("/api/control/wishlist", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  const description = String(body.description || "").trim();
+  const requestedBy = String(body.requestedBy || "Office").trim();
+  const priority = String(body.priority || "normal").trim();
+  if (!title || !description) return reply.code(400).send({ ok: false, error: "Enter a title and description." });
+  const item = addControlTask({ type: "feature_request", title, description, requestedBy, priority, status: "requested", source: "office_wishlist" });
+  addControlEvent({ type: "wishlist_request", level: "info", title: `Wishlist request: ${title}`, detail: `${requestedBy}: ${description}`, taskId: item.id });
+  let textMessage = { ok: false, status: "failed", error: "Twilio SMS is not configured." };
+  const to = normalizePhone(process.env.WISHLIST_TEXT_TO || process.env.OWNER_SMS_NUMBER || travisTransferNumber);
+  if (twilioClient && process.env.TWILIO_SMS_FROM && to) {
+    try {
+      const sent = await twilioClient.messages.create({ from: process.env.TWILIO_SMS_FROM, to, body: [`JOSHUA WISHLIST REQUEST`, `Requested by: ${requestedBy}`, `Priority: ${priority.toUpperCase()}`, `Request: ${title}`, description].join("\n").slice(0, 1500) });
+      textMessage = { ok: true, status: sent.status || "queued", sid: sent.sid || "" };
+    } catch (error) { textMessage = { ok: false, status: "failed", error: String(error.message || error) }; }
+  }
+  const data = readControlData();
+  const saved = data.tasks.find(task => task.id === item.id);
+  if (saved) Object.assign(saved, { textStatus: textMessage.status, textSid: textMessage.sid || "", textError: textMessage.error || "" });
+  writeControlData(data);
+  return reply.send({ ok: true, item: saved || item, textMessage });
+});
+
+app.patch("/api/control/wishlist/:id", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  const updated = updateControlTask(String(request.params.id || ""), { status: String(request.body?.status || "requested") });
+  if (!updated || updated.type !== "feature_request") return reply.code(404).send({ ok: false, error: "Wishlist request not found." });
+  return reply.send({ ok: true, item: updated });
 });
 
 app.post("/api/control/ivr", async (request, reply) => {

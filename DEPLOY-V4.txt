@@ -1,0 +1,36 @@
+JOSHUA OFFICE SUITE V4 — NATIVE BUILD
+
+Upload the complete contents of this ZIP to:
+Precision2025/precision-lighting-ai-receptionist
+
+Important:
+- package.json now starts directly with: node server.js
+- Do not change start back to phase11-bootstrap.mjs
+- The old phase files remain only as rollback/reference files; they are not used at startup.
+
+Included natively:
+- Existing Office Suite dashboard and queues
+- Create Job button and form
+- Joshua + Job Sheets + ClockShark creation results
+- Retry ClockShark button
+- Joshua duplicate tracking-number protection
+- ClockShark technician dropdown from Joshua's synchronized technician records
+- ClockShark technician ID included in webhook payload
+- Office Wishlist
+- Wishlist history and status updates
+- Wishlist SMS to Travis
+- Joshua Activity logging
+
+Required Render variables already used by the app:
+- CONTROL_PANEL_KEY
+- CONTROL_DATA_FILE=/var/data/joshua-control-data.json
+- CLOCKSHARK_ZAPIER_WEBHOOK_URL
+- TWILIO_ACCOUNT_SID
+- TWILIO_AUTH_TOKEN
+- TWILIO_SMS_FROM
+
+Recommended:
+- WISHLIST_TEXT_TO=+12142435649
+
+ClockShark duplicate note:
+Joshua blocks duplicate tracking numbers already stored in Joshua and sends an idempotency_key to Zapier. For complete protection against jobs created manually in ClockShark, the Zap must search ClockShark by job/work-order number before its Create Job step.
