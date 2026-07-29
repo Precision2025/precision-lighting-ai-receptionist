@@ -1,10 +1,11 @@
 {
   "name": "precision-lighting-joshua",
-  "version": "4.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node phase10-bootstrap.mjs",
+    "start:legacy": "node phase8-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
   "dependencies": {
