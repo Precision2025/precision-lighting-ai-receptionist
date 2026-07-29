@@ -63,6 +63,11 @@ function emptyControlData() {
     events: [],
     workOrders: {},
     callbacks: [],
+    tasks: [],
+    settings: {
+      maxOnsiteMinutes: 240,
+      reminderMinutes: 30
+    },
     updatedAt: new Date().toISOString()
   };
 }
@@ -77,7 +82,13 @@ function readControlData() {
       events: Array.isArray(parsed.events) ? parsed.events : [],
       workOrders: parsed.workOrders && typeof parsed.workOrders === "object"
         ? parsed.workOrders
-        : {}
+        : {},
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+      settings: {
+        maxOnsiteMinutes: 240,
+        reminderMinutes: 30,
+        ...(parsed.settings || {})
+      }
     };
   } catch (error) {
     app.log.error(error, "Could not read Joshua control data");
@@ -126,6 +137,47 @@ function updateControlWorkOrder(tracking, updates = {}) {
   return data.workOrders[key];
 }
 
+
+function addControlTask(task) {
+  const data = readControlData();
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    status: "open",
+    priority: "normal",
+    ...task
+  };
+  data.tasks.unshift(item);
+  data.tasks = data.tasks.slice(0, 500);
+  writeControlData(data);
+  return item;
+}
+
+function updateControlTask(id, updates = {}) {
+  const data = readControlData();
+  const index = data.tasks.findIndex(item => item.id === id);
+  if (index < 0) return null;
+  data.tasks[index] = {
+    ...data.tasks[index],
+    ...updates,
+    updatedAt: new Date().toISOString()
+  };
+  writeControlData(data);
+  return data.tasks[index];
+}
+
+function workOrderNeedsAttention(item, settings) {
+  if (item.state === "attention") return true;
+  if (item.state === "onsite" && item.checkInAt) {
+    const elapsed = Date.now() - new Date(item.checkInAt).getTime();
+    return elapsed > Number(settings.maxOnsiteMinutes || 240) * 60000;
+  }
+  if (item.nte && item.estimatedTotal && Number(item.estimatedTotal) > Number(item.nte)) {
+    return true;
+  }
+  return false;
+}
+
 function controlAuthorized(request) {
   if (!controlPanelKey) return false;
   const headerKey = String(request.headers["x-control-panel-key"] || "");
@@ -137,12 +189,30 @@ function controlAuthorized(request) {
 
 function controlSummary() {
   const data = readControlData();
-  const workOrders = Object.values(data.workOrders);
+  const workOrders = Object.values(data.workOrders).map(item => {
+    const onsiteMilliseconds =
+      item.state === "onsite" && item.checkInAt
+        ? Math.max(0, Date.now() - new Date(item.checkInAt).getTime())
+        : Number(item.onsiteMilliseconds || 0);
+    const remainingNte =
+      item.nte !== undefined && item.nte !== "" && item.estimatedTotal !== undefined
+        ? Number(item.nte) - Number(item.estimatedTotal || 0)
+        : null;
+    return {
+      ...item,
+      onsiteMilliseconds,
+      liveOnsiteDuration: formatElapsedTime(onsiteMilliseconds),
+      remainingNte,
+      needsAttention: workOrderNeedsAttention(item, data.settings)
+    };
+  });
   const active = workOrders.filter(item => item.state === "onsite");
   const failures = data.events.filter(item =>
     item.level === "error" &&
     Date.now() - new Date(item.createdAt).getTime() < 24 * 60 * 60 * 1000
   );
+  const attentionWorkOrders = workOrders.filter(item => item.needsAttention);
+  const openTasks = data.tasks.filter(item => item.status !== "closed");
   const today = new Date().toISOString().slice(0, 10);
   return {
     online: true,
@@ -156,6 +226,9 @@ function controlSummary() {
     activeCount: active.length,
     active,
     failures: failures.slice(0, 20),
+    attentionWorkOrders,
+    openTasks,
+    settings: data.settings,
     todayCheckIns: data.events.filter(item =>
       item.type === "checkin_completed" && item.createdAt.startsWith(today)
     ).length,
@@ -1681,6 +1754,119 @@ app.post("/api/control/ivr", async (request, reply) => {
       requestedBy: "Control Panel",
       error: error.message
     });
+    return reply.code(500).send({ ok: false, error: error.message });
+  }
+});
+
+
+app.post("/api/control/work-orders/:tracking", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const tracking = String(request.params.tracking || "").replace(/\D/g, "");
+  if (tracking.length < 4) {
+    return reply.code(400).send({ ok: false, error: "Invalid tracking number." });
+  }
+  const body = request.body || {};
+  const updates = {};
+  const textFields = [
+    "workOrderNumber", "customer", "locationName", "address", "technician",
+    "problemDescription", "statusText", "scheduledAt", "requester", "notes"
+  ];
+  for (const field of textFields) {
+    if (body[field] !== undefined) updates[field] = String(body[field] || "").trim();
+  }
+  for (const field of ["nte", "estimatedTotal"]) {
+    if (body[field] !== undefined) {
+      updates[field] = body[field] === "" ? "" : Number(body[field]);
+    }
+  }
+  if (body.state !== undefined) updates.state = String(body.state || "new");
+  const item = updateControlWorkOrder(tracking, updates);
+  addControlEvent({
+    type: "work_order_updated",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: "Control Panel"
+  });
+  return reply.send({ ok: true, workOrder: item });
+});
+
+app.post("/api/control/tasks", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  if (!title) return reply.code(400).send({ ok: false, error: "Task title is required." });
+  const task = addControlTask({
+    title,
+    trackingNumber: String(body.trackingNumber || "").trim(),
+    assignedTo: String(body.assignedTo || "").trim(),
+    dueAt: String(body.dueAt || "").trim(),
+    priority: String(body.priority || "normal"),
+    notes: String(body.notes || "").trim()
+  });
+  return reply.send({ ok: true, task });
+});
+
+app.post("/api/control/tasks/:id/close", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const task = updateControlTask(String(request.params.id || ""), {
+    status: "closed",
+    closedAt: new Date().toISOString()
+  });
+  if (!task) return reply.code(404).send({ ok: false, error: "Task not found." });
+  return reply.send({ ok: true, task });
+});
+
+app.post("/api/control/settings", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const data = readControlData();
+  const body = request.body || {};
+  data.settings = {
+    ...data.settings,
+    maxOnsiteMinutes: Math.max(15, Number(body.maxOnsiteMinutes || data.settings.maxOnsiteMinutes || 240)),
+    reminderMinutes: Math.max(15, Number(body.reminderMinutes || data.settings.reminderMinutes || 30))
+  };
+  writeControlData(data);
+  return reply.send({ ok: true, settings: data.settings });
+});
+
+app.post("/api/control/work-orders/:tracking/text-technician", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  if (!twilioClient || !process.env.TWILIO_SMS_FROM) {
+    return reply.code(503).send({ ok: false, error: "Twilio SMS is not configured." });
+  }
+  const tracking = String(request.params.tracking || "");
+  const body = request.body || {};
+  const to = normalizePhone(body.to);
+  const message = String(body.message || "").trim();
+  if (!to || !message) {
+    return reply.code(400).send({ ok: false, error: "Phone number and message are required." });
+  }
+  try {
+    const sms = await twilioClient.messages.create({
+      from: process.env.TWILIO_SMS_FROM,
+      to,
+      body: message
+    });
+    addControlEvent({
+      type: "technician_text_sent",
+      level: "success",
+      trackingNumber: tracking,
+      requestedBy: "Control Panel",
+      messageSid: sms.sid,
+      to
+    });
+    return reply.send({ ok: true, messageSid: sms.sid });
+  } catch (error) {
     return reply.code(500).send({ ok: false, error: error.message });
   }
 });
