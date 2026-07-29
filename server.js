@@ -64,11 +64,15 @@ function emptyControlData() {
     workOrders: {},
     callbacks: [],
     tasks: [],
+    technicians: {},
     settings: {
       maxOnsiteMinutes: 240,
       reminderMinutes: 30,
       autoTechnicianReminders: true,
-      autoInvoiceQueue: true
+      autoInvoiceQueue: true,
+      nteWarningPercent: 90,
+      overtimeHours: 40,
+      idleTechnicianMinutes: 60
     },
     updatedAt: new Date().toISOString()
   };
@@ -86,11 +90,17 @@ function readControlData() {
         ? parsed.workOrders
         : {},
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+      technicians: parsed.technicians && typeof parsed.technicians === "object"
+        ? parsed.technicians
+        : {},
       settings: {
         maxOnsiteMinutes: 240,
         reminderMinutes: 30,
         autoTechnicianReminders: true,
         autoInvoiceQueue: true,
+        nteWarningPercent: 90,
+        overtimeHours: 40,
+        idleTechnicianMinutes: 60,
         ...(parsed.settings || {})
       }
     };
@@ -182,6 +192,116 @@ function workOrderNeedsAttention(item, settings) {
   return false;
 }
 
+
+function updateTechnician(name, updates = {}) {
+  const key = String(name || "").trim();
+  if (!key) return null;
+  const data = readControlData();
+  const current = data.technicians[key] || {
+    name: key,
+    createdAt: new Date().toISOString(),
+    status: "available",
+    skills: []
+  };
+  data.technicians[key] = {
+    ...current,
+    ...updates,
+    name: key,
+    updatedAt: new Date().toISOString()
+  };
+  writeControlData(data);
+  return data.technicians[key];
+}
+
+function calculateWorkOrderFinancials(item) {
+  const laborHours = Number(item.laborHours || 0);
+  const laborRate = Number(item.laborRate || 0);
+  const laborCostRate = Number(item.laborCostRate || 0);
+  const materialCost = Number(item.materialCost || 0);
+  const materialMarkupPercent = Number(item.materialMarkupPercent || 0);
+  const miscCost = Number(item.miscCost || 0);
+  const invoiceAmount = Number(
+    item.invoiceAmount ||
+    (laborHours * laborRate) +
+    materialCost * (1 + materialMarkupPercent / 100)
+  );
+  const estimatedCost =
+    laborHours * laborCostRate +
+    materialCost +
+    miscCost;
+  const grossProfit = invoiceAmount - estimatedCost;
+  const grossMargin = invoiceAmount > 0 ? (grossProfit / invoiceAmount) * 100 : 0;
+  return {
+    laborHours,
+    laborRevenue: laborHours * laborRate,
+    estimatedCost,
+    invoiceAmount,
+    grossProfit,
+    grossMargin
+  };
+}
+
+function getJoshuaInsights(workOrders, technicians, settings) {
+  const insights = [];
+  const onsite = workOrders.filter(item => item.state === "onsite");
+  const readyInvoices = workOrders.filter(item => item.invoiceStatus === "ready_for_review");
+  const nearNte = workOrders.filter(item =>
+    Number(item.nte || 0) > 0 &&
+    Number(item.estimatedTotal || item.invoiceAmount || 0) / Number(item.nte) * 100 >=
+      Number(settings.nteWarningPercent || 90)
+  );
+  const missingDocs = workOrders.filter(item =>
+    item.state === "completed" &&
+    (!item.photosComplete || !item.completionNotesComplete)
+  );
+  const idleTechs = technicians.filter(item => item.status === "available" && !item.currentTrackingNumber);
+
+  if (onsite.length) {
+    insights.push({
+      severity: "info",
+      title: `${onsite.length} technician${onsite.length === 1 ? "" : "s"} currently onsite`,
+      detail: onsite.slice(0, 3).map(item => `#${item.trackingNumber} ${item.liveOnsiteDuration}`).join(" • ")
+    });
+  }
+  if (readyInvoices.length) {
+    const total = readyInvoices.reduce((sum, item) => sum + Number(item.invoiceAmount || item.estimatedTotal || 0), 0);
+    insights.push({
+      severity: "success",
+      title: `${readyInvoices.length} invoice${readyInvoices.length === 1 ? "" : "s"} ready for review`,
+      detail: `$${total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ready for Shellie`
+    });
+  }
+  if (nearNte.length) {
+    insights.push({
+      severity: "warning",
+      title: `${nearNte.length} work order${nearNte.length === 1 ? "" : "s"} at or above the NTE warning level`,
+      detail: nearNte.slice(0, 3).map(item => `#${item.trackingNumber}`).join(", ")
+    });
+  }
+  if (missingDocs.length) {
+    insights.push({
+      severity: "warning",
+      title: `${missingDocs.length} completed job${missingDocs.length === 1 ? "" : "s"} missing documentation`,
+      detail: "Photos or completion notes still need attention."
+    });
+  }
+  if (idleTechs.length) {
+    insights.push({
+      severity: "info",
+      title: `${idleTechs.length} technician${idleTechs.length === 1 ? "" : "s"} available`,
+      detail: idleTechs.slice(0, 4).map(item => item.name).join(", ")
+    });
+  }
+  if (!insights.length) {
+    insights.push({
+      severity: "success",
+      title: "Operations are running normally",
+      detail: "Joshua has no major exceptions to report."
+    });
+  }
+  return insights;
+}
+
 function controlAuthorized(request) {
   if (!controlPanelKey) return false;
   const headerKey = String(request.headers["x-control-panel-key"] || "");
@@ -193,6 +313,7 @@ function controlAuthorized(request) {
 
 function controlSummary() {
   const data = readControlData();
+  const technicians = Object.values(data.technicians);
   const workOrders = Object.values(data.workOrders).map(item => {
     const onsiteMilliseconds =
       item.state === "onsite" && item.checkInAt
@@ -202,14 +323,24 @@ function controlSummary() {
       item.nte !== undefined && item.nte !== "" && item.estimatedTotal !== undefined
         ? Number(item.nte) - Number(item.estimatedTotal || 0)
         : null;
+    const financials = calculateWorkOrderFinancials(item);
+    const ntePercent =
+      Number(item.nte || 0) > 0
+        ? (Number(item.estimatedTotal || financials.invoiceAmount || 0) / Number(item.nte)) * 100
+        : 0;
     return {
       ...item,
+      ...financials,
       onsiteMilliseconds,
       liveOnsiteDuration: formatElapsedTime(onsiteMilliseconds),
       remainingNte,
-      needsAttention: workOrderNeedsAttention(item, data.settings)
+      ntePercent,
+      needsAttention:
+        workOrderNeedsAttention(item, data.settings) ||
+        ntePercent >= Number(data.settings.nteWarningPercent || 90)
     };
   });
+
   const active = workOrders.filter(item => item.state === "onsite");
   const failures = data.events.filter(item =>
     item.level === "error" &&
@@ -218,6 +349,17 @@ function controlSummary() {
   const attentionWorkOrders = workOrders.filter(item => item.needsAttention);
   const openTasks = data.tasks.filter(item => item.status !== "closed");
   const today = new Date().toISOString().slice(0, 10);
+  const completedToday = workOrders.filter(item =>
+    item.checkOutAt && String(item.checkOutAt).startsWith(today)
+  );
+  const revenueToday = completedToday.reduce(
+    (sum, item) => sum + Number(item.invoiceAmount || item.estimatedTotal || 0),
+    0
+  );
+  const invoiceBacklog = workOrders
+    .filter(item => ["documentation_missing", "ready_for_review"].includes(item.invoiceStatus))
+    .reduce((sum, item) => sum + Number(item.invoiceAmount || item.estimatedTotal || 0), 0);
+
   return {
     online: true,
     twilioConfigured: Boolean(twilioClient),
@@ -229,10 +371,19 @@ function controlSummary() {
     clockSharkConfigured: Boolean(clockSharkZapierWebhookUrl),
     activeCount: active.length,
     active,
+    technicians,
     failures: failures.slice(0, 20),
     attentionWorkOrders,
     openTasks,
     settings: data.settings,
+    insights: getJoshuaInsights(workOrders, technicians, data.settings),
+    metrics: {
+      revenueToday,
+      invoiceBacklog,
+      completedToday: completedToday.length,
+      openWorkOrders: workOrders.filter(item => !["completed", "paid"].includes(item.state)).length,
+      availableTechnicians: technicians.filter(item => item.status === "available").length
+    },
     todayCheckIns: data.events.filter(item =>
       item.type === "checkin_completed" && item.createdAt.startsWith(today)
     ).length,
@@ -1856,7 +2007,9 @@ app.post("/api/control/work-orders/:tracking", async (request, reply) => {
     "workOrderNumber", "customer", "locationName", "address", "technician",
     "problemDescription", "statusText", "scheduledAt", "requester", "notes",
     "technicianPhone", "invoiceStatus", "proposalStatus", "customerPhone",
-    "customerEmail", "completionNotes"
+    "customerEmail", "completionNotes", "priority", "trade", "assignedRoute",
+    "customerSignatureStatus", "beforePhotosStatus", "afterPhotosStatus",
+    "paymentStatus"
   ];
   for (const field of textFields) {
     if (body[field] !== undefined) updates[field] = String(body[field] || "").trim();
@@ -1864,7 +2017,10 @@ app.post("/api/control/work-orders/:tracking", async (request, reply) => {
   for (const field of ["photosComplete", "completionNotesComplete", "proposalApproved", "customerUpdated"]) {
     if (body[field] !== undefined) updates[field] = body[field] === true || body[field] === "true";
   }
-  for (const field of ["nte", "estimatedTotal"]) {
+  for (const field of [
+    "nte", "estimatedTotal", "laborHours", "laborRate", "laborCostRate",
+    "materialCost", "materialMarkupPercent", "miscCost", "invoiceAmount"
+  ]) {
     if (body[field] !== undefined) {
       updates[field] = body[field] === "" ? "" : Number(body[field]);
     }
@@ -1921,7 +2077,10 @@ app.post("/api/control/settings", async (request, reply) => {
     maxOnsiteMinutes: Math.max(15, Number(body.maxOnsiteMinutes || data.settings.maxOnsiteMinutes || 240)),
     reminderMinutes: Math.max(15, Number(body.reminderMinutes || data.settings.reminderMinutes || 30)),
     autoTechnicianReminders: body.autoTechnicianReminders === undefined ? data.settings.autoTechnicianReminders : body.autoTechnicianReminders === true || body.autoTechnicianReminders === "true",
-    autoInvoiceQueue: body.autoInvoiceQueue === undefined ? data.settings.autoInvoiceQueue : body.autoInvoiceQueue === true || body.autoInvoiceQueue === "true"
+    autoInvoiceQueue: body.autoInvoiceQueue === undefined ? data.settings.autoInvoiceQueue : body.autoInvoiceQueue === true || body.autoInvoiceQueue === "true",
+    nteWarningPercent: Math.max(50, Math.min(100, Number(body.nteWarningPercent || data.settings.nteWarningPercent || 90))),
+    overtimeHours: Math.max(1, Number(body.overtimeHours || data.settings.overtimeHours || 40)),
+    idleTechnicianMinutes: Math.max(15, Number(body.idleTechnicianMinutes || data.settings.idleTechnicianMinutes || 60))
   };
   writeControlData(data);
   return reply.send({ ok: true, settings: data.settings });
@@ -1959,6 +2118,96 @@ app.post("/api/control/work-orders/:tracking/text-technician", async (request, r
   } catch (error) {
     return reply.code(500).send({ ok: false, error: error.message });
   }
+});
+
+
+app.post("/api/control/technicians/:name", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const name = decodeURIComponent(String(request.params.name || "")).trim();
+  const body = request.body || {};
+  if (!name) return reply.code(400).send({ ok: false, error: "Technician name is required." });
+  const technician = updateTechnician(name, {
+    phone: String(body.phone || "").trim(),
+    status: String(body.status || "available"),
+    currentTrackingNumber: String(body.currentTrackingNumber || "").trim(),
+    hoursToday: Number(body.hoursToday || 0),
+    hoursWeek: Number(body.hoursWeek || 0),
+    latitude: body.latitude === "" || body.latitude === undefined ? "" : Number(body.latitude),
+    longitude: body.longitude === "" || body.longitude === undefined ? "" : Number(body.longitude),
+    skills: Array.isArray(body.skills)
+      ? body.skills
+      : String(body.skills || "").split(",").map(value => value.trim()).filter(Boolean),
+    nextJobTrackingNumber: String(body.nextJobTrackingNumber || "").trim()
+  });
+  addControlEvent({
+    type: "technician_updated",
+    level: "success",
+    requestedBy: "Control Panel",
+    technician: name
+  });
+  return reply.send({ ok: true, technician });
+});
+
+app.post("/api/control/dispatch/assign", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const body = request.body || {};
+  const trackingNumber = String(body.trackingNumber || "").replace(/\D/g, "");
+  const technicianName = String(body.technician || "").trim();
+  if (!trackingNumber || !technicianName) {
+    return reply.code(400).send({ ok: false, error: "Tracking number and technician are required." });
+  }
+  const data = readControlData();
+  const technician = data.technicians[technicianName] || updateTechnician(technicianName, {});
+  updateControlWorkOrder(trackingNumber, {
+    technician: technicianName,
+    technicianPhone: technician.phone || "",
+    state: body.state || "scheduled",
+    assignedAt: new Date().toISOString()
+  });
+  updateTechnician(technicianName, {
+    currentTrackingNumber: trackingNumber,
+    status: body.state === "onsite" ? "onsite" : "assigned"
+  });
+  addControlEvent({
+    type: "technician_assigned",
+    level: "success",
+    trackingNumber,
+    requestedBy: "Control Panel",
+    technician: technicianName
+  });
+  return reply.send({ ok: true });
+});
+
+app.get("/api/control/dispatch/recommend/:tracking", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const data = readControlData();
+  const tracking = String(request.params.tracking || "");
+  const workOrder = data.workOrders[tracking];
+  if (!workOrder) return reply.code(404).send({ ok: false, error: "Work order not found." });
+  const candidates = Object.values(data.technicians).map(tech => {
+    let score = 100;
+    if (tech.status === "onsite") score -= 40;
+    if (tech.status === "assigned") score -= 20;
+    score -= Number(tech.hoursWeek || 0) > Number(data.settings.overtimeHours || 40) ? 25 : 0;
+    if (Array.isArray(tech.skills) && workOrder.trade) {
+      const hasSkill = tech.skills.some(skill => skill.toLowerCase().includes(String(workOrder.trade).toLowerCase()));
+      if (hasSkill) score += 20;
+    }
+    return {
+      name: tech.name,
+      status: tech.status,
+      hoursWeek: Number(tech.hoursWeek || 0),
+      skills: tech.skills || [],
+      score
+    };
+  }).sort((a, b) => b.score - a.score);
+  return reply.send({ ok: true, recommendations: candidates.slice(0, 5) });
 });
 
 app.post("/api/control/work-orders/:tracking/resolve", async (request, reply) => {
