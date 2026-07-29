@@ -40,6 +40,7 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
  <button class="tab active" data-tab="operations">Operations</button>
  <button class="tab" data-tab="workorders">Work Orders</button>
  <button class="tab" data-tab="tasks">Tasks</button>
+ <button class="tab" data-tab="billing">Billing</button>
  <button class="tab" data-tab="activity">Activity</button>
  <button class="tab" data-tab="settings">Settings</button>
 </div>
@@ -71,10 +72,11 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div class="card"><h2>Open Tasks</h2><div id="taskList" class="scroll"></div></div></div>
 </section>
 
+<section id="billing" class="panel"><div class="card"><h2>Invoice Pipeline</h2><div class="scroll"><table><thead><tr><th>Tracking</th><th>Customer</th><th>Job Status</th><th>Photos</th><th>Completion Notes</th><th>Proposal</th><th>Invoice Status</th><th>NTE</th><th>Estimate</th></tr></thead><tbody id="billingRows"></tbody></table></div></div></section>
 <section id="activity" class="panel"><div class="card"><h2>Recent Activity</h2><div id="events" class="scroll"></div></div></section>
 <section id="settings" class="panel"><div class="card"><h2>Automation Settings</h2><form id="settingsForm">
 <div class="row"><div><label>Flag onsite jobs after (minutes)</label><input id="maxOnsite" type="number" min="15"></div><div><label>Reminder interval (minutes)</label><input id="reminderMinutes" type="number" min="15"></div></div>
-<button>Save Settings</button></form><p class="muted small">These settings control dashboard exception timing. Automatic outbound reminders can be enabled once technician phone numbers are stored on each work order.</p></div></section>
+<div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div><button>Save Settings</button></form><p class="muted small">Joshua checks active jobs every five minutes and only sends reminders when a technician phone number is stored.</p></div></section>
 </main>
 
 <dialog id="orderDialog"><h2>Add or Update Work Order</h2><form id="orderForm">
@@ -82,9 +84,16 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div><label>Tracking number</label><input id="oTracking" required></div><div><label>Work order number</label><input id="oWorkOrder"></div>
 <div><label>Customer</label><input id="oCustomer"></div><div><label>Location</label><input id="oLocation"></div>
 <div><label>Address</label><input id="oAddress"></div><div><label>Technician</label><input id="oTechnician"></div>
+<div><label>Technician phone</label><input id="oTechnicianPhone" inputmode="tel"></div><div><label>Customer phone</label><input id="oCustomerPhone" inputmode="tel"></div>
 <div><label>NTE ($)</label><input id="oNte" type="number" step=".01"></div><div><label>Estimated total ($)</label><input id="oEstimated" type="number" step=".01"></div>
 <div><label>State</label><select id="oState"><option value="new">New</option><option value="scheduled">Scheduled</option><option value="onsite">Onsite</option><option value="attention">Needs attention</option><option value="completed">Completed</option><option value="ready_to_invoice">Ready to invoice</option></select></div><div><label>Scheduled</label><input id="oScheduled" type="datetime-local"></div>
-</div><label>Problem description</label><textarea id="oProblem"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
+</div>
+<div class="formgrid">
+<div><label><input id="oPhotos" type="checkbox" style="width:auto"> Photos complete</label></div>
+<div><label><input id="oCompletionNotes" type="checkbox" style="width:auto"> Completion notes complete</label></div>
+<div><label>Proposal status</label><select id="oProposalStatus"><option value="">Not required</option><option value="required">Required</option><option value="submitted">Submitted</option><option value="approved">Approved</option></select></div>
+<div><label>Invoice status</label><select id="oInvoiceStatus"><option value="">Not started</option><option value="documentation_missing">Documentation missing</option><option value="ready_for_review">Ready for review</option><option value="submitted">Submitted</option><option value="paid">Paid</option></select></div>
+</div><label>Problem description</label><textarea id="oProblem"></textarea><label>Completion notes</label><textarea id="oCompletionText"></textarea><label>Notes</label><textarea id="oNotes"></textarea>
 <div class="row"><button>Save Work Order</button><button type="button" id="closeOrder" class="secondary">Cancel</button></div></form></dialog>
 
 <script>
@@ -104,9 +113,9 @@ async function refresh(){
   const attentionItems=[...d.failures,...d.attentionWorkOrders];fails.textContent=attentionItems.length;taskCount.textContent=d.openTasks.length;
   attention.innerHTML=attentionItems.length?attentionItems.map(x=>`<div class="event"><strong>⚠ ${esc(x.type||x.state||"Work order needs attention")}</strong><span class="small">${esc(x.trackingNumber||"")} · ${esc(x.lastError||x.error||x.callStatus||x.liveOnsiteDuration||"Review required")}</span></div>`).join(""):"<span class='live'>No current problems.</span>";
   onsiteCards.innerHTML=d.active.length?d.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><h2 style="margin-top:12px">${esc(x.liveOnsiteDuration)}</h2><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>";
-  renderOrders();renderTasks();
+  renderOrders();renderTasks();renderBilling();
   events.innerHTML=d.recentEvents.slice(0,60).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>";
-  maxOnsite.value=d.settings.maxOnsiteMinutes;reminderMinutes.value=d.settings.reminderMinutes;
+  maxOnsite.value=d.settings.maxOnsiteMinutes;reminderMinutes.value=d.settings.reminderMinutes;autoReminders.checked=d.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=d.settings.autoInvoiceQueue!==false;
  }catch(e){live.textContent="● OFFLINE / UNAUTHORIZED";live.style.color="#ff8b7d"}
 }
 function renderOrders(){
@@ -117,14 +126,15 @@ function renderOrders(){
 function renderTasks(){
  taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${esc(x.priority==="urgent"?"🚨 ":"")}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">Mark Complete</button></div>`).join(""):"<span class='muted'>No open tasks.</span>";
 }
+function renderBilling(){billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${esc((x.state||"new").replaceAll("_"," "))}</td><td>${x.photosComplete?"✅":"⚠"}</td><td>${x.completionNotesComplete?"✅":"⚠"}</td><td>${esc(x.proposalStatus||"not required")}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${money(x.nte)}</td><td>${money(x.estimatedTotal)}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the invoice pipeline.</td></tr>";}
 action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
 ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
 orderSearch.oninput=renderOrders;newOrder.onclick=()=>{orderForm.reset();orderDialog.showModal()};closeOrder.onclick=()=>orderDialog.close();
-window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTechnician.value=x.technician||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?x.scheduledAt.slice(0,16):"";oProblem.value=x.problemDescription||"";oNotes.value=x.notes||"";orderDialog.showModal()};
-orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,technician:oTechnician.value,nte:oNte.value,estimatedTotal:oEstimated.value,state:oState.value,scheduledAt:oScheduled.value,problemDescription:oProblem.value,notes:oNotes.value})});orderDialog.close();refresh()};
+window.editOrder=t=>{const x=cache.workOrders.find(i=>i.trackingNumber===t);if(!x)return;oTracking.value=x.trackingNumber;oWorkOrder.value=x.workOrderNumber||"";oCustomer.value=x.customer||"";oLocation.value=x.locationName||"";oAddress.value=x.address||"";oTechnician.value=x.technician||"";oTechnicianPhone.value=x.technicianPhone||"";oCustomerPhone.value=x.customerPhone||"";oNte.value=x.nte??"";oEstimated.value=x.estimatedTotal??"";oState.value=x.state||"new";oScheduled.value=x.scheduledAt?x.scheduledAt.slice(0,16):"";oPhotos.checked=x.photosComplete===true;oCompletionNotes.checked=x.completionNotesComplete===true;oProposalStatus.value=x.proposalStatus||"";oInvoiceStatus.value=x.invoiceStatus||"";oProblem.value=x.problemDescription||"";oCompletionText.value=x.completionNotes||"";oNotes.value=x.notes||"";orderDialog.showModal()};
+orderForm.onsubmit=async e=>{e.preventDefault();await api(`/api/control/work-orders/${oTracking.value}`,{method:"POST",body:JSON.stringify({workOrderNumber:oWorkOrder.value,customer:oCustomer.value,locationName:oLocation.value,address:oAddress.value,technician:oTechnician.value,technicianPhone:oTechnicianPhone.value,customerPhone:oCustomerPhone.value,nte:oNte.value,estimatedTotal:oEstimated.value,state:oState.value,scheduledAt:oScheduled.value,photosComplete:oPhotos.checked,completionNotesComplete:oCompletionNotes.checked,proposalStatus:oProposalStatus.value,proposalApproved:oProposalStatus.value==="approved",invoiceStatus:oInvoiceStatus.value,problemDescription:oProblem.value,completionNotes:oCompletionText.value,notes:oNotes.value})});orderDialog.close();refresh()};
 taskForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/tasks",{method:"POST",body:JSON.stringify({title:taskTitle.value,trackingNumber:taskTracking.value,assignedTo:taskAssigned.value,priority:taskPriority.value,dueAt:taskDue.value,notes:taskNotes.value})});taskForm.reset();refresh()};
 window.closeTask=async id=>{await api(`/api/control/tasks/${id}/close`,{method:"POST",body:"{}"});refresh()};
-settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value})});refresh()};
+settingsForm.onsubmit=async e=>{e.preventDefault();await api("/api/control/settings",{method:"POST",body:JSON.stringify({maxOnsiteMinutes:maxOnsite.value,reminderMinutes:reminderMinutes.value,autoTechnicianReminders:autoReminders.checked,autoInvoiceQueue:autoInvoiceQueue.checked})});refresh()};
 refresh();setInterval(refresh,15000);
 </script>
 </body></html>
