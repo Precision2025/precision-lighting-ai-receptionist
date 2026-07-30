@@ -1,21 +1,40 @@
 import fs from "node:fs";
 
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
-const marker = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V1";
+const marker = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
 let panel = fs.readFileSync(panelPath, "utf8");
 
 if (!panel.includes(marker)) {
   const patch = String.raw`
 <script>
-// JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V1
+// JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2
 (function () {
   function normalizedTracking(item) {
     return String(item && (item.trackingNumber || item.workOrderId || item.id) || "").trim();
   }
 
+  function getControlData() {
+    let data = null;
+
+    try {
+      if (typeof cache !== "undefined" && cache && typeof cache === "object") {
+        data = cache;
+      }
+    } catch (_) {}
+
+    if (!data && window.cache && typeof window.cache === "object") {
+      data = window.cache;
+    }
+
+    if (!data) return null;
+
+    window.cache = data;
+    return data;
+  }
+
   function mergeSearchableWorkOrders() {
-    const data = window.cache;
-    if (!data || typeof data !== "object") return;
+    const data = getControlData();
+    if (!data) return;
 
     const workOrders = Array.isArray(data.workOrders) ? data.workOrders : [];
     const active = Array.isArray(data.active) ? data.active : [];
@@ -30,12 +49,16 @@ if (!panel.includes(marker)) {
     });
 
     data.workOrders = Array.from(merged.values());
+    window.cache = data;
   }
 
   function syncBeforeSearch(event) {
     const target = event.target;
     if (!target || !target.closest) return;
-    if (target.closest("#homeWorkOrderSearchBtn") || target.closest("#homeWorkOrderSearchInput")) {
+    if (
+      target.closest("#homeWorkOrderSearchBtn") ||
+      target.closest("#homeWorkOrderSearchInput")
+    ) {
       mergeSearchableWorkOrders();
     }
   }
@@ -66,7 +89,7 @@ if (!panel.includes(marker)) {
 
   panel = panel.replace("</body>", patch + "\n</body>");
   fs.writeFileSync(panelPath, panel);
-  console.log("Joshua work-order search active-record sync installed.");
+  console.log("Joshua work-order search cache synchronization installed.");
 }
 
 await import("./servicechannel-webhook-bootstrap.mjs");
