@@ -8,6 +8,7 @@ const THURSDAY_MARKER = "JOSHUA_THURSDAY_TRAVIS_ROUTE_V1";
 const SEARCH_MARKER = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
 const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
 const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
+const STALE_RECONCILIATION_MARKER = "JOSHUA_STALE_RECONCILIATION_357564044_V1";
 
 /*
  * Thursday routing:
@@ -467,5 +468,157 @@ function renderOrders(){
   fs.writeFileSync(panelPath, panel);
   console.log("Joshua Completed Today work-order filter installed.");
 }
+
+
+/*
+ * PHASE 13 — one-time historical reconciliation.
+ * ServiceChannel already shows 357564044 as Completed/Pending Confirmation,
+ * but Joshua retained an old onsite record because checkout happened before
+ * the live webhook was active.
+ */
+function reconcileKnownStaleServiceChannelWorkOrder() {
+  const tracking = "357564044";
+  const dataFile = process.env.CONTROL_DATA_FILE || "/tmp/joshua-control-data.json";
+
+  if (!fs.existsSync(dataFile)) {
+    console.log("Phase 13 stale reconciliation skipped: no control data file.");
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  } catch (error) {
+    console.error("Phase 13 stale reconciliation skipped: invalid control data.", error);
+    return;
+  }
+
+  if (!data?.workOrders || typeof data.workOrders !== "object") return;
+  const existing = data.workOrders[tracking];
+  if (!existing || existing.phase13ReconciliationMarker === STALE_RECONCILIATION_MARKER) return;
+
+  const now = new Date().toISOString();
+  const technicianName = String(existing.technician || "Rigoberto").trim();
+
+  data.workOrders[tracking] = {
+    ...existing,
+    trackingNumber: tracking,
+    state: "ready_to_bill",
+    joshuaStatus: "ready_to_bill",
+    checkOutAt: existing.checkOutAt || "2026-07-29T12:21:00-05:00",
+    statusText: "Completed / Pending Confirmation",
+    serviceChannelPrimaryStatus: "Completed",
+    serviceChannelExtendedStatus: "Pending Confirmation",
+    serviceChannelLastEvent: "Phase13HistoricalReconciliation",
+    serviceChannelLastSyncAt: now,
+    ivrConfirmed: true,
+    lastError: "",
+    updatedAt: now,
+    phase13ReconciliationMarker: STALE_RECONCILIATION_MARKER,
+    phase13ReconciledAt: now,
+    phase13ReconciliationReason:
+      "ServiceChannel showed Completed/Pending Confirmation before live webhooks were enabled."
+  };
+
+  if (data.technicians && typeof data.technicians === "object") {
+    for (const [name, technician] of Object.entries(data.technicians)) {
+      if (!technician || typeof technician !== "object") continue;
+      const sameTracking = String(technician.currentTrackingNumber || "") === tracking;
+      const sameTechnician =
+        technicianName &&
+        String(name).toLowerCase() === technicianName.toLowerCase() &&
+        technician.status === "onsite";
+
+      if (sameTracking || sameTechnician) {
+        data.technicians[name] = {
+          ...technician,
+          status: "available",
+          currentTrackingNumber: "",
+          updatedAt: now
+        };
+      }
+    }
+  }
+
+  const closePattern =
+    /verify servicechannel check.?out|verify servicechannel check.?in|review operational exception|missed checkout|complete job documentation|review job for billing|prepare invoice|prepare and submit quote|order parts|schedule return trip/i;
+
+  data.tasks = Array.isArray(data.tasks)
+    ? data.tasks.map(task =>
+        String(task.trackingNumber || "") === tracking &&
+        task.status !== "closed" &&
+        closePattern.test(String(task.title || ""))
+          ? {
+              ...task,
+              status: "closed",
+              completedAt: now,
+              updatedAt: now,
+              closedReason: "Closed by Phase 13 historical ServiceChannel reconciliation."
+            }
+          : task
+      )
+    : [];
+
+  const hasBillingTask = data.tasks.some(task =>
+    String(task.trackingNumber || "") === tracking &&
+    task.status !== "closed" &&
+    String(task.workflowType || "") === "billing"
+  );
+
+  if (!hasBillingTask) {
+    data.tasks.unshift({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: now,
+      updatedAt: now,
+      status: "open",
+      priority: "normal",
+      title: "Review job for billing",
+      trackingNumber: tracking,
+      assignedTo: "Shellie",
+      workflowType: "billing",
+      actionLabel: "Mark Ready to Bill",
+      notes: "Created by Phase 13 historical ServiceChannel reconciliation."
+    });
+  }
+
+  data.events = Array.isArray(data.events)
+    ? data.events.map(event =>
+        String(event.trackingNumber || "") === tracking &&
+        String(event.level || "").toLowerCase() === "error"
+          ? {
+              ...event,
+              level: "resolved",
+              resolvedAt: now,
+              resolvedReason: "Cleared by Phase 13 historical ServiceChannel reconciliation."
+            }
+          : event
+      )
+    : [];
+
+  if (!data.events.some(event =>
+    String(event.trackingNumber || "") === tracking &&
+    String(event.type || "") === "servicechannel_historical_reconciliation"
+  )) {
+    data.events.unshift({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: now,
+      type: "servicechannel_historical_reconciliation",
+      level: "success",
+      trackingNumber: tracking,
+      requestedBy: "ServiceChannel Webhook",
+      technician: technicianName,
+      serviceChannelPrimaryStatus: "Completed",
+      serviceChannelExtendedStatus: "Pending Confirmation",
+      note:
+        "Removed historical stale onsite status after ServiceChannel showed Completed/Pending Confirmation."
+    });
+  }
+
+  data.updatedAt = now;
+  fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+  console.log("Phase 13 reconciled stale work order 357564044 and released the technician.");
+}
+
+reconcileKnownStaleServiceChannelWorkOrder();
 
 await import("./servicechannel-webhook-bootstrap.mjs");
