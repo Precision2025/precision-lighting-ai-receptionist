@@ -7,6 +7,7 @@ const panelPath = new URL("./public/control-panel.html", import.meta.url);
 const THURSDAY_MARKER = "JOSHUA_THURSDAY_TRAVIS_ROUTE_V1";
 const SEARCH_MARKER = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
 const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
+const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
 
 /*
  * Thursday routing:
@@ -137,6 +138,109 @@ if (!prompt.includes(promptMarker)) {
   prompt = prompt.replace(oldRule, newRule);
   fs.writeFileSync(promptPath, prompt);
   console.log("Joshua Thursday routing prompt installed.");
+}
+
+
+/*
+ * Job Sheets upsert protection:
+ * Every ServiceChannel check-in/out sync carries the tracking number as the
+ * stable row key. Zapier should find that tracking number, update the row,
+ * and create a row only when no match exists.
+ */
+if (!server.includes(JOB_SHEETS_UPSERT_MARKER)) {
+  const oldJobSheetsSync = `async function syncServiceChannelJobSheets(trackingNumber, payload) {
+  if (!jobSheetsZapierWebhookUrl) return { ok: false, skipped: true };
+  try {
+    const response = await fetch(jobSheetsZapierWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ action: "servicechannel_ivr_update", tracking_number: trackingNumber, ...payload })
+    });
+    if (!response.ok) throw new Error(\`Job Sheets update failed (\${response.status})\`);
+    return { ok: true };
+  } catch (error) {
+    app.log.error(error, "Could not sync ServiceChannel IVR result to Job Sheets");
+    return { ok: false, error: error.message };
+  }
+}`;
+
+  const newJobSheetsSync = `/* ${JOB_SHEETS_UPSERT_MARKER} */
+const recentJobSheetsSyncKeys = new Map();
+
+function jobSheetsSyncIdentity(trackingNumber, payload = {}) {
+  const tracking = String(trackingNumber || "").replace(/\\D/g, "");
+  const eventType = String(payload.event_type || payload.action || "servicechannel_update");
+  const eventTime = String(payload.check_in_at || payload.check_out_at || payload.updated_at || "");
+  const status = String(payload.status || "");
+  return [tracking, eventType, eventTime, status].join("|");
+}
+
+async function syncServiceChannelJobSheets(trackingNumber, payload = {}) {
+  if (!jobSheetsZapierWebhookUrl) return { ok: false, skipped: true };
+
+  const tracking = String(trackingNumber || "").replace(/\\D/g, "");
+  if (!tracking) return { ok: false, skipped: true, error: "Tracking number is required." };
+
+  const syncKey = jobSheetsSyncIdentity(tracking, payload);
+  const previousSync = recentJobSheetsSyncKeys.get(syncKey);
+  if (previousSync && Date.now() - previousSync < 10 * 60 * 1000) {
+    return { ok: true, skipped: true, duplicateDelivery: true, upsertKey: tracking };
+  }
+
+  const eventType = String(payload.event_type || payload.action || "servicechannel_update");
+  const eventTime = String(
+    payload.check_in_at ||
+    payload.check_out_at ||
+    payload.updated_at ||
+    new Date().toISOString()
+  );
+
+  const zapPayload = {
+    action: "job_sheets_upsert",
+    operation: "upsert",
+    create_if_missing: true,
+    update_if_found: true,
+    lookup_field: "tracking_number",
+    lookup_value: tracking,
+    upsert_key: tracking,
+    tracking_number: tracking,
+    idempotency_key: [tracking, eventType, eventTime].join("|"),
+    source_action: String(payload.action || "servicechannel_update"),
+    ...payload
+  };
+
+  try {
+    const response = await fetch(jobSheetsZapierWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(zapPayload)
+    });
+    if (!response.ok) throw new Error(\`Job Sheets upsert failed (\${response.status})\`);
+
+    recentJobSheetsSyncKeys.set(syncKey, Date.now());
+    for (const [key, timestamp] of recentJobSheetsSyncKeys) {
+      if (Date.now() - timestamp > 60 * 60 * 1000) recentJobSheetsSyncKeys.delete(key);
+    }
+
+    return {
+      ok: true,
+      operation: "upsert",
+      upsertKey: tracking,
+      idempotencyKey: zapPayload.idempotency_key
+    };
+  } catch (error) {
+    app.log.error(error, "Could not upsert ServiceChannel result in Job Sheets");
+    return { ok: false, error: error.message, upsertKey: tracking };
+  }
+}`;
+
+  if (!server.includes(oldJobSheetsSync)) {
+    throw new Error("Could not locate the existing Job Sheets synchronization function.");
+  }
+
+  server = server.replace(oldJobSheetsSync, newJobSheetsSync);
+  fs.writeFileSync(serverPath, server);
+  console.log("Joshua Job Sheets tracking-number upsert payload installed.");
 }
 
 /* Preserve the corrected home-search cache synchronization. */
