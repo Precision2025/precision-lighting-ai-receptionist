@@ -24,6 +24,22 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 .tech-card{display:grid;gap:8px}.tech-row{display:flex;justify-content:space-between;gap:10px}.progress{height:8px;background:#0b141f;border-radius:99px;overflow:hidden}.progress>span{display:block;height:100%;background:#eab308}
 dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff;width:min(760px,94vw);padding:18px}dialog::backdrop{background:#000a}
 @media(max-width:1000px){.two,.three,.four,.formgrid{grid-template-columns:1fr}table{min-width:1000px}.tabs{top:75px}header{align-items:flex-start}.subtitle{max-width:240px}}
+
+/* JOSHUA_EXCEPTION_DASHBOARD_COMPACT_CLICKABLE_V1 */
+.exception-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.exception-card-header h2{margin:0}
+.exception-card-header button{width:auto;padding:8px 12px}
+#attention{max-height:none!important;overflow:visible!important}
+.exception-item{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:12px 10px;border-bottom:1px solid #28384c;cursor:pointer;touch-action:manipulation;border-radius:8px}
+.exception-item:hover,.exception-item:focus{background:#172536;outline:none}
+.exception-item:focus-visible{outline:2px solid #eab308;outline-offset:1px}
+.exception-arrow{font-size:24px;color:#eab308;font-weight:900}
+.exception-summary{padding:10px 0 2px;color:#9fb0c7;font-size:12px}
+.exception-dialog{width:min(920px,95vw);max-height:88vh}
+.exception-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:10px}
+.exception-list{max-height:65vh;overflow:auto}
+@media(max-width:760px){.exception-toolbar{grid-template-columns:1fr}.exception-card-header{align-items:flex-start}.exception-card-header button{white-space:nowrap}}
+
 </style>
 </head>
 <body>
@@ -52,7 +68,10 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <section id="executive" class="panel active">
 <div class="grid two">
  <div class="card success"><h2>Joshua Intelligence</h2><div id="insights"></div></div>
- <div class="card alert"><h2>Exception Dashboard</h2><div id="attention" class="scroll muted">No current problems.</div></div>
+ <div class="card alert">
+ <div class="exception-card-header"><h2>Exception Dashboard</h2><button type="button" class="secondary" id="viewAllExceptions">View All</button></div>
+ <div id="attention" class="muted">No current problems.</div>
+</div>
 </div>
 <div class="grid four" style="margin-top:14px">
  <div class="card"><span class="muted">Completed today</span><div id="completedToday" class="metric">0</div></div>
@@ -113,6 +132,19 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <button>Save Settings</button></form></div></section>
 </main>
 
+<dialog id="exceptionDialog" class="exception-dialog">
+ <div class="exception-card-header">
+  <div><h2>All Exceptions</h2><div id="exceptionCount" class="small muted"></div></div>
+  <button type="button" class="secondary" id="closeExceptionDialog">Close</button>
+ </div>
+ <div class="exception-toolbar">
+  <input id="exceptionSearch" placeholder="Search tracking number, status, customer or error">
+  <button type="button" class="secondary" id="openExceptionWorkOrders">Open Work Orders</button>
+ </div>
+ <div id="exceptionList" class="exception-list"></div>
+</dialog>
+
+
 <dialog id="orderDialog"><h2>Add or Update Work Order</h2><form id="orderForm">
 <div class="formgrid">
 <div><label>Tracking number</label><input id="oTracking" required></div><div><label>Work order number</label><input id="oWorkOrder"></div>
@@ -167,7 +199,49 @@ async function refresh(){
  }catch(e){live.textContent="● OFFLINE / UNAUTHORIZED";live.style.color="#ff8b7d"}
 }
 function renderInsights(){insights.innerHTML=cache.insights.map(x=>`<div class="insight"><strong>${x.severity==="warning"?"⚠":x.severity==="success"?"✓":"ℹ"} ${esc(x.title)}</strong><div class="small muted">${esc(x.detail)}</div></div>`).join("")}
-function renderAttention(){const arr=[...cache.failures,...cache.attentionWorkOrders];attention.innerHTML=arr.length?arr.map(x=>`<div class="event"><strong>⚠ ${esc(x.type||x.state||"Work order needs attention")}</strong><div class="small">${esc(x.trackingNumber||"")} ${esc(x.lastError||x.error||x.callStatus||x.liveOnsiteDuration||"Review required")}</div></div>`).join(""):"<span class='live'>No current problems.</span>"}
+function allExceptions(){
+ const merged=[...(cache.failures||[]),...(cache.attentionWorkOrders||[])];
+ const seen=new Set();
+ return merged.filter(x=>{
+  const key=[x.trackingNumber||"",x.type||x.joshuaStatus||x.state||"",x.lastError||x.error||x.callStatus||""].join("|");
+  if(seen.has(key))return false;seen.add(key);return true;
+ }).sort((a,b)=>{
+  const ar=String(a.lastError||a.error||a.type||"").toLowerCase();
+  const br=String(b.lastError||b.error||b.type||"").toLowerCase();
+  const rank=v=>/ivr|checkout|checkin|error|failed|not verified/.test(v)?0:/authorization/.test(v)?1:/proposal|quote/.test(v)?2:/parts/.test(v)?3:4;
+  return rank(ar)-rank(br);
+ });
+}
+function exceptionLabel(x){return String(x.joshuaStatus||x.type||x.state||"Work order needs attention").replaceAll("_"," ")}
+function exceptionDetail(x){return x.lastError||x.error||x.callStatus||x.actionableReason||x.liveOnsiteDuration||"Review required"}
+function exceptionMarkup(x){
+ const tracking=esc(x.trackingNumber||"");
+ return `<div class="exception-item" role="button" tabindex="0" data-exception-tracking="${tracking}"><div><strong>⚠ ${esc(exceptionLabel(x))}</strong><div class="small">${tracking?tracking+" · ":""}${esc(exceptionDetail(x))}</div></div><span class="exception-arrow">›</span></div>`;
+}
+function renderAttention(){
+ const arr=allExceptions(),visible=arr.slice(0,6);
+ attention.innerHTML=visible.length?visible.map(exceptionMarkup).join(""):"<span class='live'>No current problems.</span>";
+ if(arr.length>6)attention.insertAdjacentHTML("beforeend",`<div class="exception-summary">Showing 6 of ${arr.length}. Tap View All to see everything.</div>`);
+ const button=document.getElementById("viewAllExceptions");if(button)button.textContent=arr.length?`View All (${arr.length})`:"View All";
+ if(document.getElementById("exceptionDialog")?.open)renderAllExceptions();
+}
+function renderAllExceptions(){
+ const list=document.getElementById("exceptionList"),count=document.getElementById("exceptionCount"),search=document.getElementById("exceptionSearch");
+ if(!list)return;
+ const term=String(search?.value||"").trim().toLowerCase();
+ let arr=allExceptions();
+ if(term)arr=arr.filter(x=>JSON.stringify(x).toLowerCase().includes(term));
+ if(count)count.textContent=`${arr.length} exception${arr.length===1?"":"s"} requiring review`;
+ list.innerHTML=arr.length?arr.map(exceptionMarkup).join(""):"<div class='muted'>No matching exceptions.</div>";
+}
+function openException(tracking){
+ const value=String(tracking||"").trim();if(!value)return;
+ const dialog=document.getElementById("exceptionDialog");if(dialog?.open)dialog.close();
+ const order=(cache.workOrders||[]).find(x=>String(x.trackingNumber||"")===value);
+ if(order&&typeof window.editOrder==="function"){window.editOrder(value);return;}
+ document.querySelector('.tab[data-tab="workorders"]')?.click();
+ if(typeof orderSearch!=="undefined"){orderSearch.value=value;renderOrders();}
+}
 function renderOnsite(){onsiteCards.innerHTML=cache.active.length?cache.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><div class="metric" style="margin-top:10px">${esc(x.liveOnsiteDuration)}</div><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>"}
 function renderDispatch(){
  const jobs=cache.workOrders.filter(x=>!["completed","paid"].includes(x.state));
@@ -199,6 +273,27 @@ function taskActionLabel(task={}){
 function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask('${x.id}')">${esc(taskActionLabel(x))}</button></div>`).join(""):"<span class='muted'>No open tasks.</span>"}
 function renderActivity(){events.innerHTML=cache.recentEvents.slice(0,70).map(x=>`<div class="event"><strong>${x.level==="error"?"⚠":"✓"} ${esc(x.type).replaceAll("_"," ")}</strong><span class="small muted">Tracking ${esc(x.trackingNumber||"—")} · ${esc(x.requestedBy||"Joshua")} · ${fmt(x.createdAt)}</span></div>`).join("")||"<span class='muted'>No events yet.</span>"}
 function fillSettings(){maxOnsite.value=cache.settings.maxOnsiteMinutes;reminderMinutes.value=cache.settings.reminderMinutes;nteWarningPercent.value=cache.settings.nteWarningPercent;overtimeHours.value=cache.settings.overtimeHours;autoReminders.checked=cache.settings.autoTechnicianReminders!==false;autoInvoiceQueue.checked=cache.settings.autoInvoiceQueue!==false}
+
+document.addEventListener("click",e=>{
+ const item=e.target.closest?.("[data-exception-tracking]");
+ if(item){e.preventDefault();openException(item.dataset.exceptionTracking);return;}
+ if(e.target.closest?.("#viewAllExceptions")){
+  const d=document.getElementById("exceptionDialog");renderAllExceptions();
+  if(d){if(typeof d.showModal==="function")d.showModal();else d.setAttribute("open","open");}
+  return;
+ }
+ if(e.target.closest?.("#closeExceptionDialog")){document.getElementById("exceptionDialog")?.close();return;}
+ if(e.target.closest?.("#openExceptionWorkOrders")){
+  document.getElementById("exceptionDialog")?.close();
+  document.querySelector('.tab[data-tab="workorders"]')?.click();
+  return;
+ }
+});
+document.addEventListener("keydown",e=>{
+ const item=e.target.closest?.("[data-exception-tracking]");
+ if(item&&(e.key==="Enter"||e.key===" ")){e.preventDefault();openException(item.dataset.exceptionTracking);}
+});
+document.getElementById("exceptionSearch")?.addEventListener("input",renderAllExceptions);
 
 action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
 ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
