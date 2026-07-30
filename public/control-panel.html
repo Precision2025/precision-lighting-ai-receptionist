@@ -40,6 +40,22 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 .exception-list{max-height:65vh;overflow:auto}
 @media(max-width:760px){.exception-toolbar{grid-template-columns:1fr}.exception-card-header{align-items:flex-start}.exception-card-header button{white-space:nowrap}}
 
+
+/* JOSHUA_WORK_ORDER_TABLE_MOBILE_FIX_V1 */
+#workorders .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+#workorders table{table-layout:fixed;min-width:820px}
+#workorders th:nth-child(1),#workorders td:nth-child(1){width:130px}
+#workorders th:nth-child(2),#workorders td:nth-child(2){width:230px}
+#workorders th:nth-child(3),#workorders td:nth-child(3){width:150px}
+#workorders th:nth-child(4),#workorders td:nth-child(4){width:90px}
+#workorders th:nth-child(5),#workorders td:nth-child(5){width:105px;max-width:105px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#workorders th:nth-child(6),#workorders td:nth-child(6){width:65px}
+#workorders th:nth-child(7),#workorders td:nth-child(7){width:85px}
+#workorders th:nth-child(8),#workorders td:nth-child(8){width:75px}
+.work-order-link{display:inline-block;width:auto;padding:0;border:0;background:transparent;color:#f7cb63;text-align:left;font:inherit;font-weight:900;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.work-order-link:focus-visible{outline:2px solid #eab308;outline-offset:3px}
+@media(max-width:760px){#workorders .card{padding:12px}#workorders table{min-width:760px;font-size:12px}#workorders th,#workorders td{padding:10px 6px}#workorders th:nth-child(5),#workorders td:nth-child(5){width:82px;max-width:82px}}
+
 </style>
 </head>
 <body>
@@ -253,7 +269,7 @@ function renderTechnicians(){
 function renderOrders(){
  const q=orderSearch.value.toLowerCase();
  const rows=cache.workOrders.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
- orders.innerHTML=rows.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong><br><span class="small muted">${esc(x.workOrderNumber||"")}</span></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td>${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
+ orders.innerHTML=rows.map(x=>`<tr><td><button type="button" class="work-order-link" onclick="editOrder('${esc(x.trackingNumber)}')">${esc(x.trackingNumber)}</button><br><button type="button" class="work-order-link small muted" onclick="editOrder('${esc(x.trackingNumber)}')">${esc(x.workOrderNumber||"")}</button></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.joshuaStatus||x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td title="${esc(x.technician||"Unassigned")}">${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Open</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
 }
 function renderBilling(){
  billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${money(x.invoiceAmount)}</td><td>${money(x.estimatedCost)}</td><td class="${Number(x.grossProfit||0)>=0?"profitPositive":"profitNegative"}">${money(x.grossProfit)}</td><td>${Number(x.grossMargin||0).toFixed(1)}%</td><td>${money(x.nte)}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${esc(x.paymentStatus||"unpaid")}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the profit pipeline.</td></tr>";
