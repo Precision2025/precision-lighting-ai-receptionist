@@ -11,6 +11,7 @@ const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
 const TRANSFER_RESULT_MARKER = "JOSHUA_CONFIRMED_TRANSFER_RESULT_V2";
 const CALLBACK_ACCOUNTABILITY_MARKER = "JOSHUA_PHASE15_MISSED_CALL_ACCOUNTABILITY_V1";
 const CALLER_NAME_MARKER = "JOSHUA_PROFESSIONAL_CALLER_NAME_CAPTURE_V1";
+const DASHBOARD_LAYOUT_MARKER = "JOSHUA_GREETING_TOP_AND_OFFICE_LABELS_V1";
 
 /*
  * Thursday routing:
@@ -1047,6 +1048,92 @@ function renderOrders(){
 
     fs.writeFileSync(panelPath, callerNamePanel);
     console.log("Joshua caller-name display and Office Inbox labels installed.");
+  }
+}
+
+
+/*
+ * Dashboard layout correction:
+ * - Keep the welcome greeting as the first item in the main page area.
+ * - Apply the approved Office Inbox labels directly in the browser so the
+ *   wording remains correct even when an older generated panel is present.
+ */
+{
+  let dashboardLayoutPanel = fs.readFileSync(panelPath, "utf8");
+
+  if (!dashboardLayoutPanel.includes(DASHBOARD_LAYOUT_MARKER)) {
+    const dashboardLayoutScript = `
+<script>
+// ${DASHBOARD_LAYOUT_MARKER}
+(function(){
+  function applyJoshuaDashboardLayout(){
+    const main = document.querySelector("main");
+    const greeting = document.querySelector(".office-welcome");
+
+    if (main && greeting && main.firstElementChild !== greeting) {
+      main.insertBefore(greeting, main.firstElementChild);
+    }
+
+    document.querySelectorAll("h2").forEach(function(heading){
+      const label = String(heading.textContent || "").trim();
+
+      if (label === "Immediate Attention") {
+        heading.textContent = "Urgent Office Actions";
+        const next = heading.nextElementSibling;
+        if (!next || !next.classList.contains("office-label-description")) {
+          const description = document.createElement("div");
+          description.className = "small muted office-label-description";
+          description.textContent = "Problems requiring office follow-up now.";
+          heading.insertAdjacentElement("afterend", description);
+        }
+      }
+
+      if (label === "Aging Workflow") {
+        heading.textContent = "Stalled Work Orders";
+        const next = heading.nextElementSibling;
+        if (!next || !next.classList.contains("office-label-description")) {
+          const description = document.createElement("div");
+          description.className = "small muted office-label-description";
+          description.textContent = "Work orders that have remained in the same workflow too long.";
+          heading.insertAdjacentElement("afterend", description);
+        }
+      }
+    });
+
+    document.querySelectorAll("*").forEach(function(element){
+      if (element.children.length) return;
+      const value = String(element.textContent || "").trim();
+      if (value === "No immediate operational exceptions.") {
+        element.textContent = "No urgent office actions.";
+      } else if (value === "No aging workflow items.") {
+        element.textContent = "No stalled work orders.";
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", applyJoshuaDashboardLayout);
+  } else {
+    applyJoshuaDashboardLayout();
+  }
+
+  const observer = new MutationObserver(applyJoshuaDashboardLayout);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>`;
+
+    dashboardLayoutPanel = dashboardLayoutPanel.replace(
+      "</body>",
+      dashboardLayoutScript + "\n</body>"
+    );
+
+    dashboardLayoutPanel = dashboardLayoutPanel.replace(
+      "</style>",
+      `/* ${DASHBOARD_LAYOUT_MARKER} */\n</style>`
+    );
+
+    fs.writeFileSync(panelPath, dashboardLayoutPanel);
+    console.log("Joshua welcome greeting moved to the top and Office Inbox labels corrected.");
   }
 }
 
