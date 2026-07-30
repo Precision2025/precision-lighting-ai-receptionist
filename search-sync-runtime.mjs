@@ -282,12 +282,40 @@ if (!server.includes(TRANSFER_RESULT_MARKER)) {
     "call-summary generator"
   );
 
-  const notifyTeamFunction = "async function notifyTeam(session, transferResult = null) {\n  if (!session?.messages?.some(message => message.role === \"user\")) return false;\n  if (session.summarySent || session.summarySending) return false;\n\n  session.summarySending = true;\n  try {\n    const finalTransferResult = transferResult || session.transferResult || null;\n    let summary;\n    try {\n      summary = await makeSummary(session, finalTransferResult);\n    } catch (error) {\n      app.log.error(error, \"Could not generate call summary\");\n      summary = session.messages\n        .map(message => `${message.role}: ${message.content}`)\n        .join(\"\\n\");\n      if (finalTransferResult) {\n        summary = enforceTransferSummaryFields(summary, finalTransferResult);\n      }\n    }\n\n    const subject = `Joshua call summary \u2014 ${session.from || \"Unknown caller\"}`;\n    const to = emailRecipientsForDepartment(session.requestedDepartment);\n\n    await Promise.allSettled([\n      sendEmail({\n        to,\n        bcc: process.env.OWNER_EMAIL,\n        subject,\n        text: summary\n      }),\n      sendOwnerSms(summary)\n    ]);\n\n    session.summarySent = true;\n    app.log.info({ summary, transferResult: finalTransferResult }, \"Completed final call summary\");\n    return true;\n  } finally {\n    session.summarySending = false;\n  }\n}";
+  const notifyTeamFunction = "async function notifyTeam(session, transferResult = null) {\n  if (!session?.messages?.some(message => message.role === \"user\")) return false;\n  if (session.summarySent || session.summarySending) return false;\n\n  session.summarySending = true;\n  try {\n    const finalTransferResult = transferResult || session.transferResult || null;\n    let summary;\n    try {\n      summary = await makeSummary(session, finalTransferResult);\n    } catch (error) {\n      app.log.error(error, \"Could not generate call summary\");\n      summary = session.messages\n        .map(message => `${message.role}: ${message.content}`)\n        .join(\"\\n\");\n      if (finalTransferResult) {\n        summary = enforceTransferSummaryFields(summary, finalTransferResult);\n      }\n    }\n\n    /* JOSHUA_MISSED_CALL_ALERT_SUBJECT_V1 */\n    const missedTransfer =\n      finalTransferResult && finalTransferResult.status !== \"answered\";\n    const missedDestination =\n      finalTransferResult?.destinationName || \"Precision Lighting Team\";\n\n    if (missedTransfer) {\n      summary =\n        `ALERT ALERT — ${missedDestination.toUpperCase()} MISSED A CALL\\n\\n${summary}`;\n    }\n\n    const subject = missedTransfer\n      ? `ALERT ALERT — ${missedDestination} missed a call`\n      : `Joshua call summary — ${session.from || \"Unknown caller\"}`;\n    const to = emailRecipientsForDepartment(session.requestedDepartment);\n\n    await Promise.allSettled([\n      sendEmail({\n        to,\n        bcc: process.env.OWNER_EMAIL,\n        subject,\n        text: summary\n      }),\n      sendOwnerSms(summary)\n    ]);\n\n    session.summarySent = true;\n    app.log.info({ summary, transferResult: finalTransferResult }, \"Completed final call summary\");\n    return true;\n  } finally {\n    session.summarySending = false;\n  }\n}";
   replaceServerSection(
     'async function notifyTeam(session) {',
     '\n\nasync function notifyMissedTransfer',
     notifyTeamFunction,
     "team notification function"
+  );
+
+  const missedTransferSubjectBefore =
+    '  const subject = `Missed Joshua transfer — ${callerNumber}`;';
+  const missedTransferSubjectAfter =
+    '  const missedDestination = transferDestinationName(department, stage);\n' +
+    '  const subject = `ALERT ALERT — ${missedDestination} missed a call`;';
+
+  if (!server.includes(missedTransferSubjectBefore)) {
+    throw new Error("Could not locate the missed-transfer email subject.");
+  }
+  server = server.replace(
+    missedTransferSubjectBefore,
+    missedTransferSubjectAfter
+  );
+
+  const missedTransferHeaderBefore =
+    '    "MISSED TRANSFER — CALLBACK REQUIRED",';
+  const missedTransferHeaderAfter =
+    '    `ALERT ALERT — ${transferDestinationName(department, stage).toUpperCase()} MISSED A CALL`,\n' +
+    '    "MISSED TRANSFER — CALLBACK REQUIRED",';
+
+  if (!server.includes(missedTransferHeaderBefore)) {
+    throw new Error("Could not locate the missed-transfer email header.");
+  }
+  server = server.replaceAll(
+    missedTransferHeaderBefore,
+    missedTransferHeaderAfter
   );
 
   const connectActionRoute = "app.post(\"/connect-action\", async (request, reply) => {\n  if (!validateHttpRequest(request)) {\n    return reply.code(403).send(\"Invalid Twilio signature\");\n  }\n\n  let handoff = {};\n  const raw = request.body?.HandoffData || request.body?.handoffData;\n  if (raw) {\n    try {\n      handoff = JSON.parse(raw);\n    } catch {\n      handoff = { reason: raw };\n    }\n  }\n\n  if (handoff.reasonCode !== \"live-agent-handoff\") {\n    return reply\n      .type(\"text/xml\")\n      .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>`);\n  }\n\n  const department = String(handoff.department || \"default\").toLowerCase();\n  let destinationName = \"the Precision Lighting team\";\n  let destinationNumber = defaultTransferNumber;\n  let stage = \"default\";\n\n  if (department === \"travis\") {\n    if (isThursdayInDallas()) {\n      destinationName = \"Ariana\";\n      destinationNumber = arianaTransferNumber;\n      stage = \"thursday-ariana\";\n    } else {\n      destinationName = \"Travis\";\n      destinationNumber = travisTransferNumber;\n      stage = \"travis\";\n    }\n  } else if (department === \"accounting\" || department === \"shellie\") {\n    destinationName = \"Shellie\";\n    destinationNumber = accountingTransferNumber;\n    stage = \"shellie\";\n  } else if (department === \"ariana\" || department === \"operations\") {\n    destinationName = \"Ariana\";\n    destinationNumber = arianaTransferNumber;\n    stage = \"ariana\";\n  }\n\n  const session = getSessionForTwilioRequest(request);\n  if (session) {\n    session.transferAttempted = true;\n    session.transferRequestedAt = session.transferRequestedAt || new Date().toISOString();\n    session.transferDepartment = department;\n    session.transferStage = stage;\n    session.transferDestinationName = destinationName;\n  }\n\n  const twiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">Please hold while I connect you with ${xmlEscape(destinationName)}.</Say>\n  <Dial\n    timeout=\"25\"\n    answerOnBridge=\"true\"\n    action=\"${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n    method=\"POST\">\n    <Number\n      url=\"${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n      method=\"POST\"\n      machineDetection=\"Enable\"\n      machineDetectionTimeout=\"18\"\n      machineDetectionSpeechThreshold=\"1800\"\n      machineDetectionSpeechEndThreshold=\"2000\"\n      machineDetectionSilenceTimeout=\"6000\">${xmlEscape(destinationNumber)}</Number>\n  </Dial>\n</Response>`;\n\n  return reply.type(\"text/xml\").send(twiml);\n});";
