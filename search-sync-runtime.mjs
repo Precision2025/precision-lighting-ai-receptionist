@@ -9,6 +9,7 @@ const SEARCH_MARKER = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
 const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
 const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
 const TRANSFER_RESULT_MARKER = "JOSHUA_CONFIRMED_TRANSFER_RESULT_V2";
+const CALLBACK_ACCOUNTABILITY_MARKER = "JOSHUA_PHASE15_MISSED_CALL_ACCOUNTABILITY_V1";
 
 /*
  * Thursday routing:
@@ -394,8 +395,239 @@ if (!server.includes(TRANSFER_RESULT_MARKER)) {
   console.log("Joshua confirmed transfer-result summaries installed.");
 }
 
+
+/*
+ * PHASE 15 — Missed Call Accountability System
+ *
+ * A missed transfer creates one urgent callback record and one linked task.
+ * The alert remains open after acknowledgement and closes only after the
+ * callback is explicitly marked complete.
+ */
+if (!server.includes(CALLBACK_ACCOUNTABILITY_MARKER)) {
+  const callbackHelpers = "/* JOSHUA_PHASE15_MISSED_CALL_ACCOUNTABILITY_V1 */\nfunction phase15CallbackKey(session = {}, result = {}) {\n  const callSid = String(\n    session.callSid ||\n    result.parentCallSid ||\n    result.callSid ||\n    \"\"\n  ).trim();\n  const stage = String(result.stage || session.transferStage || \"default\").trim();\n  const caller = normalizePhone(session.from || result.callerNumber || \"\") || \"unknown\";\n  return callSid\n    ? `call:${callSid}`\n    : `fallback:${caller}:${stage}:${new Date().toISOString().slice(0, 16)}`;\n}\n\nfunction phase15CallbackId(key = \"\") {\n  return `callback-${String(key || \"\")\n    .replace(/[^a-zA-Z0-9_-]/g, \"-\")\n    .slice(-100)}`;\n}\n\nfunction ensureMissedCallAccountability(session = {}, result = {}) {\n  if (!result || result.status === \"answered\") return null;\n\n  const data = readControlData();\n  data.callbacks = Array.isArray(data.callbacks) ? data.callbacks : [];\n  data.tasks = Array.isArray(data.tasks) ? data.tasks : [];\n\n  const callbackKey = phase15CallbackKey(session, result);\n  const existing = data.callbacks.find(item =>\n    String(item.callbackKey || \"\") === callbackKey\n  );\n  if (existing) return existing;\n\n  const now = new Date();\n  const destinationName =\n    String(result.destinationName || \"\").trim() ||\n    transferDestinationName(result.department, result.stage);\n  const callerNumber =\n    normalizePhone(session.from || result.callerNumber || \"\") ||\n    String(session.from || result.callerNumber || \"Unknown caller\");\n  const callbackId = phase15CallbackId(callbackKey);\n  const taskId = `task-${callbackId}`;\n  const dueAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();\n\n  const callback = {\n    id: callbackId,\n    callbackKey,\n    callSid: String(session.callSid || result.parentCallSid || result.callSid || \"\"),\n    callerNumber,\n    requestedDepartment: String(\n      session.requestedDepartment || result.department || \"default\"\n    ),\n    destinationName,\n    finalStage: String(result.stage || session.transferStage || \"default\"),\n    resultStatus: String(result.status || \"unknown\"),\n    rawStatus: String(result.rawStatus || result.status || \"unknown\"),\n    assignedTo: destinationName,\n    priority: \"urgent\",\n    status: \"open\",\n    createdAt: now.toISOString(),\n    dueAt,\n    acknowledgedAt: \"\",\n    acknowledgedBy: \"\",\n    completedAt: \"\",\n    completedBy: \"\",\n    linkedTaskId: taskId,\n    reason:\n      String(result.transferStatus || \"\").trim() ||\n      String(result.status || \"Missed transfer\")\n  };\n\n  const task = {\n    id: taskId,\n    createdAt: now.toISOString(),\n    updatedAt: now.toISOString(),\n    status: \"open\",\n    priority: \"urgent\",\n    title: `Return missed call to ${callerNumber}`,\n    trackingNumber: \"\",\n    assignedTo: destinationName,\n    dueAt,\n    notes:\n      `Missed transfer to ${destinationName}. ` +\n      `Result: ${String(result.status || \"unknown\").replaceAll(\"-\", \" \")}. ` +\n      `Caller: ${callerNumber}.`,\n    workflowType: \"missed_call\",\n    actionLabel: \"Acknowledge Call\",\n    callbackId,\n    callerNumber,\n    missedDestination: destinationName,\n    transferResultStatus: String(result.status || \"unknown\"),\n    acknowledgedAt: \"\",\n    acknowledgedBy: \"\"\n  };\n\n  data.callbacks.unshift(callback);\n  data.callbacks = data.callbacks.slice(0, 500);\n  data.tasks.unshift(task);\n  data.tasks = data.tasks.slice(0, 500);\n  writeControlData(data);\n\n  addControlEvent({\n    type: \"missed_call_callback_created\",\n    level: \"error\",\n    requestedBy: \"Joshua\",\n    callbackId,\n    callerNumber,\n    assignedTo: destinationName,\n    transferStatus: String(result.status || \"unknown\"),\n    note: `Urgent callback assigned to ${destinationName}.`\n  });\n\n  return callback;\n}\n\nfunction updateMissedCallAccountability(callbackId, action, actor = \"Control Panel\") {\n  const data = readControlData();\n  data.callbacks = Array.isArray(data.callbacks) ? data.callbacks : [];\n  data.tasks = Array.isArray(data.tasks) ? data.tasks : [];\n\n  const callbackIndex = data.callbacks.findIndex(\n    item => String(item.id || \"\") === String(callbackId || \"\")\n  );\n  if (callbackIndex < 0) return null;\n\n  const now = new Date().toISOString();\n  const callback = data.callbacks[callbackIndex];\n\n  if (action === \"acknowledge\") {\n    if (!callback.acknowledgedAt) {\n      data.callbacks[callbackIndex] = {\n        ...callback,\n        status: \"acknowledged\",\n        acknowledgedAt: now,\n        acknowledgedBy: actor,\n        updatedAt: now\n      };\n    }\n\n    data.tasks = data.tasks.map(task =>\n      String(task.callbackId || \"\") === String(callbackId)\n        ? {\n            ...task,\n            actionLabel: \"Mark Callback Complete\",\n            acknowledgedAt: task.acknowledgedAt || now,\n            acknowledgedBy: task.acknowledgedBy || actor,\n            updatedAt: now\n          }\n        : task\n    );\n  } else if (action === \"complete\") {\n    data.callbacks[callbackIndex] = {\n      ...callback,\n      status: \"completed\",\n      acknowledgedAt: callback.acknowledgedAt || now,\n      acknowledgedBy: callback.acknowledgedBy || actor,\n      completedAt: now,\n      completedBy: actor,\n      updatedAt: now\n    };\n\n    data.tasks = data.tasks.map(task =>\n      String(task.callbackId || \"\") === String(callbackId)\n        ? {\n            ...task,\n            status: \"closed\",\n            actionLabel: \"Callback Complete\",\n            acknowledgedAt: task.acknowledgedAt || now,\n            acknowledgedBy: task.acknowledgedBy || actor,\n            completedAt: now,\n            completedBy: actor,\n            closedAt: now,\n            updatedAt: now\n          }\n        : task\n    );\n  } else {\n    return null;\n  }\n\n  writeControlData(data);\n\n  addControlEvent({\n    type:\n      action === \"acknowledge\"\n        ? \"missed_call_acknowledged\"\n        : \"missed_call_callback_completed\",\n    level: \"success\",\n    requestedBy: actor,\n    callbackId,\n    callerNumber: callback.callerNumber,\n    assignedTo: callback.assignedTo\n  });\n\n  return data.callbacks[callbackIndex];\n}";
+
+  const notifyAnchor = 'async function notifyTeam(session, transferResult = null) {';
+  if (!server.includes(notifyAnchor)) {
+    throw new Error("Could not locate the final notification function for Phase 15.");
+  }
+  server = server.replace(
+    notifyAnchor,
+    callbackHelpers + "\n\n" + notifyAnchor
+  );
+
+  const emailAnchor =
+    '    const to = emailRecipientsForDepartment(session.requestedDepartment);';
+  const emailReplacement = `${emailAnchor}
+
+    if (missedTransfer) {
+      ensureMissedCallAccountability(session, finalTransferResult);
+    }`;
+
+  if (!server.includes(emailAnchor)) {
+    throw new Error("Could not locate the final email-delivery block for Phase 15.");
+  }
+  server = server.replace(emailAnchor, emailReplacement);
+
+  const openTasksAnchor =
+    '  const openTasks = data.tasks.filter(item => item.status !== "closed");';
+  const openTasksReplacement = `  const openTasks = data.tasks.filter(item => item.status !== "closed");
+  const openCallbacks = (Array.isArray(data.callbacks) ? data.callbacks : [])
+    .filter(item => item.status !== "completed")
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));`;
+
+  if (!server.includes(openTasksAnchor)) {
+    throw new Error("Could not locate Control Panel open tasks for Phase 15.");
+  }
+  server = server.replace(openTasksAnchor, openTasksReplacement);
+
+  const summaryReturnAnchor = `    openTasks,
+    settings: data.settings,`;
+  const summaryReturnReplacement = `    openTasks,
+    openCallbacks,
+    callbackCount: openCallbacks.length,
+    settings: data.settings,`;
+
+  if (!server.includes(summaryReturnAnchor)) {
+    throw new Error("Could not locate Control Panel summary output for Phase 15.");
+  }
+  server = server.replace(summaryReturnAnchor, summaryReturnReplacement);
+
+  const routeAnchor = 'app.get("/control-panel", async (request, reply) => {';
+  const callbackRoutes = String.raw`
+app.post("/api/control/callbacks/:id/acknowledge", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const actor = String(
+    request.body?.acknowledgedBy ||
+    request.body?.actor ||
+    "Control Panel"
+  ).trim();
+
+  const callback = updateMissedCallAccountability(
+    String(request.params.id || ""),
+    "acknowledge",
+    actor
+  );
+
+  if (!callback) {
+    return reply.code(404).send({ ok: false, error: "Callback alert not found." });
+  }
+
+  return reply.send({ ok: true, callback });
+});
+
+app.post("/api/control/callbacks/:id/complete", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const actor = String(
+    request.body?.completedBy ||
+    request.body?.actor ||
+    "Control Panel"
+  ).trim();
+
+  const callback = updateMissedCallAccountability(
+    String(request.params.id || ""),
+    "complete",
+    actor
+  );
+
+  if (!callback) {
+    return reply.code(404).send({ ok: false, error: "Callback alert not found." });
+  }
+
+  return reply.send({ ok: true, callback });
+});
+
+`;
+
+  if (!server.includes(routeAnchor)) {
+    throw new Error("Could not locate the Control Panel route for Phase 15.");
+  }
+  server = server.replace(routeAnchor, callbackRoutes + routeAnchor);
+
+  const fallbackCallerAnchor = `  const callerNumber =
+    session?.from || request.body?.From || request.body?.Caller || "Unknown caller";`;
+
+  const fallbackCallerReplacement = `  const callerNumber =
+    session?.from || request.body?.From || request.body?.Caller || "Unknown caller";
+
+  if (!session) {
+    ensureMissedCallAccountability(
+      {
+        callSid:
+          request.body?.ParentCallSid ||
+          request.body?.CallSid ||
+          request.body?.DialCallSid ||
+          "",
+        from: callerNumber,
+        requestedDepartment: department
+      },
+      {
+        department,
+        stage,
+        status: String(status || "unknown"),
+        rawStatus: String(status || "unknown"),
+        destinationName: transferDestinationName(department, stage),
+        callerNumber
+      }
+    );
+  }`;
+
+  if (!server.includes(fallbackCallerAnchor)) {
+    throw new Error("Could not locate the missed-transfer fallback for Phase 15.");
+  }
+  server = server.replace(fallbackCallerAnchor, fallbackCallerReplacement);
+
+  fs.writeFileSync(serverPath, server);
+  console.log("Joshua Phase 15 missed-call accountability installed.");
+}
+
 /* Preserve the corrected home-search cache synchronization. */
 let panel = fs.readFileSync(panelPath, "utf8");
+
+if (!panel.includes(CALLBACK_ACCOUNTABILITY_MARKER)) {
+  panel = panel.replace("</style>", String.raw`
+/* JOSHUA_PHASE15_MISSED_CALL_ACCOUNTABILITY_V1 */
+.callback-queue-card{border-color:#9b3c32;background:linear-gradient(180deg,#2b1718,#131e2b)}
+.callback-queue-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.callback-queue-head h2{margin:0;color:#ffaaa0}
+.callback-count{display:inline-flex;min-width:34px;height:34px;align-items:center;justify-content:center;border-radius:999px;background:#c53e32;color:#fff;font-weight:900}
+.callback-list{display:grid;gap:10px}
+.callback-item{padding:13px;border:1px solid #704039;border-radius:12px;background:#1a202b}
+.callback-item.acknowledged{border-color:#7a662d}
+.callback-item-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.callback-item strong{display:block}
+.callback-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.callback-actions button{width:auto;min-width:145px}
+.callback-alert-label{color:#ff9f8f;font-weight:900}
+@media(max-width:760px){
+ .callback-item-top{flex-direction:column}
+ .callback-actions{display:grid;grid-template-columns:1fr}
+ .callback-actions button{width:100%}
+}
+</style>`);
+
+  const onsiteCardAnchor =
+    '<div class="card" style="margin-top:14px"><h2>Currently Onsite</h2><div id="onsiteCards" class="grid three"></div></div>';
+
+  const callbackCard = String.raw`
+<div class="card callback-queue-card" style="margin-top:14px">
+ <div class="callback-queue-head">
+  <div>
+   <h2>🚨 Missed Calls Requiring Callback</h2>
+   <div class="small muted">Alerts remain open until the callback is marked complete.</div>
+  </div>
+  <span id="phase15CallbackCount" class="callback-count">0</span>
+ </div>
+ <div id="phase15CallbackQueue" class="callback-list">
+  <span class="muted">No missed calls awaiting follow-up.</span>
+ </div>
+</div>
+${onsiteCardAnchor}`;
+
+  if (!panel.includes(onsiteCardAnchor)) {
+    throw new Error("Could not locate the Executive onsite card for Phase 15.");
+  }
+  panel = panel.replace(onsiteCardAnchor, callbackCard);
+
+  const refreshAnchor =
+    'renderInsights();renderAttention();renderOnsite();renderDispatch();renderTechnicians();renderOrders();renderBilling();renderTasks();renderActivity();fillSettings();';
+  const refreshReplacement =
+    'renderInsights();renderAttention();renderCallbackQueue();renderOnsite();renderDispatch();renderTechnicians();renderOrders();renderBilling();renderTasks();renderActivity();fillSettings();';
+
+  if (!panel.includes(refreshAnchor)) {
+    throw new Error("Could not locate the dashboard refresh renderer for Phase 15.");
+  }
+  panel = panel.replace(refreshAnchor, refreshReplacement);
+
+  const refreshFunctionAnchor = 'async function refresh(){';
+  const callbackUiFunctions = "function phase15CallbackStatusLabel(item={}){\n const status=String(item.resultStatus||\"unknown\").replaceAll(\"-\",\" \");\n if(status===\"no answer\")return \"No Answer\";\n if(status===\"caller disconnected\")return \"Caller Disconnected\";\n if(status===\"voicemail\")return \"Voicemail\";\n if(status===\"busy\")return \"Busy\";\n if(status===\"failed\")return \"Transfer Failed\";\n return status.replace(/\\b\\w/g,c=>c.toUpperCase());\n}\nfunction phase15SafePhone(value=\"\"){return String(value||\"\").replace(/[^\\d+]/g,\"\")}\nfunction phase15CallbackMarkup(item={}){\n const acknowledged=Boolean(item.acknowledgedAt)||item.status===\"acknowledged\";\n const phone=phase15SafePhone(item.callerNumber);\n const actionLabel=acknowledged?\"Mark Callback Complete\":\"Acknowledge Call\";\n const actionName=acknowledged?\"complete\":\"acknowledge\";\n return `<div class=\"callback-item ${acknowledged?\"acknowledged\":\"\"}\">\n  <div class=\"callback-item-top\">\n   <div>\n    <span class=\"callback-alert-label\">ALERT ALERT — ${esc(item.destinationName||item.assignedTo||\"Team\")} missed a call</span>\n    <strong style=\"margin-top:5px\">${esc(item.callerNumber||\"Unknown caller\")}</strong>\n    <div class=\"small muted\">Assigned to ${esc(item.assignedTo||item.destinationName||\"Unassigned\")} · ${esc(phase15CallbackStatusLabel(item))} · Due ${fmt(item.dueAt)}</div>\n    <div class=\"small muted\">${acknowledged?`Acknowledged ${fmt(item.acknowledgedAt)}`:\"Not yet acknowledged\"}</div>\n   </div>\n   <span class=\"badge ${acknowledged?\"scheduled\":\"attention\"}\">${acknowledged?\"acknowledged\":\"urgent\"}</span>\n  </div>\n  <div class=\"callback-actions\">\n   ${phone?`<button type=\"button\" class=\"secondary\" onclick=\"window.location.href='tel:${phone}'\">Call ${esc(item.callerNumber)}</button>`:\"\"}\n   <button type=\"button\" onclick=\"phase15UpdateCallback('${esc(item.id)}','${actionName}')\">${actionLabel}</button>\n  </div>\n </div>`;\n}\nfunction renderCallbackQueue(){\n const items=Array.isArray(cache.openCallbacks)?cache.openCallbacks:[];\n const count=document.getElementById(\"phase15CallbackCount\");\n const queue=document.getElementById(\"phase15CallbackQueue\");\n if(count)count.textContent=String(items.length);\n if(queue)queue.innerHTML=items.length\n  ?items.map(phase15CallbackMarkup).join(\"\")\n  :\"<span class='live'>No missed calls awaiting follow-up.</span>\";\n}\nasync function phase15UpdateCallback(id,action){\n try{\n  await api(`/api/control/callbacks/${encodeURIComponent(id)}/${action}`,{\n   method:\"POST\",\n   body:JSON.stringify({actor:\"Control Panel\"})\n  });\n  await refresh();\n }catch(error){\n  alert(error.message||\"Could not update the callback alert.\");\n }\n}";
+
+  if (!panel.includes(refreshFunctionAnchor)) {
+    throw new Error("Could not locate the dashboard refresh function for Phase 15.");
+  }
+  panel = panel.replace(
+    refreshFunctionAnchor,
+    callbackUiFunctions + "\n" + refreshFunctionAnchor
+  );
+
+  const taskRenderAnchor = 'function renderTasks(){taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>`<div class="task"><strong>${x.priority==="urgent"?"🚨 ":""}${esc(x.title)}</strong><div class="small muted">${esc(x.assignedTo||"Unassigned")} · Tracking ${esc(x.trackingNumber||"—")} · Due ${fmt(x.dueAt)}</div><button class="secondary" style="margin-top:8px" onclick="closeTask(\'${x.id}\')">${esc(taskActionLabel(x))}</button></div>`).join(""):"<span class=\'muted\'>No open tasks.</span>"}';
+
+  const taskRenderReplacement = "function renderTasks(){\n taskList.innerHTML=cache.openTasks.length?cache.openTasks.map(x=>{\n  if(String(x.workflowType||\"\")===\"missed_call\"){\n   const acknowledged=Boolean(x.acknowledgedAt);\n   const phone=phase15SafePhone(x.callerNumber);\n   return `<div class=\"task callback-item ${acknowledged?\"acknowledged\":\"\"}\">\n    <strong>🚨 ${esc(x.title)}</strong>\n    <div class=\"small muted\">Assigned to ${esc(x.assignedTo||\"Unassigned\")} · ${esc(x.transferResultStatus||\"missed transfer\").replaceAll(\"-\",\" \")} · Due ${fmt(x.dueAt)}</div>\n    <div class=\"callback-actions\">\n     ${phone?`<button type=\"button\" class=\"secondary\" onclick=\"window.location.href='tel:${phone}'\">Call ${esc(x.callerNumber)}</button>`:\"\"}\n     <button type=\"button\" onclick=\"phase15UpdateCallback('${esc(x.callbackId)}','${acknowledged?\"complete\":\"acknowledge\"}')\">${acknowledged?\"Mark Callback Complete\":\"Acknowledge Call\"}</button>\n    </div>\n   </div>`;\n  }\n  return `<div class=\"task\"><strong>${x.priority===\"urgent\"?\"🚨 \":\"\"}${esc(x.title)}</strong><div class=\"small muted\">${esc(x.assignedTo||\"Unassigned\")} · Tracking ${esc(x.trackingNumber||\"—\")} · Due ${fmt(x.dueAt)}</div><button class=\"secondary\" style=\"margin-top:8px\" onclick=\"closeTask('${x.id}')\">${esc(taskActionLabel(x))}</button></div>`;\n }).join(\"\"):\"<span class='muted'>No open tasks.</span>\";\n}";
+
+  if (!panel.includes(taskRenderAnchor)) {
+    throw new Error("Could not locate the Open Tasks renderer for Phase 15.");
+  }
+  panel = panel.replace(taskRenderAnchor, taskRenderReplacement);
+
+  fs.writeFileSync(panelPath, panel);
+  console.log("Joshua Phase 15 callback dashboard installed.");
+}
+
 
 if (!panel.includes(SEARCH_MARKER)) {
   const patch = String.raw`
