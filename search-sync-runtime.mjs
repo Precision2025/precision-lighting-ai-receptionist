@@ -274,7 +274,7 @@ ${searchAnchor}`;
     throw new Error("Could not locate the Work Orders renderer for the Completed Today filter.");
   }
 
-  const replacement = String.raw`let workOrderListFilter="all";
+  const replacement = `let workOrderListFilter="all";
 function workOrderCheckoutDateKey(value){return value?String(value).slice(0,10):""}
 function workOrderTodayDateKey(){return new Date().toISOString().slice(0,10)}
 function workOrdersCompletedToday(){
