@@ -10,6 +10,7 @@ const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
 const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
 const TRANSFER_RESULT_MARKER = "JOSHUA_CONFIRMED_TRANSFER_RESULT_V2";
 const CALLBACK_ACCOUNTABILITY_MARKER = "JOSHUA_PHASE15_MISSED_CALL_ACCOUNTABILITY_V1";
+const CALLER_NAME_MARKER = "JOSHUA_PROFESSIONAL_CALLER_NAME_CAPTURE_V1";
 
 /*
  * Thursday routing:
@@ -546,6 +547,155 @@ app.post("/api/control/callbacks/:id/complete", async (request, reply) => {
   console.log("Joshua Phase 15 missed-call accountability installed.");
 }
 
+
+/*
+ * PROFESSIONAL CALLER-NAME CAPTURE
+ *
+ * Before a routine live transfer, Joshua asks for the caller's name. Emergency
+ * transfers are not delayed. The captured name follows the call into the final
+ * summary and the Phase 15 callback-accountability record.
+ */
+if (!server.includes(CALLER_NAME_MARKER)) {
+  const callerNameHelpers = "/* JOSHUA_PROFESSIONAL_CALLER_NAME_CAPTURE_V1 */\nfunction callerDeclinedToGiveName(text = \"\") {\n  return /\\b(?:no|no thanks|not really|rather not|prefer not|decline|skip|pass|anonymous|don'?t want to|do not want to)\\b/i.test(\n    String(text || \"\").trim()\n  );\n}\n\nfunction formatCallerName(value = \"\") {\n  return String(value || \"\")\n    .trim()\n    .replace(/\\s+/g, \" \")\n    .split(\" \")\n    .slice(0, 4)\n    .map(part =>\n      part\n        .split(/([-’'])/)\n        .map(piece =>\n          /^[-’']$/.test(piece)\n            ? piece\n            : piece\n                .toLowerCase()\n                .replace(/^[a-z]/, letter => letter.toUpperCase())\n        )\n        .join(\"\")\n    )\n    .join(\" \");\n}\n\nfunction validCallerNameCandidate(value = \"\") {\n  const candidate = String(value || \"\").trim();\n  if (!candidate || candidate.length > 70) return false;\n\n  const words = candidate.split(/\\s+/).filter(Boolean);\n  if (words.length < 1 || words.length > 4) return false;\n\n  const rejected = new Set([\n    \"yes\", \"yeah\", \"yep\", \"sure\", \"okay\", \"ok\", \"hello\", \"hi\",\n    \"please\", \"thanks\", \"thank\", \"caller\", \"customer\", \"unknown\",\n    \"skip\", \"pass\", \"anonymous\"\n  ]);\n\n  if (words.every(word => rejected.has(word.toLowerCase().replace(/[^a-z]/g, \"\")))) {\n    return false;\n  }\n\n  return words.every(word => /^[A-Za-z][A-Za-z.’'-]*$/.test(word));\n}\n\nfunction extractCallerNameResponse(text = \"\") {\n  const raw = String(text || \"\").trim();\n  if (!raw || callerDeclinedToGiveName(raw)) return \"\";\n\n  const cleaned = raw\n    .replace(/^(?:yes[,\\s]+|sure[,\\s]+|okay[,\\s]+|ok[,\\s]+)/i, \"\")\n    .replace(/^(?:my name is|this is|i am|i'm|it is|it's|you can call me)\\s+/i, \"\")\n    .replace(/\\b(?:speaking|calling)\\b.*$/i, \"\")\n    .replace(/[!?]+$/g, \"\")\n    .replace(/\\.+$/g, \"\")\n    .trim();\n\n  if (!validCallerNameCandidate(cleaned)) return \"\";\n  return formatCallerName(cleaned);\n}\n\nfunction extractCallerNameFromTransferRequest(text = \"\") {\n  const raw = String(text || \"\").trim();\n  const match = raw.match(\n    /\\b(?:my name is|this is|i am|i'm|you can call me)\\s+([A-Za-z][A-Za-z.’'-]*(?:\\s+[A-Za-z][A-Za-z.’'-]*){0,3})(?=\\s*(?:,|\\.|;|and\\b|calling\\b|can\\b|could\\b|would\\b|may\\b|i\\b|$))/i\n  );\n  if (!match) return \"\";\n  return validCallerNameCandidate(match[1]) ? formatCallerName(match[1]) : \"\";\n}\n\nfunction completeCallerNamedTransfer(session, socket, transfer, callerName = \"\") {\n  const name = String(callerName || \"\").trim();\n  const requestedPersonName =\n    String(transfer?.requestedPersonName || \"the Precision Lighting team\").trim();\n  const department = String(transfer?.department || \"default\").trim();\n  const firstDestinationName =\n    String(transfer?.firstDestinationName || requestedPersonName).trim();\n\n  session.callerName = name || \"Not Provided\";\n  session.callerNameProvided = Boolean(name);\n  session.awaitingCallerName = false;\n  session.pendingTransfer = null;\n  session.requestedDepartment = department;\n  session.transferAttempted = true;\n  session.transferRequestedAt = new Date().toISOString();\n  session.transferDepartment = department;\n  session.transferDestinationName = firstDestinationName;\n  session.transferRequestedPersonName = requestedPersonName;\n  session.transferAttempts = [];\n\n  const transferLine = name\n    ? `Thank you, ${name}. I’ll try to connect your call now.`\n    : \"No problem. I’ll try to connect your call now.\";\n\n  session.messages.push({ role: \"assistant\", content: transferLine });\n  sendText(socket, transferLine);\n\n  setTimeout(\n    () =>\n      endForTransfer(\n        socket,\n        `Caller requested ${requestedPersonName}`,\n        department\n      ),\n    name ? 2300 : 2100\n  );\n}";
+  const helperAnchor = 'function sendText(socket, token, last = true) {';
+  if (!server.includes(helperAnchor)) {
+    throw new Error("Could not locate Joshua's voice helper section for caller-name capture.");
+  }
+  server = server.replace(helperAnchor, callerNameHelpers + "\n\n" + helperAnchor);
+
+  const transferStart = server.indexOf('      if (wantsTransfer(callerText)) {');
+  const transferEnd =
+    transferStart >= 0
+      ? server.indexOf('\n\n      try {', transferStart)
+      : -1;
+
+  if (transferStart < 0 || transferEnd < 0) {
+    throw new Error("Could not locate Joshua's live-transfer conversation block.");
+  }
+
+  const namedTransferBlock = "      if (session.awaitingCallerName && session.pendingTransfer) {\n        const pendingTransfer = session.pendingTransfer;\n\n        if (callerDeclinedToGiveName(callerText)) {\n          completeCallerNamedTransfer(session, socket, pendingTransfer, \"\");\n          return;\n        }\n\n        const callerName = extractCallerNameResponse(callerText);\n        if (callerName) {\n          completeCallerNamedTransfer(session, socket, pendingTransfer, callerName);\n          return;\n        }\n\n        session.callerNamePromptAttempts =\n          Number(session.callerNamePromptAttempts || 0) + 1;\n\n        if (session.callerNamePromptAttempts < 2) {\n          const retryLine =\n            \"I’m sorry, I didn’t catch the name. Please say the name you’d like us to use for the callback, or you may say skip.\";\n          session.messages.push({ role: \"assistant\", content: retryLine });\n          sendText(socket, retryLine);\n          return;\n        }\n\n        completeCallerNamedTransfer(session, socket, pendingTransfer, \"\");\n        return;\n      }\n\n      if (wantsTransfer(callerText)) {\n        const identifiedRoute = identifyDepartment(callerText);\n        const department = identifiedRoute.department;\n        const requestedPersonName = identifiedRoute.destinationName;\n        const thursdayTravisRoute =\n          department === \"travis\" && isThursdayInDallas();\n        const firstDestinationName =\n          thursdayTravisRoute ? \"Ariana\" : requestedPersonName;\n\n        const pendingTransfer = {\n          department,\n          requestedPersonName,\n          firstDestinationName\n        };\n\n        const providedName = extractCallerNameFromTransferRequest(callerText);\n        if (providedName) {\n          completeCallerNamedTransfer(\n            session,\n            socket,\n            pendingTransfer,\n            providedName\n          );\n          return;\n        }\n\n        session.awaitingCallerName = true;\n        session.callerNamePromptAttempts = 0;\n        session.pendingTransfer = pendingTransfer;\n        session.requestedDepartment = department;\n        session.transferRequestedPersonName = requestedPersonName;\n\n        const nameQuestion =\n          requestedPersonName === \"the Precision Lighting team\"\n            ? \"Absolutely. Before I try to connect you with the Precision Lighting team, may I have your name in case the call is missed and we need to follow up?\"\n            : `Absolutely. Before I try to connect you with ${requestedPersonName}, may I have your name in case ${requestedPersonName} misses your call and we need to follow up?`;\n\n        session.messages.push({ role: \"assistant\", content: nameQuestion });\n        sendText(socket, nameQuestion);\n        return;\n      }";
+  server =
+    server.slice(0, transferStart) +
+    namedTransferBlock +
+    server.slice(transferEnd);
+
+  const summaryMetadataBefore =
+    'content: `Call metadata:\nFrom: ${session.from || "Unknown"}\nTo: ${session.to || "Unknown"}\nStarted: ${session.startedAt || "Unknown"}${transferDetails}\n\nTranscript:\n${transcript}`';
+  const summaryMetadataAfter =
+    'content: `Call metadata:\nCaller name: ${session.callerName || "Not Provided"}\nFrom: ${session.from || "Unknown"}\nTo: ${session.to || "Unknown"}\nStarted: ${session.startedAt || "Unknown"}${transferDetails}\n\nTranscript:\n${transcript}`';
+
+  if (!server.includes(summaryMetadataBefore)) {
+    throw new Error("Could not locate Joshua's final call-summary metadata.");
+  }
+  server = server.replace(summaryMetadataBefore, summaryMetadataAfter);
+
+  const summaryReturnBefore = `  const summary = response.choices[0]?.message?.content?.trim() || transcript;
+  return transferResult
+    ? enforceTransferSummaryFields(summary, transferResult)
+    : summary;`;
+
+  const summaryReturnAfter = `  const summary = response.choices[0]?.message?.content?.trim() || transcript;
+  const transferSummary = transferResult
+    ? enforceTransferSummaryFields(summary, transferResult)
+    : summary;
+  return setSummaryField(
+    transferSummary,
+    "Caller Name",
+    session.callerName || "Not Provided"
+  );`;
+
+  if (!server.includes(summaryReturnBefore)) {
+    throw new Error("Could not locate Joshua's final call-summary output.");
+  }
+  server = server.replace(summaryReturnBefore, summaryReturnAfter);
+
+  const missedCallerLine = '    `Caller: ${callerNumber}`,';
+  const missedCallerReplacement =
+    '    `Caller Name: ${session?.callerName || "Not Provided"}`,\n' +
+    '    `Caller: ${callerNumber}`,';
+
+  if (!server.includes(missedCallerLine)) {
+    throw new Error("Could not locate the missed-transfer caller information.");
+  }
+  server = server.replaceAll(missedCallerLine, missedCallerReplacement);
+
+  const callbackCallerAnchor = `  const callerNumber =
+    normalizePhone(session.from || result.callerNumber || "") ||
+    String(session.from || result.callerNumber || "Unknown caller");
+  const callbackId = phase15CallbackId(callbackKey);`;
+
+  const callbackCallerReplacement = `  const callerNumber =
+    normalizePhone(session.from || result.callerNumber || "") ||
+    String(session.from || result.callerNumber || "Unknown caller");
+  const callerName =
+    String(session.callerName || result.callerName || "Not Provided").trim() ||
+    "Not Provided";
+  const callbackId = phase15CallbackId(callbackKey);`;
+
+  if (!server.includes(callbackCallerAnchor)) {
+    throw new Error("Could not locate the Phase 15 callback caller details.");
+  }
+  server = server.replace(callbackCallerAnchor, callbackCallerReplacement);
+
+  const callbackPropertyAnchor = `    callerNumber,
+    requestedDepartment: String(`;
+  const callbackPropertyReplacement = `    callerNumber,
+    callerName,
+    requestedDepartment: String(`;
+
+  if (!server.includes(callbackPropertyAnchor)) {
+    throw new Error("Could not locate the Phase 15 callback record.");
+  }
+  server = server.replace(callbackPropertyAnchor, callbackPropertyReplacement);
+
+  const taskTitleBefore = '    title: `Return missed call to ${callerNumber}`,';
+  const taskTitleAfter =
+    '    title: `Return missed call to ${callerName !== "Not Provided" ? callerName : callerNumber}`,';
+
+  if (!server.includes(taskTitleBefore)) {
+    throw new Error("Could not locate the Phase 15 callback-task title.");
+  }
+  server = server.replace(taskTitleBefore, taskTitleAfter);
+
+  const taskNotesBefore = '      `Caller: ${callerNumber}.`,';
+  const taskNotesAfter =
+    '      `Caller name: ${callerName}. Caller number: ${callerNumber}.`,';
+
+  if (!server.includes(taskNotesBefore)) {
+    throw new Error("Could not locate the Phase 15 callback-task notes.");
+  }
+  server = server.replace(taskNotesBefore, taskNotesAfter);
+
+  const taskPropertyAnchor = `    callbackId,
+    callerNumber,
+    missedDestination: destinationName,`;
+  const taskPropertyReplacement = `    callbackId,
+    callerNumber,
+    callerName,
+    missedDestination: destinationName,`;
+
+  if (!server.includes(taskPropertyAnchor)) {
+    throw new Error("Could not locate the Phase 15 callback-task properties.");
+  }
+  server = server.replace(taskPropertyAnchor, taskPropertyReplacement);
+
+  const callbackEventAnchor = `    callbackId,
+    callerNumber,
+    assignedTo: destinationName,`;
+  const callbackEventReplacement = `    callbackId,
+    callerNumber,
+    callerName,
+    assignedTo: destinationName,`;
+
+  if (!server.includes(callbackEventAnchor)) {
+    throw new Error("Could not locate the Phase 15 callback activity event.");
+  }
+  server = server.replace(callbackEventAnchor, callbackEventReplacement);
+
+  fs.writeFileSync(serverPath, server);
+  console.log("Joshua professional caller-name capture installed.");
+}
+
 /* Preserve the corrected home-search cache synchronization. */
 let panel = fs.readFileSync(panelPath, "utf8");
 
@@ -849,6 +999,55 @@ function renderOrders(){
   panel = panel.replace("</body>", clickPatch + "\n</body>");
   fs.writeFileSync(panelPath, panel);
   console.log("Joshua Completed Today work-order filter installed.");
+}
+
+
+/* Professional caller-name display and clearer Office Inbox wording. */
+{
+  let callerNamePanel = fs.readFileSync(panelPath, "utf8");
+
+  if (!callerNamePanel.includes(CALLER_NAME_MARKER)) {
+    callerNamePanel = callerNamePanel.replace(
+      "<h2>Immediate Attention</h2>",
+      '<h2>Urgent Office Actions</h2><div class="small muted">Problems requiring office follow-up now.</div>'
+    );
+
+    callerNamePanel = callerNamePanel.replace(
+      "<h2>Aging Workflow</h2>",
+      '<h2>Stalled Work Orders</h2><div class="small muted">Work orders that have remained in the same workflow too long.</div>'
+    );
+
+    callerNamePanel = callerNamePanel.replaceAll(
+      "No immediate operational exceptions.",
+      "No urgent office actions."
+    );
+
+    callerNamePanel = callerNamePanel.replaceAll(
+      "No aging workflow items.",
+      "No stalled work orders."
+    );
+
+    const callbackNameBefore =
+      '<strong style="margin-top:5px">${esc(item.callerNumber||"Unknown caller")}</strong>';
+    const callbackNameAfter =
+      '<strong style="margin-top:5px">${esc(item.callerName&&item.callerName!=="Not Provided"?item.callerName:"Name not provided")}</strong>' +
+      '<div class="small muted">${esc(item.callerNumber||"Unknown caller")}</div>';
+
+    if (callerNamePanel.includes(callbackNameBefore)) {
+      callerNamePanel = callerNamePanel.replace(
+        callbackNameBefore,
+        callbackNameAfter
+      );
+    }
+
+    callerNamePanel = callerNamePanel.replace(
+      "</style>",
+      `/* ${CALLER_NAME_MARKER} */\n</style>`
+    );
+
+    fs.writeFileSync(panelPath, callerNamePanel);
+    console.log("Joshua caller-name display and Office Inbox labels installed.");
+  }
 }
 
 await import("./servicechannel-webhook-bootstrap.mjs");
