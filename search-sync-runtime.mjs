@@ -6,6 +6,7 @@ const panelPath = new URL("./public/control-panel.html", import.meta.url);
 
 const THURSDAY_MARKER = "JOSHUA_THURSDAY_TRAVIS_ROUTE_V1";
 const SEARCH_MARKER = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
+const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
 
 /*
  * Thursday routing:
@@ -226,6 +227,141 @@ if (!panel.includes(SEARCH_MARKER)) {
   panel = panel.replace("</body>", patch + "\n</body>");
   fs.writeFileSync(panelPath, panel);
   console.log("Joshua work-order search cache synchronization installed.");
+}
+
+
+/* Make the Completed Today dashboard card open an actual filtered work-order list. */
+if (!panel.includes(COMPLETED_TODAY_MARKER)) {
+  panel = panel.replace("</style>", String.raw`
+/* JOSHUA_COMPLETED_TODAY_FILTER_V1 */
+.completed-today-filter-banner{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin:0 0 12px;padding:12px 14px;border:1px solid #3f5872;
+  border-radius:11px;background:#172536
+}
+.completed-today-filter-banner[hidden]{display:none}
+.completed-today-filter-banner strong{font-size:16px}
+.completed-today-filter-banner button{width:auto;white-space:nowrap}
+@media(max-width:760px){
+  .completed-today-filter-banner{align-items:flex-start;flex-direction:column}
+  .completed-today-filter-banner button{width:100%}
+}
+</style>`);
+
+  const searchAnchor =
+    '<input id="orderSearch" class="search" placeholder="Search tracking number, customer, address, technician…">';
+
+  const filterBanner = String.raw`
+<div id="completedTodayFilterBanner" class="completed-today-filter-banner" hidden>
+ <div>
+  <strong id="completedTodayFilterTitle">Completed Today</strong>
+  <div id="completedTodayFilterSummary" class="small muted"></div>
+ </div>
+ <button type="button" class="secondary" id="clearCompletedTodayFilter">Clear Filter</button>
+</div>
+${searchAnchor}`;
+
+  if (!panel.includes(searchAnchor)) {
+    throw new Error("Could not locate the Work Orders search field for the Completed Today filter.");
+  }
+  panel = panel.replace(searchAnchor, filterBanner);
+
+  const renderStart = panel.indexOf("function renderOrders(){");
+  const renderEndMarker = "\nfunction renderBilling(){";
+  const renderEnd = panel.indexOf(renderEndMarker, renderStart);
+
+  if (renderStart < 0 || renderEnd < 0) {
+    throw new Error("Could not locate the Work Orders renderer for the Completed Today filter.");
+  }
+
+  const replacement = String.raw`let workOrderListFilter="all";
+function workOrderCheckoutDateKey(value){return value?String(value).slice(0,10):""}
+function workOrderTodayDateKey(){return new Date().toISOString().slice(0,10)}
+function workOrdersCompletedToday(){
+ const today=workOrderTodayDateKey();
+ return (cache.workOrders||[])
+  .filter(x=>workOrderCheckoutDateKey(x.checkOutAt)===today)
+  .sort((a,b)=>new Date(b.checkOutAt||0)-new Date(a.checkOutAt||0));
+}
+window.setWorkOrderListFilter=function(filter){
+ workOrderListFilter=filter==="completed_today"?"completed_today":"all";
+ if(workOrderListFilter==="all"&&typeof orderSearch!=="undefined")orderSearch.value="";
+ renderOrders();
+};
+function renderOrders(){
+ const q=orderSearch.value.toLowerCase();
+ const completed=workOrdersCompletedToday();
+ const source=workOrderListFilter==="completed_today"?completed:(cache.workOrders||[]);
+ const rows=source.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
+ const banner=document.getElementById("completedTodayFilterBanner");
+ const title=document.getElementById("completedTodayFilterTitle");
+ const summary=document.getElementById("completedTodayFilterSummary");
+ if(banner)banner.hidden=workOrderListFilter!=="completed_today";
+ if(workOrderListFilter==="completed_today"){
+  if(title)title.textContent=\`Completed Today — \${completed.length} work order\${completed.length===1?"":"s"}\`;
+  if(summary)summary.textContent=q
+   ? \`Showing \${rows.length} matching work order\${rows.length===1?"":"s"} with today's checkout date.\`
+   : \`Showing only work orders with a checkout date of \${workOrderTodayDateKey()}.\`;
+ }
+ orders.innerHTML=rows.map(x=>\`<tr><td><button type="button" class="work-order-link" onclick="openPhase12WorkOrder('\${esc(x.trackingNumber)}')">\${esc(x.trackingNumber)}</button><br><button type="button" class="work-order-link small muted" onclick="openPhase12WorkOrder('\${esc(x.trackingNumber)}')">\${esc(x.workOrderNumber||"")}</button></td><td>\${esc(x.customer||"—")}<br><span class="small muted">\${esc(x.locationName||x.address||"")}</span></td><td><span class="badge \${esc(x.state)}">\${esc((x.joshuaStatus||x.state||"unknown").replaceAll("_"," "))}</span></td><td>\${esc(x.priority||"normal")}</td><td title="\${esc(x.technician||"Unassigned")}">\${esc(x.technician||"—")}</td><td>\${Number(x.ntePercent||0).toFixed(0)}%</td><td>\${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="openPhase12WorkOrder('\${esc(x.trackingNumber)}')">Open Job</button></td></tr>\`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
+}`;
+
+  panel =
+    panel.slice(0, renderStart) +
+    replacement +
+    renderEndMarker +
+    panel.slice(renderEnd + renderEndMarker.length);
+
+  const clickPatch = String.raw`
+<script>
+// JOSHUA_COMPLETED_TODAY_FILTER_V1
+(function(){
+ function openWorkOrders(){
+  if(typeof window.officeOpenTab==="function")window.officeOpenTab("workorders");
+  else document.querySelector('.tab[data-tab="workorders"]')?.click();
+ }
+ function completedCard(){
+  return document.getElementById("completedToday")?.closest(".card")||null;
+ }
+ function openOrdersCard(){
+  return document.getElementById("openOrders")?.closest(".card")||null;
+ }
+ function showCompleted(e){
+  if(e){e.preventDefault();e.stopImmediatePropagation();}
+  if(typeof window.setWorkOrderListFilter==="function"){
+   window.setWorkOrderListFilter("completed_today");
+  }
+  openWorkOrders();
+  setTimeout(function(){
+   if(typeof window.setWorkOrderListFilter==="function"){
+    window.setWorkOrderListFilter("completed_today");
+   }
+   document.getElementById("workorders")?.scrollIntoView({block:"start"});
+  },0);
+ }
+ document.addEventListener("click",function(e){
+  const completed=completedCard();
+  if(completed&&completed.contains(e.target)){showCompleted(e);return;}
+  if(e.target.closest?.("#clearCompletedTodayFilter")){
+   e.preventDefault();e.stopImmediatePropagation();
+   window.setWorkOrderListFilter?.("all");
+   return;
+  }
+  const open=openOrdersCard();
+  if(open&&open.contains(e.target))window.setWorkOrderListFilter?.("all");
+ },true);
+ document.addEventListener("keydown",function(e){
+  const completed=completedCard();
+  if(completed&&completed.contains(e.target)&&(e.key==="Enter"||e.key===" ")){
+   showCompleted(e);
+  }
+ },true);
+})();
+</script>`;
+
+  panel = panel.replace("</body>", clickPatch + "\n</body>");
+  fs.writeFileSync(panelPath, panel);
+  console.log("Joshua Completed Today work-order filter installed.");
 }
 
 await import("./servicechannel-webhook-bootstrap.mjs");
