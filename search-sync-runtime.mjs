@@ -8,7 +8,7 @@ const THURSDAY_MARKER = "JOSHUA_THURSDAY_TRAVIS_ROUTE_V1";
 const SEARCH_MARKER = "JOSHUA_SEARCH_ACTIVE_WORK_ORDER_SYNC_V2";
 const COMPLETED_TODAY_MARKER = "JOSHUA_COMPLETED_TODAY_FILTER_V1";
 const JOB_SHEETS_UPSERT_MARKER = "JOSHUA_JOB_SHEETS_UPSERT_V1";
-const STALE_RECONCILIATION_MARKER = "JOSHUA_STALE_RECONCILIATION_357564044_V1";
+const TRANSFER_RESULT_MARKER = "JOSHUA_CONFIRMED_TRANSFER_RESULT_V2";
 
 /*
  * Thursday routing:
@@ -244,6 +244,128 @@ async function syncServiceChannelJobSheets(trackingNumber, payload = {}) {
   console.log("Joshua Job Sheets tracking-number upsert payload installed.");
 }
 
+
+/*
+ * Confirmed transfer results:
+ * Hold the call-summary notification until Twilio returns the final Dial result,
+ * distinguish humans from voicemail with answering-machine detection, and
+ * deterministically stamp the final transfer fields into the email.
+ */
+if (!server.includes(TRANSFER_RESULT_MARKER)) {
+  function replaceServerSection(startMarker, endMarker, replacement, label) {
+    const start = server.indexOf(startMarker);
+    const end = server.indexOf(endMarker, start);
+    if (start < 0 || end < 0) {
+      throw new Error(`Could not locate ${label} while installing confirmed transfer results.`);
+    }
+    server = server.slice(0, start) + replacement + server.slice(end);
+  }
+
+  server = server.replace(
+    "const RECENT_SESSION_TTL_MS = 15 * 60 * 1000;",
+    "const RECENT_SESSION_TTL_MS = 2 * 60 * 60 * 1000;"
+  );
+
+  const sessionLookup = "function getSessionForTwilioRequest(request) {\n  const candidates = [\n    request.body?.ParentCallSid,\n    request.body?.CallSid,\n    request.body?.DialCallSid\n  ].filter(Boolean);\n\n  for (const callSid of candidates) {\n    const activeSession = Array.from(sessions.values()).find(\n      item => String(item?.callSid || \"\") === String(callSid)\n    );\n    if (activeSession) return activeSession;\n\n    const recentSession = recentSessionsByCallSid.get(callSid);\n    if (recentSession) return recentSession;\n  }\n  return null;\n}";
+  replaceServerSection(
+    'function getSessionForTwilioRequest(request) {',
+    '\n\nasync function aiReply',
+    sessionLookup,
+    "Twilio session lookup"
+  );
+
+  const summaryFunctions = "/* JOSHUA_CONFIRMED_TRANSFER_RESULT_V2 */\nfunction transferDestinationName(department = \"\", stage = \"\") {\n  const normalizedDepartment = String(department || \"\").toLowerCase();\n  const normalizedStage = String(stage || \"\").toLowerCase();\n\n  if (normalizedStage.includes(\"ariana\")) return \"Ariana\";\n  if (normalizedStage.includes(\"shellie\")) return \"Shellie\";\n  if (normalizedStage === \"travis\") return \"Travis\";\n  if (normalizedDepartment === \"ariana\" || normalizedDepartment === \"operations\") return \"Ariana\";\n  if (normalizedDepartment === \"accounting\" || normalizedDepartment === \"shellie\") return \"Shellie\";\n  if (normalizedDepartment === \"travis\") return \"Travis\";\n  return \"Precision Lighting Team\";\n}\n\nfunction formatTransferSeconds(value) {\n  const total = Number(value);\n  if (!Number.isFinite(total) || total < 0) return \"Not Provided\";\n  const rounded = Math.round(total);\n  const minutes = Math.floor(rounded / 60);\n  const seconds = rounded % 60;\n  if (!minutes) return `${seconds} sec`;\n  return `${minutes} min ${seconds} sec`;\n}\n\nfunction recordTransferAttempt(session, attempt = {}) {\n  if (!session) return;\n  session.transferAttempts = Array.isArray(session.transferAttempts)\n    ? session.transferAttempts\n    : [];\n\n  const stage = String(attempt.stage || \"\");\n  const existingIndex = session.transferAttempts.findIndex(\n    item => String(item.stage || \"\") === stage\n  );\n\n  const item = {\n    at: new Date().toISOString(),\n    ...attempt\n  };\n\n  if (existingIndex >= 0) {\n    session.transferAttempts[existingIndex] = {\n      ...session.transferAttempts[existingIndex],\n      ...item\n    };\n  } else {\n    session.transferAttempts.push(item);\n  }\n}\n\nfunction buildTransferResult({\n  department = \"\",\n  stage = \"\",\n  dialStatus = \"unknown\",\n  answeredBy = \"unknown\",\n  duration = \"\"\n} = {}) {\n  const rawStatus = String(dialStatus || \"unknown\").toLowerCase();\n  const answerType = String(answeredBy || \"unknown\").toLowerCase();\n  const destinationName = transferDestinationName(department, stage);\n  const machineAnswered = /^(machine|fax)/.test(answerType);\n\n  let status = \"unknown\";\n  if (machineAnswered) status = \"voicemail\";\n  else if (rawStatus === \"completed\" || rawStatus === \"answered\") status = \"answered\";\n  else if (rawStatus === \"no-answer\") status = \"no-answer\";\n  else if (rawStatus === \"busy\") status = \"busy\";\n  else if (rawStatus === \"canceled\" || rawStatus === \"cancelled\") status = \"caller-disconnected\";\n  else if (rawStatus === \"failed\") status = \"failed\";\n\n  return {\n    department,\n    stage,\n    status,\n    rawStatus,\n    destinationName,\n    answeredBy:\n      status === \"answered\"\n        ? destinationName\n        : status === \"voicemail\"\n          ? \"Voicemail\"\n          : \"Not Provided\",\n    timeToAnswer: \"Not Provided\",\n    talkTime: status === \"answered\" ? formatTransferSeconds(duration) : \"Not Provided\",\n    durationSeconds: Number.isFinite(Number(duration)) ? Number(duration) : null\n  };\n}\n\nfunction setSummaryField(summary, label, value) {\n  const lines = String(summary || \"\").split(/\\r?\\n/);\n  const prefix = `${label}:`;\n  const index = lines.findIndex(line =>\n    String(line || \"\").trim().toLowerCase().startsWith(prefix.toLowerCase())\n  );\n  const replacement = `${label}: ${value}`;\n  if (index >= 0) lines[index] = replacement;\n  else lines.push(replacement);\n  return lines.join(\"\\n\");\n}\n\nfunction enforceTransferSummaryFields(summary, result) {\n  if (!result) return summary;\n\n  const destination = result.destinationName || \"Precision Lighting Team\";\n  let transferStatus;\n  let callOutcome;\n  let finalResult;\n  let nextAction;\n\n  if (result.status === \"answered\") {\n    transferStatus = `Transfer Successful \u2014 ${destination} answered`;\n    callOutcome = `CONNECTED TO ${destination.toUpperCase()}`;\n    finalResult = \"CALL SUCCESSFUL\";\n    nextAction = \"No callback required.\";\n  } else if (result.status === \"voicemail\") {\n    transferStatus = `Voicemail Reached \u2014 ${destination} did not answer personally`;\n    callOutcome = \"VOICEMAIL \u2014 CALLBACK REQUIRED\";\n    finalResult = \"FOLLOW-UP REQUIRED\";\n    nextAction = `Return the caller's call; the transfer reached ${destination}'s voicemail.`;\n  } else if (result.status === \"no-answer\") {\n    transferStatus = `No Answer \u2014 ${destination}`;\n    callOutcome = \"NO ANSWER \u2014 CALLBACK REQUIRED\";\n    finalResult = \"FOLLOW-UP REQUIRED\";\n    nextAction = `Return the caller's call; ${destination} did not answer.`;\n  } else if (result.status === \"busy\") {\n    transferStatus = `Busy \u2014 ${destination}`;\n    callOutcome = \"DESTINATION BUSY \u2014 CALLBACK REQUIRED\";\n    finalResult = \"FOLLOW-UP REQUIRED\";\n    nextAction = `Return the caller's call; ${destination}'s line was busy.`;\n  } else if (result.status === \"caller-disconnected\") {\n    transferStatus = \"Caller Disconnected During Transfer\";\n    callOutcome = \"CALLER DISCONNECTED \u2014 CALLBACK REQUIRED\";\n    finalResult = \"FOLLOW-UP REQUIRED\";\n    nextAction = \"Return the caller's call.\";\n  } else if (result.status === \"failed\") {\n    transferStatus = `Transfer Failed \u2014 ${destination}`;\n    callOutcome = \"TECHNICAL TRANSFER FAILURE\";\n    finalResult = \"TRANSFER FAILED\";\n    nextAction = \"Return the caller's call and review the Twilio transfer log.\";\n  } else {\n    transferStatus = \"Transfer Attempted \u2014 Outcome Unconfirmed\";\n    callOutcome = \"OUTCOME UNCONFIRMED\";\n    finalResult = \"OUTCOME UNCONFIRMED\";\n    nextAction = `Confirm the connection with ${destination} or follow up with the caller.`;\n  }\n\n  let output = String(summary || \"\");\n  output = setSummaryField(output, \"Transfer Attempted\", \"Yes\");\n  output = setSummaryField(output, \"Transferred To\", destination);\n  output = setSummaryField(output, \"Transfer Status\", transferStatus);\n  output = setSummaryField(output, \"Answered By\", result.answeredBy || \"Not Provided\");\n  output = setSummaryField(output, \"Time to Answer\", result.timeToAnswer || \"Not Provided\");\n  output = setSummaryField(output, \"Talk Time\", result.talkTime || \"Not Provided\");\n  output = setSummaryField(output, \"Call Outcome\", callOutcome);\n  output = setSummaryField(output, \"FINAL RESULT\", finalResult);\n  output = setSummaryField(output, \"Next Action\", nextAction);\n  return output;\n}\n\nasync function makeSummary(session, transferResult = null) {\n  const transcript = session.messages\n    .map(message => `${message.role === \"user\" ? \"Caller\" : \"Joshua\"}: ${message.content}`)\n    .join(\"\\n\");\n\n  const transferDetails = transferResult\n    ? `\\nTransfer result:\nDepartment: ${transferResult.department || \"unknown\"}\nStage: ${transferResult.stage || \"unknown\"}\nDestination: ${transferResult.destinationName || \"unknown\"}\nStatus: ${transferResult.status || \"unknown\"}\nRaw Twilio status: ${transferResult.rawStatus || \"unknown\"}\nAnswered by: ${transferResult.answeredBy || \"Not Provided\"}\nTime to answer: ${transferResult.timeToAnswer || \"Not Provided\"}\nTalk time: ${transferResult.talkTime || \"Not Provided\"}`\n    : \"\";\n\n  const response = await openai.chat.completions.create({\n    model,\n    temperature: 0.1,\n    max_tokens: 650,\n    messages: [\n      { role: \"system\", content: SUMMARY_PROMPT },\n      {\n        role: \"user\",\n        content: `Call metadata:\nFrom: ${session.from || \"Unknown\"}\nTo: ${session.to || \"Unknown\"}\nStarted: ${session.startedAt || \"Unknown\"}${transferDetails}\n\nTranscript:\n${transcript}`\n      }\n    ]\n  });\n\n  const summary = response.choices[0]?.message?.content?.trim() || transcript;\n  return transferResult\n    ? enforceTransferSummaryFields(summary, transferResult)\n    : summary;\n}";
+  replaceServerSection(
+    'async function makeSummary(session, transferResult = null) {',
+    '\n\nasync function extractClockSharkJob',
+    summaryFunctions,
+    "call-summary generator"
+  );
+
+  const notifyTeamFunction = "async function notifyTeam(session, transferResult = null) {\n  if (!session?.messages?.some(message => message.role === \"user\")) return false;\n  if (session.summarySent || session.summarySending) return false;\n\n  session.summarySending = true;\n  try {\n    const finalTransferResult = transferResult || session.transferResult || null;\n    let summary;\n    try {\n      summary = await makeSummary(session, finalTransferResult);\n    } catch (error) {\n      app.log.error(error, \"Could not generate call summary\");\n      summary = session.messages\n        .map(message => `${message.role}: ${message.content}`)\n        .join(\"\\n\");\n      if (finalTransferResult) {\n        summary = enforceTransferSummaryFields(summary, finalTransferResult);\n      }\n    }\n\n    const subject = `Joshua call summary \u2014 ${session.from || \"Unknown caller\"}`;\n    const to = emailRecipientsForDepartment(session.requestedDepartment);\n\n    await Promise.allSettled([\n      sendEmail({\n        to,\n        bcc: process.env.OWNER_EMAIL,\n        subject,\n        text: summary\n      }),\n      sendOwnerSms(summary)\n    ]);\n\n    session.summarySent = true;\n    app.log.info({ summary, transferResult: finalTransferResult }, \"Completed final call summary\");\n    return true;\n  } finally {\n    session.summarySending = false;\n  }\n}";
+  replaceServerSection(
+    'async function notifyTeam(session) {',
+    '\n\nasync function notifyMissedTransfer',
+    notifyTeamFunction,
+    "team notification function"
+  );
+
+  const connectActionRoute = "app.post(\"/connect-action\", async (request, reply) => {\n  if (!validateHttpRequest(request)) {\n    return reply.code(403).send(\"Invalid Twilio signature\");\n  }\n\n  let handoff = {};\n  const raw = request.body?.HandoffData || request.body?.handoffData;\n  if (raw) {\n    try {\n      handoff = JSON.parse(raw);\n    } catch {\n      handoff = { reason: raw };\n    }\n  }\n\n  if (handoff.reasonCode !== \"live-agent-handoff\") {\n    return reply\n      .type(\"text/xml\")\n      .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>`);\n  }\n\n  const department = String(handoff.department || \"default\").toLowerCase();\n  let destinationName = \"the Precision Lighting team\";\n  let destinationNumber = defaultTransferNumber;\n  let stage = \"default\";\n\n  if (department === \"travis\") {\n    if (isThursdayInDallas()) {\n      destinationName = \"Ariana\";\n      destinationNumber = arianaTransferNumber;\n      stage = \"thursday-ariana\";\n    } else {\n      destinationName = \"Travis\";\n      destinationNumber = travisTransferNumber;\n      stage = \"travis\";\n    }\n  } else if (department === \"accounting\" || department === \"shellie\") {\n    destinationName = \"Shellie\";\n    destinationNumber = accountingTransferNumber;\n    stage = \"shellie\";\n  } else if (department === \"ariana\" || department === \"operations\") {\n    destinationName = \"Ariana\";\n    destinationNumber = arianaTransferNumber;\n    stage = \"ariana\";\n  }\n\n  const session = getSessionForTwilioRequest(request);\n  if (session) {\n    session.transferAttempted = true;\n    session.transferRequestedAt = session.transferRequestedAt || new Date().toISOString();\n    session.transferDepartment = department;\n    session.transferStage = stage;\n    session.transferDestinationName = destinationName;\n  }\n\n  const twiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">Please hold while I connect you with ${xmlEscape(destinationName)}.</Say>\n  <Dial\n    timeout=\"25\"\n    answerOnBridge=\"true\"\n    action=\"${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n    method=\"POST\">\n    <Number\n      url=\"${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n      method=\"POST\"\n      machineDetection=\"Enable\"\n      machineDetectionTimeout=\"18\"\n      machineDetectionSpeechThreshold=\"1800\"\n      machineDetectionSpeechEndThreshold=\"2000\"\n      machineDetectionSilenceTimeout=\"6000\">${xmlEscape(destinationNumber)}</Number>\n  </Dial>\n</Response>`;\n\n  return reply.type(\"text/xml\").send(twiml);\n});";
+  replaceServerSection(
+    'app.post("/connect-action", async (request, reply) => {',
+    '\n\napp.post("/screen-transfer"',
+    connectActionRoute,
+    "live transfer route"
+  );
+
+  const screenTransferRoute = "app.post(\"/screen-transfer\", async (request, reply) => {\n  if (!validateHttpRequest(request)) {\n    return reply.code(403).send(\"Invalid Twilio signature\");\n  }\n\n  const department = String(request.query?.department || \"default\").toLowerCase();\n  const stage = String(request.query?.stage || \"default\").toLowerCase();\n  const answeredBy = String(request.body?.AnsweredBy || \"unknown\").toLowerCase();\n  const session = getSessionForTwilioRequest(request);\n\n  if (session) {\n    session.transferAnsweredBy = answeredBy;\n    session.transferAnsweredStage = stage;\n    session.transferAnswerDetectedAt = new Date().toISOString();\n    recordTransferAttempt(session, {\n      department,\n      stage,\n      destinationName: transferDestinationName(department, stage),\n      answeredBy,\n      screeningStatus: answeredBy === \"human\" ? \"human\" : \"machine-or-unknown\"\n    });\n  }\n\n  app.log.info(\n    {\n      department,\n      stage,\n      answeredBy,\n      callSid: request.body?.CallSid,\n      parentCallSid: request.body?.ParentCallSid\n    },\n    \"Answering machine detection result\"\n  );\n\n  if (answeredBy === \"human\") {\n    return reply\n      .type(\"text/xml\")\n      .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>`);\n  }\n\n  return reply\n    .type(\"text/xml\")\n    .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>`);\n});";
+  replaceServerSection(
+    'app.post("/screen-transfer", async (request, reply) => {',
+    '\n\napp.post("/dial-result"',
+    screenTransferRoute,
+    "answering-machine screening route"
+  );
+
+  const dialResultRoute = "app.post(\"/dial-result\", async (request, reply) => {\n  if (!validateHttpRequest(request)) {\n    return reply.code(403).send(\"Invalid Twilio signature\");\n  }\n\n  const department = String(request.query?.department || \"default\").toLowerCase();\n  const stage = String(request.query?.stage || \"default\").toLowerCase();\n  const dialStatus = String(request.body?.DialCallStatus || \"unknown\").toLowerCase();\n  const duration = String(request.body?.DialCallDuration || \"\");\n  const session = getSessionForTwilioRequest(request);\n  const answeredBy =\n    session && session.transferAnsweredStage === stage\n      ? String(session.transferAnsweredBy || \"unknown\")\n      : String(request.body?.AnsweredBy || \"unknown\");\n\n  const result = buildTransferResult({\n    department,\n    stage,\n    dialStatus,\n    answeredBy,\n    duration\n  });\n\n  if (session) {\n    session.transferResult = result;\n    session.transferStage = stage;\n    session.transferDestinationName = result.destinationName;\n    recordTransferAttempt(session, {\n      department,\n      stage,\n      destinationName: result.destinationName,\n      dialStatus,\n      answeredBy,\n      resultStatus: result.status,\n      durationSeconds: result.durationSeconds\n    });\n  }\n\n  app.log.info(\n    {\n      department,\n      stage,\n      dialStatus,\n      answeredBy,\n      resultStatus: result.status,\n      duration,\n      parentCallSid: request.body?.ParentCallSid,\n      dialCallSid: request.body?.DialCallSid\n    },\n    \"Final transfer result\"\n  );\n\n  if (result.status === \"answered\") {\n    if (session) await notifyTeam(session, result);\n    return reply\n      .type(\"text/xml\")\n      .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>`);\n  }\n\n  let fallback = null;\n  if (department === \"travis\" && stage === \"thursday-ariana\") {\n    fallback = {\n      destinationName: \"Shellie\",\n      destinationNumber: accountingTransferNumber,\n      stage: \"thursday-shellie\"\n    };\n  } else if (department === \"accounting\" && stage === \"shellie\") {\n    fallback = {\n      destinationName: \"Ariana\",\n      destinationNumber: arianaTransferNumber,\n      stage: \"ariana\"\n    };\n  }\n\n  if (fallback) {\n    if (session) {\n      session.transferStage = fallback.stage;\n      session.transferDestinationName = fallback.destinationName;\n      session.transferAnsweredBy = \"\";\n      session.transferAnsweredStage = \"\";\n    }\n\n    const twiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">${xmlEscape(result.destinationName)} is unavailable. I will try ${xmlEscape(fallback.destinationName)}.</Say>\n  <Dial\n    timeout=\"25\"\n    answerOnBridge=\"true\"\n    action=\"${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(fallback.stage)}\"\n    method=\"POST\">\n    <Number\n      url=\"${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(fallback.stage)}\"\n      method=\"POST\"\n      machineDetection=\"Enable\"\n      machineDetectionTimeout=\"18\"\n      machineDetectionSpeechThreshold=\"1800\"\n      machineDetectionSpeechEndThreshold=\"2000\"\n      machineDetectionSilenceTimeout=\"6000\">${xmlEscape(fallback.destinationNumber)}</Number>\n  </Dial>\n</Response>`;\n    return reply.type(\"text/xml\").send(twiml);\n  }\n\n  if (session) {\n    await notifyTeam(session, result);\n  } else {\n    await notifyMissedTransfer({\n      request,\n      department,\n      stage,\n      status: result.status\n    });\n  }\n\n  return reply.type(\"text/xml\").send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">I\u2019m sorry, no one is available right now. Your callback information has been sent to the team.</Say>\n</Response>`);\n});";
+  replaceServerSection(
+    'app.post("/dial-result", async (request, reply) => {',
+    '\n\napp.get("/control-panel"',
+    dialResultRoute,
+    "final Dial result route"
+  );
+
+  const transferMetadataAnchor = `        session.requestedDepartment = department;
+        const transferLine = thursdayTravisRoute`;
+
+  const transferMetadataReplacement = `        session.requestedDepartment = department;
+        session.transferAttempted = true;
+        session.transferRequestedAt = new Date().toISOString();
+        session.transferDepartment = department;
+        session.transferDestinationName = destinationName;
+        session.transferAttempts = [];
+        const transferLine = thursdayTravisRoute`;
+
+  if (!server.includes(transferMetadataAnchor)) {
+    throw new Error("Could not locate Joshua's transfer metadata anchor.");
+  }
+  server = server.replace(transferMetadataAnchor, transferMetadataReplacement);
+
+  const emergencyMetadataAnchor = `        session.requestedDepartment = "travis";
+        const emergencyDestination = isThursdayInDallas() ? "Ariana" : "Travis";`;
+
+  const emergencyMetadataReplacement = `        session.requestedDepartment = "travis";
+        const emergencyDestination = isThursdayInDallas() ? "Ariana" : "Travis";
+        session.transferAttempted = true;
+        session.transferRequestedAt = new Date().toISOString();
+        session.transferDepartment = "travis";
+        session.transferDestinationName = emergencyDestination;
+        session.transferAttempts = [];`;
+
+  if (!server.includes(emergencyMetadataAnchor)) {
+    throw new Error("Could not locate Joshua's emergency transfer metadata anchor.");
+  }
+  server = server.replace(emergencyMetadataAnchor, emergencyMetadataReplacement);
+
+  const closeTasksAnchor = `    const results = await Promise.allSettled([
+      sendJobToClockShark(session),
+      notifyTeam(session)
+    ]);`;
+
+  const closeTasksReplacement = `    const postCallTasks = [sendJobToClockShark(session)];
+    if (!session.transferAttempted) {
+      postCallTasks.push(notifyTeam(session));
+    }
+    const results = await Promise.allSettled(postCallTasks);`;
+
+  if (!server.includes(closeTasksAnchor)) {
+    throw new Error("Could not locate Joshua's premature call-summary notification.");
+  }
+  server = server.replace(closeTasksAnchor, closeTasksReplacement);
+
+  fs.writeFileSync(serverPath, server);
+  console.log("Joshua confirmed transfer-result summaries installed.");
+}
+
 /* Preserve the corrected home-search cache synchronization. */
 let panel = fs.readFileSync(panelPath, "utf8");
 
@@ -468,157 +590,5 @@ function renderOrders(){
   fs.writeFileSync(panelPath, panel);
   console.log("Joshua Completed Today work-order filter installed.");
 }
-
-
-/*
- * PHASE 13 — one-time historical reconciliation.
- * ServiceChannel already shows 357564044 as Completed/Pending Confirmation,
- * but Joshua retained an old onsite record because checkout happened before
- * the live webhook was active.
- */
-function reconcileKnownStaleServiceChannelWorkOrder() {
-  const tracking = "357564044";
-  const dataFile = process.env.CONTROL_DATA_FILE || "/tmp/joshua-control-data.json";
-
-  if (!fs.existsSync(dataFile)) {
-    console.log("Phase 13 stale reconciliation skipped: no control data file.");
-    return;
-  }
-
-  let data;
-  try {
-    data = JSON.parse(fs.readFileSync(dataFile, "utf8"));
-  } catch (error) {
-    console.error("Phase 13 stale reconciliation skipped: invalid control data.", error);
-    return;
-  }
-
-  if (!data?.workOrders || typeof data.workOrders !== "object") return;
-  const existing = data.workOrders[tracking];
-  if (!existing || existing.phase13ReconciliationMarker === STALE_RECONCILIATION_MARKER) return;
-
-  const now = new Date().toISOString();
-  const technicianName = String(existing.technician || "Rigoberto").trim();
-
-  data.workOrders[tracking] = {
-    ...existing,
-    trackingNumber: tracking,
-    state: "ready_to_bill",
-    joshuaStatus: "ready_to_bill",
-    checkOutAt: existing.checkOutAt || "2026-07-29T12:21:00-05:00",
-    statusText: "Completed / Pending Confirmation",
-    serviceChannelPrimaryStatus: "Completed",
-    serviceChannelExtendedStatus: "Pending Confirmation",
-    serviceChannelLastEvent: "Phase13HistoricalReconciliation",
-    serviceChannelLastSyncAt: now,
-    ivrConfirmed: true,
-    lastError: "",
-    updatedAt: now,
-    phase13ReconciliationMarker: STALE_RECONCILIATION_MARKER,
-    phase13ReconciledAt: now,
-    phase13ReconciliationReason:
-      "ServiceChannel showed Completed/Pending Confirmation before live webhooks were enabled."
-  };
-
-  if (data.technicians && typeof data.technicians === "object") {
-    for (const [name, technician] of Object.entries(data.technicians)) {
-      if (!technician || typeof technician !== "object") continue;
-      const sameTracking = String(technician.currentTrackingNumber || "") === tracking;
-      const sameTechnician =
-        technicianName &&
-        String(name).toLowerCase() === technicianName.toLowerCase() &&
-        technician.status === "onsite";
-
-      if (sameTracking || sameTechnician) {
-        data.technicians[name] = {
-          ...technician,
-          status: "available",
-          currentTrackingNumber: "",
-          updatedAt: now
-        };
-      }
-    }
-  }
-
-  const closePattern =
-    /verify servicechannel check.?out|verify servicechannel check.?in|review operational exception|missed checkout|complete job documentation|review job for billing|prepare invoice|prepare and submit quote|order parts|schedule return trip/i;
-
-  data.tasks = Array.isArray(data.tasks)
-    ? data.tasks.map(task =>
-        String(task.trackingNumber || "") === tracking &&
-        task.status !== "closed" &&
-        closePattern.test(String(task.title || ""))
-          ? {
-              ...task,
-              status: "closed",
-              completedAt: now,
-              updatedAt: now,
-              closedReason: "Closed by Phase 13 historical ServiceChannel reconciliation."
-            }
-          : task
-      )
-    : [];
-
-  const hasBillingTask = data.tasks.some(task =>
-    String(task.trackingNumber || "") === tracking &&
-    task.status !== "closed" &&
-    String(task.workflowType || "") === "billing"
-  );
-
-  if (!hasBillingTask) {
-    data.tasks.unshift({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: now,
-      updatedAt: now,
-      status: "open",
-      priority: "normal",
-      title: "Review job for billing",
-      trackingNumber: tracking,
-      assignedTo: "Shellie",
-      workflowType: "billing",
-      actionLabel: "Mark Ready to Bill",
-      notes: "Created by Phase 13 historical ServiceChannel reconciliation."
-    });
-  }
-
-  data.events = Array.isArray(data.events)
-    ? data.events.map(event =>
-        String(event.trackingNumber || "") === tracking &&
-        String(event.level || "").toLowerCase() === "error"
-          ? {
-              ...event,
-              level: "resolved",
-              resolvedAt: now,
-              resolvedReason: "Cleared by Phase 13 historical ServiceChannel reconciliation."
-            }
-          : event
-      )
-    : [];
-
-  if (!data.events.some(event =>
-    String(event.trackingNumber || "") === tracking &&
-    String(event.type || "") === "servicechannel_historical_reconciliation"
-  )) {
-    data.events.unshift({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: now,
-      type: "servicechannel_historical_reconciliation",
-      level: "success",
-      trackingNumber: tracking,
-      requestedBy: "ServiceChannel Webhook",
-      technician: technicianName,
-      serviceChannelPrimaryStatus: "Completed",
-      serviceChannelExtendedStatus: "Pending Confirmation",
-      note:
-        "Removed historical stale onsite status after ServiceChannel showed Completed/Pending Confirmation."
-    });
-  }
-
-  data.updatedAt = now;
-  fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-  console.log("Phase 13 reconciled stale work order 357564044 and released the technician.");
-}
-
-reconcileKnownStaleServiceChannelWorkOrder();
 
 await import("./servicechannel-webhook-bootstrap.mjs");
