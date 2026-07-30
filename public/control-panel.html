@@ -89,6 +89,20 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
  .phase12-head-actions button{flex:1}
 }
 
+
+/* JOSHUA_CLICKABLE_ONSITE_CARD_V1 */
+.clickable-stat{cursor:pointer;position:relative;touch-action:manipulation}
+.clickable-stat:hover,.clickable-stat:focus{border-color:#eab308;background:#172536;outline:none}
+.clickable-stat:focus-visible{outline:2px solid #eab308;outline-offset:2px}
+.clickable-stat::after{content:"›";position:absolute;right:14px;bottom:14px;color:#eab308;font-size:28px;font-weight:900}
+.onsite-dialog{width:min(900px,95vw);max-height:88vh}
+.onsite-job-list{display:grid;gap:10px;max-height:65vh;overflow:auto}
+.onsite-job-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:13px;border:1px solid #2d4158;border-radius:11px;background:#0f1925;cursor:pointer}
+.onsite-job-row:hover,.onsite-job-row:focus{border-color:#eab308;background:#172536;outline:none}
+.onsite-job-row strong{display:block}
+.onsite-job-row button{width:auto}
+@media(max-width:760px){.onsite-job-row{grid-template-columns:1fr}.onsite-job-row button{width:100%}}
+
 </style>
 </head>
 <body>
@@ -96,7 +110,7 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <main>
 <div class="grid stats">
  <div class="card stat"><span class="muted">Joshua</span><strong id="joshua">—</strong></div>
- <div class="card stat"><span class="muted">Currently onsite</span><strong id="active">0</strong></div>
+ <div class="card stat clickable-stat" id="currentlyOnsiteCard" role="button" tabindex="0" aria-label="Open currently onsite jobs"><span class="muted">Currently onsite</span><strong id="active">0</strong></div>
  <div class="card stat"><span class="muted">Revenue today</span><strong id="revenueToday">$0</strong></div>
  <div class="card stat"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>
  <div class="card stat"><span class="muted">Needs attention</span><strong id="fails">0</strong></div>
@@ -180,6 +194,15 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div>
 <button>Save Settings</button></form></div></section>
 </main>
+
+<dialog id="onsiteJobsDialog" class="onsite-dialog">
+ <div class="exception-card-header">
+  <div><h2>Currently Onsite</h2><div id="onsiteJobsCount" class="small muted"></div></div>
+  <button type="button" class="secondary" id="closeOnsiteJobsDialog">Close</button>
+ </div>
+ <div id="onsiteJobsList" class="onsite-job-list"></div>
+</dialog>
+
 
 <dialog id="phase12WorkOrderDialog" class="phase12-dialog">
  <div class="phase12-head">
@@ -547,6 +570,53 @@ document.addEventListener("click",async e=>{
   documentation:["Review job documentation","Ariana","documentation"]
  };
  if(map[action])await phase12CreateTask(...map[action]);
+});
+
+
+function renderOnsiteDialog(){
+ const list=document.getElementById("onsiteJobsList");
+ const count=document.getElementById("onsiteJobsCount");
+ if(!list)return;
+ const onsite=(cache.active||[]).length
+   ? cache.active
+   : (cache.workOrders||[]).filter(x=>String(x.state||x.joshuaStatus||"").toLowerCase()==="onsite");
+ if(count)count.textContent=`${onsite.length} job${onsite.length===1?"":"s"} currently onsite`;
+ list.innerHTML=onsite.length?onsite.map(x=>`
+  <div class="onsite-job-row" role="button" tabindex="0" data-onsite-tracking="${esc(x.trackingNumber||"")}">
+   <div>
+    <strong>#${esc(x.trackingNumber||"")} — ${esc(x.customer||x.locationName||"Work order")}</strong>
+    <div class="small muted">${esc(x.locationName||x.address||"")}</div>
+    <div class="small">Technician: ${esc(x.technician||"Unassigned")} · Onsite: ${esc(x.liveOnsiteDuration||"")}</div>
+   </div>
+   <button type="button" class="secondary">Open Job</button>
+  </div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>";
+}
+function openOnsiteDialog(){
+ renderOnsiteDialog();
+ const dialog=document.getElementById("onsiteJobsDialog");
+ if(dialog){if(typeof dialog.showModal==="function")dialog.showModal();else dialog.setAttribute("open","open");}
+}
+document.addEventListener("click",e=>{
+ if(e.target.closest?.("#currentlyOnsiteCard")){e.preventDefault();openOnsiteDialog();return;}
+ if(e.target.closest?.("#closeOnsiteJobsDialog")){document.getElementById("onsiteJobsDialog")?.close();return;}
+ const row=e.target.closest?.("[data-onsite-tracking]");
+ if(row){
+  document.getElementById("onsiteJobsDialog")?.close();
+  const tracking=row.dataset.onsiteTracking;
+  if(typeof window.openPhase12WorkOrder==="function")window.openPhase12WorkOrder(tracking);
+  else if(typeof window.editOrder==="function")window.editOrder(tracking);
+ }
+});
+document.addEventListener("keydown",e=>{
+ if(e.target?.id==="currentlyOnsiteCard"&&(e.key==="Enter"||e.key===" ")){e.preventDefault();openOnsiteDialog();return;}
+ const row=e.target.closest?.("[data-onsite-tracking]");
+ if(row&&(e.key==="Enter"||e.key===" ")){
+  e.preventDefault();
+  document.getElementById("onsiteJobsDialog")?.close();
+  const tracking=row.dataset.onsiteTracking;
+  if(typeof window.openPhase12WorkOrder==="function")window.openPhase12WorkOrder(tracking);
+  else if(typeof window.editOrder==="function")window.editOrder(tracking);
+ }
 });
 
 action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
