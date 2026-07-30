@@ -56,6 +56,39 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 .work-order-link:focus-visible{outline:2px solid #eab308;outline-offset:3px}
 @media(max-width:760px){#workorders .card{padding:12px}#workorders table{min-width:760px;font-size:12px}#workorders th,#workorders td{padding:10px 6px}#workorders th:nth-child(5),#workorders td:nth-child(5){width:82px;max-width:82px}}
 
+
+/* JOSHUA_PHASE12_WORK_ORDER_COMMAND_CENTER */
+.phase12-dialog{width:min(1050px,96vw);max-height:92vh;overflow:auto}
+.phase12-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
+.phase12-head h2{margin:0 0 4px;font-size:21px}
+.phase12-head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.phase12-head-actions button{width:auto}
+.phase12-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}
+.phase12-card{background:#0f1925;border:1px solid #2d4158;border-radius:13px;padding:14px}
+.phase12-card h3{margin:0 0 12px}
+.phase12-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.phase12-detail{padding:10px;border:1px solid #2d4158;border-radius:10px;background:#101b28}
+.phase12-detail .muted{font-size:11px}
+.phase12-detail strong{display:block;margin-top:3px;word-break:break-word}
+.phase12-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.phase12-actions button{min-height:44px}
+.phase12-actions .full{grid-column:1/-1}
+.phase12-status-strip{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 14px}
+.phase12-timeline{max-height:360px;overflow:auto}
+.phase12-timeline-item{padding:10px 0;border-bottom:1px solid #28384c}
+.phase12-timeline-item:last-child{border-bottom:0}
+.phase12-message{margin-top:10px;min-height:18px}
+.phase12-call-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.phase12-hidden{display:none!important}
+@media(max-width:800px){
+ .phase12-grid{grid-template-columns:1fr}
+ .phase12-details,.phase12-actions,.phase12-call-grid{grid-template-columns:1fr}
+ .phase12-actions .full{grid-column:auto}
+ .phase12-head{flex-direction:column}
+ .phase12-head-actions{width:100%}
+ .phase12-head-actions button{flex:1}
+}
+
 </style>
 </head>
 <body>
@@ -147,6 +180,69 @@ dialog{border:1px solid #35475e;border-radius:16px;background:#131e2b;color:#fff
 <div class="row"><label><input id="autoReminders" type="checkbox" style="width:auto"> Automatically remind technicians</label><label><input id="autoInvoiceQueue" type="checkbox" style="width:auto"> Automatically create invoice tasks</label></div>
 <button>Save Settings</button></form></div></section>
 </main>
+
+<dialog id="phase12WorkOrderDialog" class="phase12-dialog">
+ <div class="phase12-head">
+  <div>
+   <h2 id="phase12Title">Work Order</h2>
+   <div id="phase12Subtitle" class="muted"></div>
+   <div class="phase12-status-strip">
+    <span id="phase12StatusBadge" class="badge">unknown</span>
+    <span id="phase12PriorityBadge" class="badge">normal</span>
+    <span id="phase12TechBadge" class="badge">Unassigned</span>
+   </div>
+  </div>
+  <div class="phase12-head-actions">
+   <button type="button" class="secondary" id="phase12EditBtn">Edit Record</button>
+   <button type="button" class="secondary" id="phase12CloseBtn">Close</button>
+  </div>
+ </div>
+
+ <div class="phase12-grid">
+  <div class="phase12-card">
+   <h3>Work Order Details</h3>
+   <div id="phase12Details" class="phase12-details"></div>
+  </div>
+
+  <div class="phase12-card">
+   <h3>Smart Actions</h3>
+   <div id="phase12SmartActions" class="phase12-actions"></div>
+   <div id="phase12ActionMessage" class="phase12-message small muted"></div>
+  </div>
+
+  <div class="phase12-card">
+   <h3>Check In / Check Out</h3>
+   <div class="phase12-call-grid">
+    <div>
+     <label>Technician</label>
+     <select id="phase12Technician"><option value="Unassigned Technician">Office / Unassigned</option></select>
+    </div>
+    <div id="phase12CheckoutStatusWrap">
+     <label>Checkout status</label>
+     <select id="phase12CheckoutStatus">
+      <option value="complete">Complete</option>
+      <option value="waiting for quote">Waiting for quote</option>
+      <option value="parts needed">Parts needed</option>
+      <option value="return trip needed">Return trip needed</option>
+     </select>
+    </div>
+    <div>
+     <label>Technicians onsite</label>
+     <input id="phase12TechCount" type="number" min="1" value="1">
+    </div>
+    <div></div>
+    <button type="button" id="phase12CheckinBtn">Check In</button>
+    <button type="button" id="phase12CheckoutBtn">Check Out</button>
+   </div>
+  </div>
+
+  <div class="phase12-card">
+   <h3>Timeline</h3>
+   <div id="phase12Timeline" class="phase12-timeline muted">Loading timeline…</div>
+  </div>
+ </div>
+</dialog>
+
 
 <dialog id="exceptionDialog" class="exception-dialog">
  <div class="exception-card-header">
@@ -254,14 +350,14 @@ function openException(tracking){
  const value=String(tracking||"").trim();if(!value)return;
  const dialog=document.getElementById("exceptionDialog");if(dialog?.open)dialog.close();
  const order=(cache.workOrders||[]).find(x=>String(x.trackingNumber||"")===value);
- if(order&&typeof window.editOrder==="function"){window.editOrder(value);return;}
+ if(order&&typeof window.openPhase12WorkOrder==="function"){window.openPhase12WorkOrder(value);return;}
  document.querySelector('.tab[data-tab="workorders"]')?.click();
  if(typeof orderSearch!=="undefined"){orderSearch.value=value;renderOrders();}
 }
 function renderOnsite(){onsiteCards.innerHTML=cache.active.length?cache.active.map(x=>`<div class="card success"><strong>Tracking ${esc(x.trackingNumber)}</strong><div class="muted">${esc(x.customer||x.locationName||"Work order")}</div><div class="metric" style="margin-top:10px">${esc(x.liveOnsiteDuration)}</div><div class="small">${esc(x.technician||"Technician not assigned")}</div></div>`).join(""):"<div class='muted'>No technicians are currently checked in.</div>"}
 function renderDispatch(){
  const jobs=cache.workOrders.filter(x=>!["completed","paid"].includes(x.state));
- dispatchBoard.innerHTML=jobs.length?jobs.map(x=>`<div class="card dispatch-card ${x.needsAttention?"alert":""}"><div class="top"><strong>#${esc(x.trackingNumber)}</strong><span class="badge ${esc(x.state)}">${esc((x.state||"new").replaceAll("_"," "))}</span></div><div>${esc(x.customer||"—")}</div><div class="small muted">${esc(x.address||x.locationName||"")}</div><div class="small">Priority: ${esc(x.priority||"normal")} · Tech: ${esc(x.technician||"Unassigned")}</div><div class="actions"><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Edit</button><button onclick="quickAssign('${esc(x.trackingNumber)}')">Assign</button></div></div>`).join(""):"<div class='muted'>No open work orders.</div>";
+ dispatchBoard.innerHTML=jobs.length?jobs.map(x=>`<div class="card dispatch-card ${x.needsAttention?"alert":""}"><div class="top"><strong>#${esc(x.trackingNumber)}</strong><span class="badge ${esc(x.state)}">${esc((x.state||"new").replaceAll("_"," "))}</span></div><div>${esc(x.customer||"—")}</div><div class="small muted">${esc(x.address||x.locationName||"")}</div><div class="small">Priority: ${esc(x.priority||"normal")} · Tech: ${esc(x.technician||"Unassigned")}</div><div class="actions"><button class="secondary" onclick="openPhase12WorkOrder('${esc(x.trackingNumber)}')">Edit</button><button onclick="quickAssign('${esc(x.trackingNumber)}')">Assign</button></div></div>`).join(""):"<div class='muted'>No open work orders.</div>";
 }
 function renderTechnicians(){
  techCards.innerHTML=cache.technicians.length?cache.technicians.map(t=>`<div class="card tech-card"><div class="tech-row"><strong>${esc(t.name)}</strong><span class="badge ${esc(t.status)}">${esc(t.status)}</span></div><div class="small muted">Current: ${esc(t.currentTrackingNumber||"None")}</div><div class="small">Today: ${Number(t.hoursToday||0).toFixed(1)} hrs · Week: ${Number(t.hoursWeek||0).toFixed(1)} hrs</div><div class="progress"><span style="width:${Math.min(100,(Number(t.hoursWeek||0)/Number(cache.settings.overtimeHours||40))*100)}%"></span></div><div class="small muted">Skills: ${esc((t.skills||[]).join(", ")||"Not listed")}</div><button class="secondary" onclick="editTech('${esc(t.name)}')">Edit Technician</button></div>`).join(""):"<div class='muted'>No technicians have been added yet.</div>";
@@ -269,7 +365,7 @@ function renderTechnicians(){
 function renderOrders(){
  const q=orderSearch.value.toLowerCase();
  const rows=cache.workOrders.filter(x=>JSON.stringify(x).toLowerCase().includes(q));
- orders.innerHTML=rows.map(x=>`<tr><td><button type="button" class="work-order-link" onclick="editOrder('${esc(x.trackingNumber)}')">${esc(x.trackingNumber)}</button><br><button type="button" class="work-order-link small muted" onclick="editOrder('${esc(x.trackingNumber)}')">${esc(x.workOrderNumber||"")}</button></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.joshuaStatus||x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td title="${esc(x.technician||"Unassigned")}">${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="editOrder('${esc(x.trackingNumber)}')">Open</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
+ orders.innerHTML=rows.map(x=>`<tr><td><button type="button" class="work-order-link" onclick="openPhase12WorkOrder('${esc(x.trackingNumber)}')">${esc(x.trackingNumber)}</button><br><button type="button" class="work-order-link small muted" onclick="openPhase12WorkOrder('${esc(x.trackingNumber)}')">${esc(x.workOrderNumber||"")}</button></td><td>${esc(x.customer||"—")}<br><span class="small muted">${esc(x.locationName||x.address||"")}</span></td><td><span class="badge ${esc(x.state)}">${esc((x.joshuaStatus||x.state||"unknown").replaceAll("_"," "))}</span></td><td>${esc(x.priority||"normal")}</td><td title="${esc(x.technician||"Unassigned")}">${esc(x.technician||"—")}</td><td>${Number(x.ntePercent||0).toFixed(0)}%</td><td>${esc(x.liveOnsiteDuration||"—")}</td><td><button class="secondary" onclick="openPhase12WorkOrder('${esc(x.trackingNumber)}')">Open Job</button></td></tr>`).join("")||"<tr><td colspan='8' class='muted'>No matching work orders.</td></tr>";
 }
 function renderBilling(){
  billingRows.innerHTML=cache.workOrders.map(x=>`<tr><td><strong>${esc(x.trackingNumber)}</strong></td><td>${esc(x.customer||"—")}</td><td>${money(x.invoiceAmount)}</td><td>${money(x.estimatedCost)}</td><td class="${Number(x.grossProfit||0)>=0?"profitPositive":"profitNegative"}">${money(x.grossProfit)}</td><td>${Number(x.grossMargin||0).toFixed(1)}%</td><td>${money(x.nte)}</td><td><span class="badge">${esc((x.invoiceStatus||"not started").replaceAll("_"," "))}</span></td><td>${esc(x.paymentStatus||"unpaid")}</td></tr>`).join("")||"<tr><td colspan='9' class='muted'>No work orders in the profit pipeline.</td></tr>";
@@ -310,6 +406,148 @@ document.addEventListener("keydown",e=>{
  if(item&&(e.key==="Enter"||e.key===" ")){e.preventDefault();openException(item.dataset.exceptionTracking);}
 });
 document.getElementById("exceptionSearch")?.addEventListener("input",renderAllExceptions);
+
+
+let phase12SelectedWorkOrder=null;
+
+function phase12EscValue(value){return esc(value==null?"":value)}
+function phase12Detail(label,value){
+ return `<div class="phase12-detail"><div class="muted">${phase12EscValue(label)}</div><strong>${phase12EscValue(value||"—")}</strong></div>`;
+}
+function phase12TechnicianOptions(){
+ const current=phase12SelectedWorkOrder?.technician||"";
+ const techs=(cache.technicians||[]).filter(t=>t&&t.name&&t.status!=="inactive"&&t.active!==false);
+ const values=["Unassigned Technician",...techs.map(t=>t.name)];
+ if(current&&!values.includes(current))values.push(current);
+ return values.map(name=>`<option value="${phase12EscValue(name)}">${phase12EscValue(name==="Unassigned Technician"?"Office / Unassigned":name)}</option>`).join("");
+}
+function phase12Status(item={}){
+ return String(item.joshuaStatus||item.state||"new").replaceAll("_"," ");
+}
+function phase12SmartActionButtons(item={}){
+ const status=String(item.joshuaStatus||item.state||"new").toLowerCase();
+ const tracking=phase12EscValue(item.trackingNumber||"");
+ const buttons=[];
+ const add=(label,action,cls="secondary")=>buttons.push(`<button type="button" class="${cls}" data-phase12-action="${action}" data-tracking="${tracking}">${label}</button>`);
+ if(["new","open","need_to_schedule"].includes(status)){add("Assign Technician","assign");add("Schedule Job","schedule");}
+ if(["scheduled","assigned"].includes(status)){add("Check In","checkin","");add("Reassign Technician","assign");}
+ if(status==="onsite"){add("Check Out","checkout","");add("Add Completion Notes","notes");}
+ if(/pending_proposal|waiting_for_quote/.test(status)){add("Create / Submit Quote","quote","");add("Mark Quote Submitted","quote_submitted");}
+ if(status==="awaiting_authorization"){add("Record Authorization","authorization","");add("Contact Customer","contact_customer");}
+ if(status==="parts_needed"){add("Order Parts","parts","");add("Schedule Return Trip","return_trip");}
+ if(/need_to_schedule|return_trip_needed/.test(status)){add("Schedule Return Trip","return_trip","");}
+ if(/ready_to_bill|completed/.test(status)){add("Prepare Invoice","invoice","");add("Review Documentation","documentation");}
+ add("Open Timeline","timeline");
+ return buttons.join("");
+}
+async function phase12LoadTimeline(tracking){
+ const box=document.getElementById("phase12Timeline");
+ if(!box)return;
+ box.textContent="Loading timeline…";
+ try{
+  const data=await api(`/api/control/work-orders/${encodeURIComponent(tracking)}/timeline`);
+  const items=data.timeline||[];
+  box.innerHTML=items.length?items.map(x=>`<div class="phase12-timeline-item"><strong>${phase12EscValue(x.label||x.type||"Activity")}</strong><div class="small muted">${fmt(x.at)}</div></div>`).join(""):"<div class='muted'>No timeline events yet.</div>";
+ }catch(error){
+  box.innerHTML=`<div class="warnText">Timeline unavailable: ${phase12EscValue(error.message)}</div>`;
+ }
+}
+window.openPhase12WorkOrder=function(tracking){
+ const item=(cache.workOrders||[]).find(x=>String(x.trackingNumber||"")===String(tracking||""));
+ if(!item)return;
+ phase12SelectedWorkOrder=item;
+ document.getElementById("phase12Title").textContent=`Work Order #${item.trackingNumber||""}`;
+ document.getElementById("phase12Subtitle").textContent=[item.customer,item.locationName||item.address].filter(Boolean).join(" · ");
+ document.getElementById("phase12StatusBadge").textContent=phase12Status(item);
+ document.getElementById("phase12PriorityBadge").textContent=item.priority||"normal";
+ document.getElementById("phase12TechBadge").textContent=item.technician||"Unassigned";
+ document.getElementById("phase12Details").innerHTML=
+   phase12Detail("Tracking number",item.trackingNumber)+
+   phase12Detail("Work-order number",item.workOrderNumber)+
+   phase12Detail("Customer",item.customer)+
+   phase12Detail("Location",item.locationName)+
+   phase12Detail("Address",item.address)+
+   phase12Detail("NTE",item.nte?money(item.nte):"")+
+   phase12Detail("Priority",item.priority)+
+   phase12Detail("Technician",item.technician)+
+   phase12Detail("Check-in",item.checkInAt?fmt(item.checkInAt):"")+
+   phase12Detail("Check-out",item.checkOutAt?fmt(item.checkOutAt):"")+
+   phase12Detail("Problem",item.problemDescription)+
+   phase12Detail("Notes",item.notes);
+ document.getElementById("phase12SmartActions").innerHTML=phase12SmartActionButtons(item);
+ const tech=document.getElementById("phase12Technician");
+ tech.innerHTML=phase12TechnicianOptions();
+ if(item.technician&&Array.from(tech.options).some(o=>o.value===item.technician))tech.value=item.technician;
+ document.getElementById("phase12ActionMessage").textContent="";
+ phase12LoadTimeline(item.trackingNumber);
+ const dialog=document.getElementById("phase12WorkOrderDialog");
+ if(typeof dialog.showModal==="function")dialog.showModal();else dialog.setAttribute("open","open");
+}
+async function phase12StartIvr(actionType){
+ if(!phase12SelectedWorkOrder)return;
+ const message=document.getElementById("phase12ActionMessage");
+ const checkout=actionType==="checkout";
+ const payload={
+  action:actionType,
+  trackingNumber:phase12SelectedWorkOrder.trackingNumber,
+  technicianName:document.getElementById("phase12Technician").value||"Unassigned Technician",
+  statusText:checkout?document.getElementById("phase12CheckoutStatus").value:"",
+  technicianCount:checkout?document.getElementById("phase12TechCount").value:""
+ };
+ message.textContent=`Starting ${checkout?"check-out":"check-in"} call…`;
+ try{
+  const result=await api("/api/control/ivr",{method:"POST",body:JSON.stringify(payload)});
+  message.textContent=`✅ Call started: ${result.callSid}. Joshua will update after ServiceChannel confirms success.`;
+  await refresh();
+ }catch(error){message.textContent=`⚠ ${error.message}`}
+}
+async function phase12CreateTask(title,assignedTo="Ariana",workflowType=""){
+ if(!phase12SelectedWorkOrder)return;
+ const message=document.getElementById("phase12ActionMessage");
+ try{
+  await api("/api/control/tasks",{method:"POST",body:JSON.stringify({
+   title,trackingNumber:phase12SelectedWorkOrder.trackingNumber,assignedTo,priority:"urgent",workflowType
+  })});
+  message.textContent=`✅ ${title} task created.`;
+  await refresh();
+ }catch(error){message.textContent=`⚠ ${error.message}`}
+}
+document.addEventListener("click",async e=>{
+ if(e.target.closest?.("#phase12CloseBtn")){document.getElementById("phase12WorkOrderDialog")?.close();return}
+ if(e.target.closest?.("#phase12EditBtn")){
+  const tracking=phase12SelectedWorkOrder?.trackingNumber;
+  document.getElementById("phase12WorkOrderDialog")?.close();
+  if(tracking&&typeof window.editOrder==="function")window.editOrder(tracking);
+  return;
+ }
+ if(e.target.closest?.("#phase12CheckinBtn")){await phase12StartIvr("checkin");return}
+ if(e.target.closest?.("#phase12CheckoutBtn")){await phase12StartIvr("checkout");return}
+ const actionButton=e.target.closest?.("[data-phase12-action]");
+ if(!actionButton)return;
+ const action=actionButton.dataset.phase12Action;
+ if(action==="checkin"){await phase12StartIvr("checkin");return}
+ if(action==="checkout"){await phase12StartIvr("checkout");return}
+ if(action==="timeline"){phase12LoadTimeline(phase12SelectedWorkOrder.trackingNumber);return}
+ if(action==="assign"){
+  const name=prompt("Enter technician name");
+  if(!name)return;
+  await api("/api/control/dispatch/assign",{method:"POST",body:JSON.stringify({trackingNumber:phase12SelectedWorkOrder.trackingNumber,technician:name,state:"scheduled"})});
+  await refresh();document.getElementById("phase12ActionMessage").textContent="✅ Technician assigned.";return;
+ }
+ const map={
+  schedule:["Schedule job","Ariana","scheduling"],
+  notes:["Add completion notes","Ariana","documentation"],
+  quote:["Prepare and submit quote","Travis","proposal"],
+  quote_submitted:["Confirm quote submitted","Travis","proposal"],
+  authorization:["Record customer authorization","Ariana","authorization"],
+  contact_customer:["Contact customer with job update","Ariana","customer_update"],
+  parts:["Order parts","Ariana","parts"],
+  return_trip:["Schedule return trip","Ariana","return_trip"],
+  invoice:["Prepare invoice","Shellie","billing"],
+  documentation:["Review job documentation","Ariana","documentation"]
+ };
+ if(map[action])await phase12CreateTask(...map[action]);
+});
 
 action.onchange=()=>checkoutFields.style.display=action.value==="checkout"?"block":"none";
 ivrForm.onsubmit=async e=>{e.preventDefault();message.textContent="Starting call…";try{const d=await api("/api/control/ivr",{method:"POST",body:JSON.stringify({action:action.value,trackingNumber:tracking.value,statusText:status.value,technicianCount:techs.value})});message.textContent=`✅ Call started: ${d.callSid}`;refresh()}catch(e){message.textContent=`⚠ ${e.message}`}};
