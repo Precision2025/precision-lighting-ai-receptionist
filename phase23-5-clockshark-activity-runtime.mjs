@@ -6,7 +6,7 @@ const serverPath = new URL(
 );
 
 const MARKER =
-  "JOSHUA_PHASE23_5_3_CLOCKSHARK_FALSE_BREAK_DUPLICATE_FIX_V1";
+  "JOSHUA_PHASE23_5_4_CLOCKSHARK_EMPLOYEE_ALIAS_FIX_V1";
 
 let server = fs.readFileSync(
   serverPath,
@@ -23,7 +23,7 @@ if (!server.includes(MARKER)) {
     );
   }
 
-  const helpers = String.raw`/* JOSHUA_PHASE23_5_3_CLOCKSHARK_FALSE_BREAK_DUPLICATE_FIX_V1 */
+  const helpers = String.raw`/* JOSHUA_PHASE23_5_4_CLOCKSHARK_EMPLOYEE_ALIAS_FIX_V1 */
 function phase235Text(value = "") {
   return String(value ?? "").trim();
 }
@@ -41,6 +41,62 @@ function phase235EmployeeIdentity(shift = {}) {
     shift.employeeId ||
     phase22ClockSharkEmployeeKey(shift)
   );
+}
+
+function phase235EmployeeAliasMap(
+  data = {},
+  shifts = []
+) {
+  const fullNames = new Set();
+
+  for (const shift of shifts) {
+    const name = phase235Text(shift?.employeeName);
+    if (name.split(/\s+/).filter(Boolean).length >= 2) {
+      fullNames.add(name);
+    }
+  }
+
+  for (const [key, technician] of Object.entries(
+    data.technicians || {}
+  )) {
+    const name = phase235Text(
+      technician?.name || key
+    );
+    if (name.split(/\s+/).filter(Boolean).length >= 2) {
+      fullNames.add(name);
+    }
+  }
+
+  const bySurname = new Map();
+
+  for (const name of fullNames) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    const surname = phase235Normalize(parts.at(-1));
+    if (!surname) continue;
+
+    const values = bySurname.get(surname) || [];
+    values.push(phase235Normalize(name));
+    bySurname.set(surname, values);
+  }
+
+  const aliases = new Map();
+
+  for (const [surname, values] of bySurname) {
+    const unique = [...new Set(values)];
+    if (unique.length === 1) {
+      aliases.set(surname, unique[0]);
+    }
+  }
+
+  return aliases;
+}
+
+function phase235CanonicalEmployeeIdentity(
+  shift = {},
+  aliases = new Map()
+) {
+  const identity = phase235EmployeeIdentity(shift);
+  return aliases.get(identity) || identity;
 }
 
 function phase235ActivityInfo(shift = {}) {
@@ -500,6 +556,8 @@ function phase235ReconcileClockSharkActivity(
   const shifts = Object.values(
     state.shifts || {}
   );
+  const employeeAliases =
+    phase235EmployeeAliasMap(data, shifts);
 
   // A technician can have stale ClockShark entries that still say "open".
   // Only the newest open entry for that technician represents the current
@@ -509,7 +567,11 @@ function phase235ReconcileClockSharkActivity(
   for (const shift of shifts) {
     if (shift.status !== "open") continue;
 
-    const identity = phase235EmployeeIdentity(shift);
+    const identity =
+      phase235CanonicalEmployeeIdentity(
+        shift,
+        employeeAliases
+      );
     if (!identity) continue;
 
     const current = latestOpenByEmployee.get(identity);
@@ -731,6 +793,8 @@ function phase235ReconcileClockSharkActivity(
 
   if (state.sync && typeof state.sync === "object") {
     state.sync.phase235ActivityClassification =
+      true;
+    state.sync.phase235EmployeeAliasReconciliation =
       true;
     state.sync.phase235DuplicateTechniciansRemoved =
       Number(
@@ -954,7 +1018,7 @@ function phase235TechnicianForDisplay(
   );
 
   console.log(
-    "Joshua Phase 23.5.3 false-break and duplicate-technician cleanup installed."
+    "Joshua Phase 23.5.4 ClockShark employee alias reconciliation installed."
   );
 }
 
