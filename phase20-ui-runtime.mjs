@@ -482,4 +482,4 @@ if (!panel.includes(MARKER)) {
   );
 }
 
-await import("./server.js");
+await import("./phase21-clockshark-ui-runtime.mjs");
