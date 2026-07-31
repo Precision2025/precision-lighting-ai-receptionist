@@ -3,7 +3,7 @@ import path from "node:path";
 
 const ROOT = new URL("./", import.meta.url);
 const SERVER_MARKER =
-  "JOSHUA_PHASE23_8_1_EXACT_MODAL_TECH_NOTES_V1";
+  "JOSHUA_PHASE23_8_2_SAFE_PHASE10_TECH_NOTES_V1";
 const SERVICECHANNEL_MARKER =
   "JOSHUA_PHASE23_7_1_QUIET_CHECKOUT_WORKFLOW_V1";
 const EXCEPTION_MARKER =
@@ -986,20 +986,9 @@ function cleanExistingFalseTasks() {
 
 function patchExactWorkOrderTechnicianNotes() {
   const marker =
-    "JOSHUA_PHASE23_8_1_HOME_WORK_ORDER_TECH_NOTES_V1";
+    "JOSHUA_PHASE23_8_2_HOME_WORK_ORDER_TECH_NOTES_V1";
 
-  const panelPaths = [
-    new URL("./public/control-panel.html", ROOT),
-    new URL("./control-panel.html", ROOT)
-  ];
-
-  for (const panelPath of panelPaths) {
-    if (!fs.existsSync(panelPath)) continue;
-
-    let panel = readFile(panelPath);
-    if (panel.includes(marker)) continue;
-
-    const css = `
+  const css = `
 /* ${marker} */
 .job-tech-notes-card{
   margin-top:12px;
@@ -1024,37 +1013,18 @@ function patchExactWorkOrderTechnicianNotes() {
 }
 `;
 
-    panel = panel.replace(
-      "</style>",
-      css + "\n</style>"
-    );
+  const detailsMarkup =
+    '<div id="homeWorkOrderDetails" class="job-detail-grid"></div>';
 
-    const detailsMarkup =
-      '<div id="homeWorkOrderDetails" class="job-detail-grid"></div>';
-
-    const notesMarkup =
-      detailsMarkup +
-      `
+  const notesMarkup =
+    detailsMarkup +
+    `
  <div id="homeWorkOrderTechNotes" class="job-tech-notes-card">
   <h3>TECHNICIAN NOTES</h3>
   <div id="homeWorkOrderTechNotesContent" class="job-tech-notes-content job-tech-notes-empty">No ClockShark checkout notes received.</div>
  </div>`;
 
-    if (!panel.includes(detailsMarkup)) {
-      throw new Error(
-        "Could not locate the exact dashboard Work Order details area."
-      );
-    }
-
-    panel = panel.replace(
-      detailsMarkup,
-      notesMarkup
-    );
-
-    const openFunction =
-      " function openWorkOrder(tracking){";
-
-    const helper = ` function clockSharkNotesText(order){
+  const helper = ` function clockSharkNotesText(order){
   const raw=order&&order.clockSharkNotes;
   if(Array.isArray(raw))return raw.map(safe).map(v=>v.trim()).filter(Boolean).join("\\n\\n");
   return safe(raw).trim();
@@ -1070,45 +1040,132 @@ function patchExactWorkOrderTechnicianNotes() {
 
 `;
 
-    if (!panel.includes(openFunction)) {
-      throw new Error(
-        "Could not locate the exact dashboard Work Order opener."
-      );
+  const openFunction =
+    " function openWorkOrder(tracking){";
+
+  const detailsEnd =
+    '   detail("Check-out",selectedWorkOrder.checkOutAt?new Date(selectedWorkOrder.checkOutAt).toLocaleString():"");';
+
+  const refreshNeedle =
+    `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
+   return result;`;
+
+  const refreshReplacement =
+    `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
+   const dialog=el("homeWorkOrderDialog");
+   if(dialog&&dialog.open&&selectedWorkOrder){
+    const latest=workOrders().find(o=>safe(o.trackingNumber)===safe(selectedWorkOrder.trackingNumber));
+    if(latest){
+     selectedWorkOrder=latest;
+     renderHomeWorkOrderTechNotes(selectedWorkOrder);
     }
+   }
+   return result;`;
+
+  // Patch the Phase 10 generator before it creates the dashboard modal.
+  const phase10Path = new URL(
+    "./phase10-search-bootstrap.mjs",
+    ROOT
+  );
+
+  if (fs.existsSync(phase10Path)) {
+    let source = readFile(phase10Path);
+
+    if (!source.includes(marker)) {
+      const searchBlockAnchor =
+        "  const searchBlock = `";
+
+      if (
+        source.includes(searchBlockAnchor) &&
+        source.includes(detailsMarkup) &&
+        source.includes(openFunction) &&
+        source.includes(detailsEnd)
+      ) {
+        source = source.replace(
+          searchBlockAnchor,
+          `  panel = panel.replace("</style>", \`${css}
+</style>\`);
+
+${searchBlockAnchor}`
+        );
+
+        source = source.replace(
+          detailsMarkup,
+          notesMarkup
+        );
+
+        source = source.replace(
+          openFunction,
+          helper + openFunction
+        );
+
+        source = source.replace(
+          detailsEnd,
+          detailsEnd +
+          '\n  renderHomeWorkOrderTechNotes(selectedWorkOrder);'
+        );
+
+        if (source.includes(refreshNeedle)) {
+          source = source.replace(
+            refreshNeedle,
+            refreshReplacement
+          );
+        }
+
+        writeFile(phase10Path, source);
+
+        console.log(
+          "Joshua Phase 23.8.2 patched the Phase 10 Work Order generator for technician notes."
+        );
+      } else {
+        console.warn(
+          "Joshua Phase 23.8.2 could not patch the Phase 10 source yet; startup will continue."
+        );
+      }
+    }
+  }
+
+  // Also patch a panel that has already been generated. Missing anchors are
+  // not fatal because the Phase 10 generator may not have run yet.
+  const panelPaths = [
+    new URL("./public/control-panel.html", ROOT),
+    new URL("./control-panel.html", ROOT)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let panel = readFile(panelPath);
+    if (panel.includes(marker)) continue;
+
+    if (
+      !panel.includes(detailsMarkup) ||
+      !panel.includes(openFunction) ||
+      !panel.includes(detailsEnd)
+    ) {
+      continue;
+    }
+
+    panel = panel.replace(
+      "</style>",
+      css + "\n</style>"
+    );
+
+    panel = panel.replace(
+      detailsMarkup,
+      notesMarkup
+    );
 
     panel = panel.replace(
       openFunction,
       helper + openFunction
     );
 
-    const detailsEnd =
-      '   detail("Check-out",selectedWorkOrder.checkOutAt?new Date(selectedWorkOrder.checkOutAt).toLocaleString():"");';
-
-    if (!panel.includes(detailsEnd)) {
-      throw new Error(
-        "Could not locate the exact Work Order Check-out detail."
-      );
-    }
-
     panel = panel.replace(
       detailsEnd,
       detailsEnd +
       '\n  renderHomeWorkOrderTechNotes(selectedWorkOrder);'
     );
-
-    const refreshNeedle =
-      `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
-   return result;`;
-
-    const refreshReplacement =
-      `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
-   const dialog=el("homeWorkOrderDialog");
-   if(
-    dialog&&dialog.open&&selectedWorkOrder
-   ){
-    openWorkOrder(selectedWorkOrder.trackingNumber);
-   }
-   return result;`;
 
     if (panel.includes(refreshNeedle)) {
       panel = panel.replace(
@@ -1120,7 +1177,6 @@ function patchExactWorkOrderTechnicianNotes() {
     writeFile(panelPath, panel);
   }
 }
-
 
 function patchClockSharkNotesPanel() {
   const marker =
@@ -1291,7 +1347,7 @@ setTimeout(
 ).unref?.();
 
 console.log(
-  "Joshua Phase 23.8.1 technician notes added to the exact dashboard Work Order window."
+  "Joshua Phase 23.8.2 safely adds technician notes to the exact dashboard Work Order window."
 );
 
 await import(
