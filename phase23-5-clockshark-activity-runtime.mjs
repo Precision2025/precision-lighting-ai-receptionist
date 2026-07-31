@@ -6,7 +6,7 @@ const serverPath = new URL(
 );
 
 const MARKER =
-  "JOSHUA_PHASE23_5_CLOCKSHARK_ACTIVITY_V1";
+  "JOSHUA_PHASE23_5_2_CLOCKSHARK_LATEST_ACTIVITY_V1";
 
 let server = fs.readFileSync(
   serverPath,
@@ -23,7 +23,7 @@ if (!server.includes(MARKER)) {
     );
   }
 
-  const helpers = String.raw`/* JOSHUA_PHASE23_5_CLOCKSHARK_ACTIVITY_V1 */
+  const helpers = String.raw`/* JOSHUA_PHASE23_5_2_CLOCKSHARK_LATEST_ACTIVITY_V1 */
 function phase235Text(value = "") {
   return String(value ?? "").trim();
 }
@@ -32,6 +32,15 @@ function phase235Normalize(value = "") {
   return phase235Text(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function phase235EmployeeIdentity(shift = {}) {
+  return phase235Normalize(
+    shift.employeeName ||
+    shift.employeeEmail ||
+    shift.employeeId ||
+    phase22ClockSharkEmployeeKey(shift)
+  );
 }
 
 function phase235ActivityInfo(shift = {}) {
@@ -399,6 +408,53 @@ function phase235ReconcileClockSharkActivity(
     state.shifts || {}
   );
 
+  // A technician can have stale ClockShark entries that still say "open".
+  // Only the newest open entry for that technician represents the current
+  // activity. Older open entries must never keep an old job onsite.
+  const latestOpenByEmployee = new Map();
+
+  for (const shift of shifts) {
+    if (shift.status !== "open") continue;
+
+    const identity = phase235EmployeeIdentity(shift);
+    if (!identity) continue;
+
+    const current = latestOpenByEmployee.get(identity);
+    const currentTime = current
+      ? phase22ClockSharkShiftTime(current)
+      : -1;
+    const shiftTime = phase22ClockSharkShiftTime(shift);
+    const currentUpdated = current
+      ? new Date(
+          current.updatedAt ||
+          current.rawReceivedAt ||
+          current.createdAt ||
+          0
+        ).getTime()
+      : -1;
+    const shiftUpdated = new Date(
+      shift.updatedAt ||
+      shift.rawReceivedAt ||
+      shift.createdAt ||
+      0
+    ).getTime();
+
+    if (
+      !current ||
+      shiftTime > currentTime ||
+      (
+        shiftTime === currentTime &&
+        shiftUpdated >= currentUpdated
+      )
+    ) {
+      latestOpenByEmployee.set(identity, shift);
+    }
+  }
+
+  const currentOpenShifts = new Set(
+    latestOpenByEmployee.values()
+  );
+
   for (const [key, original] of Object.entries(
     data.workOrders
   )) {
@@ -421,7 +477,10 @@ function phase235ReconcileClockSharkActivity(
       )
     );
     const actualOpen = matching.filter(
-      shift => shift.status === "open"
+      shift =>
+        shift.status === "open" &&
+        currentOpenShifts.has(shift) &&
+        phase235ActivityInfo(shift).type === "job"
     );
     const closed = matching.filter(
       shift => shift.status === "closed"
@@ -519,32 +578,7 @@ function phase235ReconcileClockSharkActivity(
     }
   }
 
-  const openByEmployee = new Map();
-
-  for (const shift of shifts) {
-    if (
-      shift.status !== "open" ||
-      !phase22ClockSharkEmployeeKey(shift)
-    ) {
-      continue;
-    }
-
-    const employeeKey =
-      phase22ClockSharkEmployeeKey(shift);
-    const current =
-      openByEmployee.get(employeeKey);
-    const currentTime = current
-      ? phase22ClockSharkShiftTime(current)
-      : -1;
-    const shiftTime =
-      phase22ClockSharkShiftTime(shift);
-
-    if (!current || shiftTime >= currentTime) {
-      openByEmployee.set(employeeKey, shift);
-    }
-  }
-
-  for (const shift of openByEmployee.values()) {
+  for (const shift of latestOpenByEmployee.values()) {
     const activity = phase235ActivityInfo(shift);
 
     if (activity.type === "job") {
@@ -802,7 +836,7 @@ function phase235TechnicianForDisplay(
   );
 
   console.log(
-    "Joshua Phase 23.5 ClockShark travel, break, and onsite classification installed."
+    "Joshua Phase 23.5.2 latest ClockShark activity classification installed."
   );
 }
 
