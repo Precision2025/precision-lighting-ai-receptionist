@@ -120,4 +120,4 @@ if (!server.includes(MARKER)) {
   );
 }
 
-await import("./servicechannel-webhook-bootstrap.mjs");
+await import("./wifey-message-bootstrap.mjs");
