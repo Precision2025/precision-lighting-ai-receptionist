@@ -1,10 +1,10 @@
 {
   "name": "precision-lighting-joshua",
-  "version": "3.0.9",
+  "version": "3.0.10",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase23-8-6-servicechannel-duplicate-prevention.mjs",
+    "start": "node phase23-8-7-safe-servicechannel-reconciliation.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
