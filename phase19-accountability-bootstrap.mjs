@@ -130,4 +130,46 @@ if (!panel.includes(PANEL_MARKER)) {
   );
 }
 
+
+/*
+ * JOSHUA_PHASE19_OFFICE_SUITE_NAV_REPAIR_V1
+ * Phase 10 creates the final desktop sidebar after Phase 19 adds its panel.
+ * Patch the Phase 10 sidebar template before Phase 10 executes so the
+ * Accountability panel remains reachable in the Office Suite navigation.
+ */
+const phase10Path = new URL("./phase10-bootstrap.mjs", import.meta.url);
+
+if (fs.existsSync(phase10Path)) {
+  let phase10 = fs.readFileSync(phase10Path, "utf8");
+  const officeNavMarker =
+    "JOSHUA_PHASE19_OFFICE_SUITE_NAV_V1";
+
+  if (!phase10.includes(officeNavMarker)) {
+    const tasksNavAnchor =
+      '  <button class="office-nav-btn" data-office-tab="tasks">✓ <span>Tasks</span></button>';
+
+    if (!phase10.includes(tasksNavAnchor)) {
+      throw new Error(
+        "Could not locate the Office Suite Tasks navigation button for the Phase 19 Accountability repair."
+      );
+    }
+
+    const accountabilityNav =
+      tasksNavAnchor +
+      '\n  <!-- JOSHUA_PHASE19_OFFICE_SUITE_NAV_V1 -->' +
+      '\n  <button class="office-nav-btn" data-office-tab="accountability">☑ <span>Accountability</span></button>';
+
+    phase10 = phase10.replace(
+      tasksNavAnchor,
+      accountabilityNav
+    );
+
+    fs.writeFileSync(phase10Path, phase10);
+
+    console.log(
+      "Joshua Phase 19 Accountability link added to the Office Suite sidebar."
+    );
+  }
+}
+
 await import("./servicechannel-webhook-bootstrap.mjs");
