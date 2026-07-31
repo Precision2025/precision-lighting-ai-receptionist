@@ -13,7 +13,7 @@
   "statistics": {
     "vCards": 4471,
     "uniqueUsPhoneNumbers": 3520,
-    "recognizedGreetingNumbers": 3186,
+    "recognizedGreetingNumbers": 3187,
     "ambiguousNumbersNotGreetedByName": 46
   },
   "byPhone": {
@@ -12761,6 +12761,17 @@
     "9896001189": {
       "greetingName": "Ryan",
       "kind": "person"
+    },
+    "2143263426": {
+      "greetingName": "Wifey",
+      "internalName": "Wifey",
+      "kind": "manual_override"
+    }
+  },
+  "manualOverrides": {
+    "2143263426": {
+      "greetingName": "Wifey",
+      "reason": "Permanent owner-approved greeting override"
     }
   }
 }
