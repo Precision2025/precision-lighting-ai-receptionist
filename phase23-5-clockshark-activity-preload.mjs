@@ -3,13 +3,13 @@ import path from "node:path";
 
 const ROOT = new URL("./", import.meta.url);
 const SERVER_MARKER =
-  "JOSHUA_PHASE23_7_SOURCE_PRIORITY_AND_QUIET_TASKS_V1";
+  "JOSHUA_PHASE23_7_2_DISABLE_LEGACY_SC_RECOVERY_V1";
 const SERVICECHANNEL_MARKER =
-  "JOSHUA_PHASE23_7_QUIET_CHECKOUT_WORKFLOW_V1";
+  "JOSHUA_PHASE23_7_1_QUIET_CHECKOUT_WORKFLOW_V1";
 const EXCEPTION_MARKER =
-  "JOSHUA_PHASE23_7_NO_FALSE_CHECKOUT_REVIEW_V1";
+  "JOSHUA_PHASE23_7_1_NO_FALSE_CHECKOUT_REVIEW_V1";
 const SOURCE_PRIORITY_MARKER =
-  "JOSHUA_PHASE23_7_SERVICECHANNEL_NEST_SOURCE_PRIORITY_V1";
+  "JOSHUA_PHASE23_7_1_SERVICECHANNEL_OR_CLOCKSHARK_V1";
 
 function readFile(url) {
   return fs.readFileSync(url, "utf8");
@@ -465,21 +465,10 @@ function patchClockSharkSourcePriority() {
       sourceText.includes("servicechannel")
     );
 
-    const isNestSource = Boolean(
-      original.nestSourceOfTruth === true ||
-      original.isNest === true ||
-      original.sourceSystem === "nest" ||
-      /\\bnest\\b/.test(sourceText)
-    );
-
-    const isClockShark = Boolean(
-      !isServiceChannelSource &&
-      !isNestSource &&
-      (
-        original.sourceSystem === "clockshark" ||
-        original.isInternalWorkOrder === true
-      )
-    );`;
+    // Until another platform has its own webhook/API, ClockShark controls
+    // check-in, checkout, travel, break, and onsite status for every
+    // non-ServiceChannel job.
+    const isClockShark = !isServiceChannelSource;`;
 
   if (runtime.includes(oldClockSharkSource)) {
     runtime = runtime.replace(
@@ -530,12 +519,8 @@ function patchClockSharkSourcePriority() {
     (
       protectedWorkOrder.serviceChannelSourceOfTruth === true ||
       protectedWorkOrder.isServiceChannel === true ||
-      protectedWorkOrder.nestSourceOfTruth === true ||
-      protectedWorkOrder.isNest === true ||
       protectedWorkOrder.sourceSystem === "servicechannel" ||
-      protectedWorkOrder.sourceSystem === "nest" ||
-      protectedSourceText.includes("servicechannel") ||
-      /\\bnest\\b/.test(protectedSourceText)
+      protectedSourceText.includes("servicechannel")
     )
   );
 
@@ -625,73 +610,103 @@ function repairVerifiedCurrentOnsite() {
         : {};
 
     const now = new Date().toISOString();
-    const tracking = "343437277";
-    const existing = data.workOrders[tracking] || {};
 
-    data.workOrders[tracking] = {
-      ...existing,
-      trackingNumber: tracking,
-      workOrderNumber:
-        String(existing.workOrderNumber || tracking),
-      customer: "RaceTrac",
-      subscriber: "RaceTrac",
-      locationId: "2362",
-      locationName:
+    const verified = [
+      {
+        tracking: "343437277",
+        technician: "Terry Reeves",
+        customer: "RaceTrac",
+        locationId: "2362",
+        defaultLocation:
+          "RaceTrac #2362 — Golden Triangle",
+        defaultAddress:
+          "3070-3106 Golden Triangle Blvd, Fort Worth, TX 76177",
+        defaultCheckInAt:
+          "2026-07-31T16:51:00.000Z"
+      },
+      {
+        tracking: "358160087",
+        technician: "Joseph Brown",
+        customer: "RaceTrac",
+        locationId: "0210",
+        defaultLocation: "RaceTrac #0210",
+        defaultAddress: "",
+        defaultCheckInAt:
+          "2026-07-31T17:54:00.000Z"
+      }
+    ];
+
+    for (const item of verified) {
+      const existing =
+        data.workOrders[item.tracking] || {};
+
+      const location =
         existing.locationName ||
         existing.location ||
-        "RaceTrac #2362 — Golden Triangle",
-      location:
-        existing.location ||
-        existing.locationName ||
-        "RaceTrac #2362 — Golden Triangle",
-      address:
-        existing.address ||
-        "3070-3106 Golden Triangle Blvd, Fort Worth, TX 76177",
-      nte:
-        existing.nte ||
-        1546.66,
-      state: "onsite",
-      joshuaStatus: "onsite",
-      checkInAt:
-        existing.checkInAt ||
-        "2026-07-31T16:51:00.000Z",
-      checkOutAt: "",
-      technician: "Joseph Brown, Terry Reeves",
-      technicianCount: 2,
-      source: "ServiceChannel",
-      sourceSystem: "servicechannel",
-      isServiceChannel: true,
-      serviceChannelSourceOfTruth: true,
-      serviceChannelPrimaryStatus: "In Progress",
-      serviceChannelExtendedStatus: "On Site",
-      statusText: "In Progress / On Site",
-      billingEligible: false,
-      invoiceAllowed: false,
-      workflowReason:
-        "Verified onsite in ServiceChannel with Joseph Brown and Terry Reeves.",
-      updatedAt: now
-    };
+        item.defaultLocation;
 
-    for (const name of [
-      "Joseph Brown",
-      "Terry Reeves"
-    ]) {
+      data.workOrders[item.tracking] = {
+        ...existing,
+        trackingNumber: item.tracking,
+        workOrderNumber:
+          String(
+            existing.workOrderNumber ||
+            item.tracking
+          ),
+        customer:
+          existing.customer ||
+          item.customer,
+        subscriber:
+          existing.subscriber ||
+          item.customer,
+        locationId:
+          existing.locationId ||
+          item.locationId,
+        locationName: location,
+        location,
+        address:
+          existing.address ||
+          item.defaultAddress,
+        state: "onsite",
+        joshuaStatus: "onsite",
+        checkInAt:
+          existing.checkInAt ||
+          item.defaultCheckInAt,
+        checkOutAt: "",
+        technician: item.technician,
+        technicianCount: 1,
+        source: "ServiceChannel",
+        sourceSystem: "servicechannel",
+        isServiceChannel: true,
+        serviceChannelSourceOfTruth: true,
+        serviceChannelPrimaryStatus: "In Progress",
+        serviceChannelExtendedStatus: "On Site",
+        statusText: "In Progress / On Site",
+        billingEligible: false,
+        invoiceAllowed: false,
+        workflowReason:
+          `Verified onsite in ServiceChannel with ${item.technician}.`,
+        updatedAt: now
+      };
+
       const technician =
-        data.technicians[name] || {
-          name,
+        data.technicians[item.technician] || {
+          name: item.technician,
           createdAt: now,
           skills: []
         };
 
-      data.technicians[name] = {
+      data.technicians[item.technician] = {
         ...technician,
-        name,
+        name: item.technician,
         status: "onsite",
         activityStatus: "onsite",
         activityLabel:
-          "Onsite at RaceTrac #2362 — Golden Triangle",
-        currentTrackingNumber: tracking,
-        serviceChannelTrackingNumber: tracking,
+          `Onsite at ${location}`,
+        currentTrackingNumber:
+          item.tracking,
+        serviceChannelTrackingNumber:
+          item.tracking,
         activitySource: "servicechannel",
         clockSharkActivityLabel: "",
         clockSharkCurrentTrackingNumber: "",
@@ -703,9 +718,9 @@ function repairVerifiedCurrentOnsite() {
     for (const [key, workOrder] of Object.entries(
       data.workOrders
     )) {
-      if (key === tracking || !workOrder) continue;
+      if (!workOrder) continue;
 
-      const text = [
+      const summary = [
         key,
         workOrder.trackingNumber,
         workOrder.workOrderNumber,
@@ -731,19 +746,28 @@ function repairVerifiedCurrentOnsite() {
         workOrder.isInternalWorkOrder === true
       );
 
-      const raceTracDuplicate = Boolean(
+      const terry2362Duplicate = Boolean(
         isInternal &&
         state === "onsite" &&
-        /race\s*trac/.test(text) &&
-        (
-          /joseph\s*brown/.test(text) ||
-          /terry\s*reeves/.test(text) ||
-          /#?\s*2362\b/.test(text) ||
-          /#?\s*0210\b/.test(text)
-        )
+        /race\s*trac/.test(summary) &&
+        /terry\s*reeves/.test(summary) &&
+        /#?\s*2362\b/.test(summary)
       );
 
-      if (raceTracDuplicate) {
+      const joseph0210Duplicate = Boolean(
+        isInternal &&
+        state === "onsite" &&
+        /race\s*trac/.test(summary) &&
+        /joseph\s*brown/.test(summary) &&
+        /#?\s*0210\b/.test(summary)
+      );
+
+      if (terry2362Duplicate || joseph0210Duplicate) {
+        const authoritativeTracking =
+          terry2362Duplicate
+            ? "343437277"
+            : "358160087";
+
         data.workOrders[key] = {
           ...workOrder,
           state: "superseded",
@@ -752,7 +776,7 @@ function repairVerifiedCurrentOnsite() {
           checkOutAt:
             workOrder.checkOutAt || now,
           supersededByServiceChannelTracking:
-            tracking,
+            authoritativeTracking,
           updatedAt: now
         };
         continue;
@@ -760,7 +784,7 @@ function repairVerifiedCurrentOnsite() {
 
       if (
         state === "onsite" &&
-        /campbell\s+road\s+church/.test(text)
+        /campbell\s+road\s+church/.test(summary)
       ) {
         data.workOrders[key] = {
           ...workOrder,
@@ -783,7 +807,7 @@ function repairVerifiedCurrentOnsite() {
     );
   } catch (error) {
     console.error(
-      "Phase 23.7 could not restore verified ServiceChannel onsite records:",
+      "Phase 23.7.1 could not restore verified ServiceChannel onsite records:",
       error.message
     );
   }
@@ -960,6 +984,67 @@ function cleanExistingFalseTasks() {
   }
 }
 
+function disableLegacyServiceChannelRecovery() {
+  const runtimePath = new URL(
+    "./phase23-3-servicechannel-confirmation-runtime.mjs",
+    ROOT
+  );
+  const marker =
+    "JOSHUA_PHASE23_7_2_LEGACY_SC_RECOVERY_DISABLED_V1";
+
+  if (!fs.existsSync(runtimePath)) return;
+
+  let source = readFile(runtimePath);
+  if (source.includes(marker)) return;
+
+  const readFunction =
+    "function phase233ReadVerifiedOnsite() {";
+  const recoverFunction =
+    "function phase233RecoverServiceChannelConfirmations(";
+
+  if (!source.includes(readFunction)) {
+    throw new Error(
+      "Could not locate legacy ServiceChannel verified-onsite reader."
+    );
+  }
+
+  if (!source.includes(recoverFunction)) {
+    throw new Error(
+      "Could not locate legacy ServiceChannel confirmation recovery."
+    );
+  }
+
+  source = source.replace(
+    readFunction,
+    `/* ${marker} */
+function phase233ReadVerifiedOnsite() {
+  return {};
+}
+
+function phase233LegacyReadVerifiedOnsite() {`
+  );
+
+  source = source.replace(
+    recoverFunction,
+    `function phase233RecoverServiceChannelConfirmations(
+  data
+) {
+  // ServiceChannel webhook is authoritative. Do not reopen jobs from
+  // old IVR transcripts or the obsolete verified-onsite override file.
+  return false;
+}
+
+function phase233LegacyRecoverServiceChannelConfirmations(`
+  );
+
+  writeFile(runtimePath, source);
+
+  console.log(
+    "Joshua Phase 23.7.2 disabled obsolete ServiceChannel recovery overrides."
+  );
+}
+
+
 function connectPhase235Chain() {
   const phase233RuntimePath = new URL(
     "./phase23-3-servicechannel-confirmation-runtime.mjs",
@@ -1001,6 +1086,7 @@ patchClockSharkSourcePriority();
 patchReleaseOnlyMatchingTracking();
 cleanExistingFalseTasks();
 repairVerifiedCurrentOnsite();
+disableLegacyServiceChannelRecovery();
 connectPhase235Chain();
 
 setTimeout(
@@ -1009,7 +1095,7 @@ setTimeout(
 ).unref?.();
 
 console.log(
-  "Joshua Phase 23.7 ServiceChannel source priority and exception-only notifications installed."
+  "Joshua Phase 23.7.2 ServiceChannel webhook authority installed."
 );
 
 await import(
