@@ -3,7 +3,7 @@ import path from "node:path";
 
 const ROOT = new URL("./", import.meta.url);
 const SERVER_MARKER =
-  "JOSHUA_PHASE23_7_2_DISABLE_LEGACY_SC_RECOVERY_V1";
+  "JOSHUA_PHASE23_8_CLOCKSHARK_NOTES_ON_CHECKOUT_V1";
 const SERVICECHANNEL_MARKER =
   "JOSHUA_PHASE23_7_1_QUIET_CHECKOUT_WORKFLOW_V1";
 const EXCEPTION_MARKER =
@@ -984,6 +984,62 @@ function cleanExistingFalseTasks() {
   }
 }
 
+function patchClockSharkNotesPanel() {
+  const marker =
+    "JOSHUA_PHASE23_8_CLOCKSHARK_NOTES_PANEL_V1";
+
+  const panelPaths = [
+    new URL("./public/control-panel.html", ROOT),
+    new URL("./control-panel.html", ROOT)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let panel = readFile(panelPath);
+    if (panel.includes(marker)) continue;
+
+    const detailsNeedle =
+      'phase12Detail("Notes",item.notes)';
+
+    const detailsReplacement =
+      `/* ${marker} */` +
+      'phase12Detail("ClockShark Notes",Array.isArray(item.clockSharkNotes)?item.clockSharkNotes.filter(Boolean).join("\\n\\n"):(item.clockSharkNotes||""))+' +
+      'phase12Detail("Office Notes",item.notes)';
+
+    if (!panel.includes(detailsNeedle)) {
+      throw new Error(
+        "Could not locate the Work Order Notes field for Phase 23.8."
+      );
+    }
+
+    panel = panel.replace(
+      detailsNeedle,
+      detailsReplacement
+    );
+
+    // Also show the pulled ClockShark notes in the editable completion-notes
+    // field without overwriting any existing office-entered completion notes.
+    const editNeedle =
+      'oCompletionText.value=x.completionNotes||"";oNotes.value=x.notes||"";';
+
+    const editReplacement =
+      'oCompletionText.value=x.completionNotes||' +
+      '(Array.isArray(x.clockSharkNotes)?x.clockSharkNotes.filter(Boolean).join("\\n\\n"):(x.clockSharkNotes||""));' +
+      'oNotes.value=x.notes||"";';
+
+    if (panel.includes(editNeedle)) {
+      panel = panel.replace(
+        editNeedle,
+        editReplacement
+      );
+    }
+
+    writeFile(panelPath, panel);
+  }
+}
+
+
 function disableLegacyServiceChannelRecovery() {
   const runtimePath = new URL(
     "./phase23-3-servicechannel-confirmation-runtime.mjs",
@@ -1086,6 +1142,7 @@ patchClockSharkSourcePriority();
 patchReleaseOnlyMatchingTracking();
 cleanExistingFalseTasks();
 repairVerifiedCurrentOnsite();
+patchClockSharkNotesPanel();
 disableLegacyServiceChannelRecovery();
 connectPhase235Chain();
 
@@ -1095,7 +1152,7 @@ setTimeout(
 ).unref?.();
 
 console.log(
-  "Joshua Phase 23.7.2 ServiceChannel webhook authority installed."
+  "Joshua Phase 23.8 ClockShark notes-on-checkout panel installed."
 );
 
 await import(
