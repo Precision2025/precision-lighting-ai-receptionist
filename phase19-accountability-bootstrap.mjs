@@ -172,4 +172,4 @@ if (fs.existsSync(phase10Path)) {
   }
 }
 
-await import("./servicechannel-webhook-bootstrap.mjs");
+await import("./phase20-auth-bootstrap.mjs");
