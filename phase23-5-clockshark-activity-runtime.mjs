@@ -711,7 +711,7 @@ function phase235TechnicianForDisplay(
   server = server.replace(
     recalculateFilter,
     `  const shifts = Object.values(state.shifts || {}).filter(shift =>
-    !phase235ClockSharkIsNonJobShift(shift) &&
+    !phase235IsNonJobShift(shift) &&
     (
       phase21ClockSharkText(shift.joshuaWorkOrderKey) === match.key ||
       phase22ClockSharkSameJob(shift, job) ||
@@ -743,15 +743,15 @@ function phase235TechnicianForDisplay(
   );
 
   const phase235Activity =
-    phase235ClockSharkActivityInfo(shift);
+    phase235ActivityInfo(shift);
 
   if (phase235Activity.type !== "job") {
-    phase235ClockSharkDetachNonJobShift(
+    phase235DetachNonJobShift(
       shift,
       phase235Activity
     );
 
-    phase235ClockSharkSetTechnicianActivity(
+    phase235SetTechnicianActivity(
       data,
       state,
       shift,
@@ -781,7 +781,7 @@ function phase235TechnicianForDisplay(
     `  const phase235State =
     phase21ClockSharkEnsureData(data);
   if (
-    phase235ClockSharkReconcileClockSharkActivity(
+    phase235ReconcileClockSharkActivity(
       data,
       phase235State
     )
@@ -793,7 +793,7 @@ function phase235TechnicianForDisplay(
     data.technicians
   )
     .map(phase23SanitizeTechnicianForDisplay)
-    .map(phase235ClockSharkTechnicianForDisplay);`
+    .map(phase235TechnicianForDisplay);`
   );
 
   fs.writeFileSync(
