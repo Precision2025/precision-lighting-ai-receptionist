@@ -6,7 +6,7 @@ const serverPath = new URL(
 );
 
 const MARKER =
-  "JOSHUA_PHASE23_5_2_CLOCKSHARK_LATEST_ACTIVITY_V1";
+  "JOSHUA_PHASE23_5_3_CLOCKSHARK_FALSE_BREAK_DUPLICATE_FIX_V1";
 
 let server = fs.readFileSync(
   serverPath,
@@ -23,7 +23,7 @@ if (!server.includes(MARKER)) {
     );
   }
 
-  const helpers = String.raw`/* JOSHUA_PHASE23_5_2_CLOCKSHARK_LATEST_ACTIVITY_V1 */
+  const helpers = String.raw`/* JOSHUA_PHASE23_5_3_CLOCKSHARK_FALSE_BREAK_DUPLICATE_FIX_V1 */
 function phase235Text(value = "") {
   return String(value ?? "").trim();
 }
@@ -51,6 +51,8 @@ function phase235ActivityInfo(shift = {}) {
     shift.activityName,
     shift.costCode,
     shift.costCodeName,
+    shift.clockSharkActivityLabel,
+    shift.clockSharkBreakLabel,
     shift.notes,
     shift.eventType
   ]
@@ -118,16 +120,9 @@ function phase235ActivityInfo(shift = {}) {
     };
   }
 
-  if (shift.isBreak === true) {
-    return {
-      type: "on_break",
-      label:
-        phase235Text(shift.clockSharkBreakLabel) ||
-        "On Break",
-      destination: ""
-    };
-  }
-
+  // Do not classify a shift as a break merely because an older
+  // reconciliation marked it isBreak. A real break must contain an
+  // explicit break/lunch/meal activity label.
   if (shift.isNonJobActivity === true) {
     return {
       type:
@@ -137,6 +132,21 @@ function phase235ActivityInfo(shift = {}) {
         phase235Text(shift.clockSharkActivityLabel) ||
         "Non-job activity",
       destination
+    };
+  }
+
+  const hasJobIdentity = Boolean(
+    phase235Text(shift.jobId) ||
+    phase235Text(shift.jobNumber) ||
+    phase235Text(shift.trackingNumber) ||
+    phase235Text(shift.jobName)
+  );
+
+  if (!hasJobIdentity) {
+    return {
+      type: "non_job",
+      label: "Activity not identified",
+      destination: ""
     };
   }
 
@@ -302,6 +312,89 @@ function phase235DetachNonJobShift(
   shift.trackingNumber = "";
   shift.updatedAt = phase21ClockSharkNow();
   return shift;
+}
+
+function phase235PruneDuplicateTechnicians(
+  data = {}
+) {
+  data.technicians =
+    data.technicians &&
+    typeof data.technicians === "object"
+      ? data.technicians
+      : {};
+
+  const entries = Object.entries(
+    data.technicians
+  );
+  const fullNames = entries
+    .map(([key, technician]) => ({
+      key,
+      name: phase235Text(
+        technician?.name || key
+      )
+    }))
+    .filter(item =>
+      item.name.split(/\s+/).filter(Boolean).length >= 2
+    );
+
+  let removed = 0;
+
+  for (const [key, technician] of entries) {
+    const name = phase235Text(
+      technician?.name || key
+    );
+    const parts = name
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (parts.length !== 1) continue;
+
+    const surname = parts[0].toLowerCase();
+    const matches = fullNames.filter(item => {
+      const fullParts = item.name
+        .split(/\s+/)
+        .filter(Boolean);
+      return (
+        fullParts.at(-1)?.toLowerCase() === surname
+      );
+    });
+
+    if (matches.length !== 1) continue;
+
+    const hasMeaningfulDestination = Boolean(
+      phase235Text(
+        technician?.destinationJob ||
+        technician?.clockSharkDestinationJob ||
+        technician?.clockSharkCurrentJob ||
+        technician?.destinationTrackingNumber ||
+        technician?.currentTrackingNumber
+      )
+    );
+
+    const status = phase235Text(
+      technician?.activityStatus ||
+      technician?.status ||
+      technician?.clockSharkStatus
+    ).toLowerCase();
+
+    // The false records created by the old fallback are surname-only,
+    // have no job/destination, and appear as break/non-job placeholders.
+    if (
+      !hasMeaningfulDestination &&
+      [
+        "",
+        "available",
+        "on_break",
+        "non_job",
+        "clocked_out"
+      ].includes(status)
+    ) {
+      delete data.technicians[key];
+      removed += 1;
+    }
+  }
+
+  return removed;
 }
 
 function phase235ShiftMatchesWorkOrder(
@@ -630,9 +723,19 @@ function phase235ReconcileClockSharkActivity(
     }
   }
 
+  const duplicateTechniciansRemoved =
+    phase235PruneDuplicateTechnicians(data);
+  if (duplicateTechniciansRemoved > 0) {
+    changed = true;
+  }
+
   if (state.sync && typeof state.sync === "object") {
     state.sync.phase235ActivityClassification =
       true;
+    state.sync.phase235DuplicateTechniciansRemoved =
+      Number(
+        state.sync.phase235DuplicateTechniciansRemoved || 0
+      ) + duplicateTechniciansRemoved;
     state.sync.phase235LastReconciledAt =
       phase21ClockSharkNow();
   }
@@ -727,6 +830,21 @@ function phase235TechnicianForDisplay(
     server = server.replace(
       sameJobFallback,
       "(!jobId && !jobNumber && jobName.length >= 6 &&\n      phase22ClockSharkNormalize(shift.jobName) === jobName)"
+    );
+  }
+
+  const implicitBreakFallback = `  return Boolean(
+    (shift.employeeId || shift.employeeName) &&
+    !shift.jobId &&
+    !shift.jobNumber &&
+    !shift.trackingNumber &&
+    !shift.jobName
+  );`;
+
+  if (server.includes(implicitBreakFallback)) {
+    server = server.replace(
+      implicitBreakFallback,
+      `  return false;`
     );
   }
 
@@ -836,7 +954,7 @@ function phase235TechnicianForDisplay(
   );
 
   console.log(
-    "Joshua Phase 23.5.2 latest ClockShark activity classification installed."
+    "Joshua Phase 23.5.3 false-break and duplicate-technician cleanup installed."
   );
 }
 
