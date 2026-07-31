@@ -319,6 +319,278 @@ function phase22ClockSharkSameJob(shift = {}, job = {}) {
   );
 }
 
+
+function phase22ClockSharkEmployeeKey(shift = {}) {
+  return phase22ClockSharkNormalize(
+    shift.employeeId ||
+    shift.employeeEmail ||
+    shift.employeeName
+  );
+}
+
+function phase22ClockSharkShiftTime(shift = {}) {
+  const value =
+    shift.clockInAt ||
+    shift.updatedAt ||
+    shift.createdAt ||
+    "";
+
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function phase22ClockSharkIsBreakShift(shift = {}) {
+  if (shift.status !== "open") return false;
+
+  const text = [
+    shift.task,
+    shift.jobName,
+    shift.notes,
+    shift.eventType
+  ]
+    .map(value => phase21ClockSharkText(value))
+    .join(" ")
+    .toLowerCase();
+
+  if (/\b(break|lunch|meal)\b/.test(text)) {
+    return true;
+  }
+
+  return Boolean(
+    (shift.employeeId || shift.employeeName) &&
+    !shift.jobId &&
+    !shift.jobNumber &&
+    !shift.trackingNumber &&
+    !shift.jobName
+  );
+}
+
+function phase22ClockSharkSetTechnicianActivity(
+  data,
+  state,
+  shift,
+  status,
+  currentJob = "",
+  trackingNumber = ""
+) {
+  const employeeKey =
+    phase22ClockSharkEmployeeKey(shift);
+  const employeeName =
+    phase21ClockSharkText(shift.employeeName);
+  const now = phase21ClockSharkNow();
+
+  for (const [key, employee] of Object.entries(
+    state.employees || {}
+  )) {
+    const candidateKey = phase22ClockSharkNormalize(
+      employee?.id ||
+      employee?.email ||
+      employee?.name ||
+      key
+    );
+
+    if (!employeeKey || candidateKey !== employeeKey) {
+      continue;
+    }
+
+    state.employees[key] = {
+      ...employee,
+      clockSharkStatus: status,
+      clockSharkClockedIn:
+        status !== "clocked_out",
+      clockSharkCurrentJob: currentJob,
+      clockSharkCurrentTrackingNumber:
+        trackingNumber,
+      updatedAt: now
+    };
+  }
+
+  if (employeeName) {
+    data.technicians =
+      data.technicians &&
+      typeof data.technicians === "object"
+        ? data.technicians
+        : {};
+
+    data.technicians[employeeName] = {
+      ...(data.technicians[employeeName] || {
+        name: employeeName,
+        createdAt: now,
+        skills: []
+      }),
+      name: employeeName,
+      status:
+        status === "on_break"
+          ? "on_break"
+          : status === "clocked_in"
+            ? "onsite"
+            : "available",
+      clockSharkStatus: status,
+      clockSharkClockedIn:
+        status !== "clocked_out",
+      clockSharkCurrentJob: currentJob,
+      clockSharkCurrentTrackingNumber:
+        trackingNumber,
+      currentTrackingNumber:
+        trackingNumber,
+      updatedAt: now
+    };
+  }
+}
+
+function phase22ClockSharkCloseOtherOpenShifts(
+  data,
+  state,
+  currentShift
+) {
+  if (
+    currentShift?.status !== "open" ||
+    !phase22ClockSharkEmployeeKey(currentShift)
+  ) {
+    return [];
+  }
+
+  const currentEmployeeKey =
+    phase22ClockSharkEmployeeKey(currentShift);
+  const currentTime =
+    phase22ClockSharkShiftTime(currentShift);
+  const currentUpdatedTime = new Date(
+    currentShift.updatedAt ||
+    currentShift.rawReceivedAt ||
+    currentShift.createdAt ||
+    0
+  ).getTime();
+  const cutoff =
+    phase21ClockSharkDate(currentShift.clockInAt) ||
+    phase21ClockSharkNow();
+  const closed = [];
+
+  for (const [key, previous] of Object.entries(
+    state.shifts || {}
+  )) {
+    if (
+      previous === currentShift ||
+      previous.status !== "open" ||
+      phase22ClockSharkEmployeeKey(previous) !==
+        currentEmployeeKey
+    ) {
+      continue;
+    }
+
+    const previousTime =
+      phase22ClockSharkShiftTime(previous);
+    const previousUpdatedTime = new Date(
+      previous.updatedAt ||
+      previous.rawReceivedAt ||
+      previous.createdAt ||
+      0
+    ).getTime();
+
+    const previousIsOlder =
+      previousTime < currentTime ||
+      (
+        previousTime === currentTime &&
+        previousUpdatedTime < currentUpdatedTime
+      ) ||
+      (
+        previousTime === currentTime &&
+        previousUpdatedTime === currentUpdatedTime &&
+        String(key) < String(currentShift.id || "")
+      );
+
+    if (!previousIsOlder) continue;
+
+    const recomputed = phase21ClockSharkHours(
+      {
+        breakMinutes:
+          phase21ClockSharkNumber(
+            previous.breakMinutes,
+            0
+          ),
+        overtimeHours: 0
+      },
+      previous.clockInAt,
+      cutoff
+    );
+
+    state.shifts[key] = {
+      ...previous,
+      ...recomputed,
+      status: "closed",
+      clockOutAt: cutoff,
+      autoClosedByJoshua: true,
+      autoClosedReason:
+        phase22ClockSharkIsBreakShift(currentShift)
+          ? "Technician started a ClockShark break."
+          : "Technician clocked into another ClockShark job.",
+      supersededByShiftId:
+        currentShift.id || "",
+      updatedAt: phase21ClockSharkNow()
+    };
+
+    const closedShift = state.shifts[key];
+    const previousJob = {
+      id: phase21ClockSharkText(
+        closedShift.jobId
+      ),
+      number: phase21ClockSharkText(
+        closedShift.jobNumber
+      ),
+      trackingNumber: phase21ClockSharkText(
+        closedShift.trackingNumber
+      ),
+      name: phase21ClockSharkText(
+        closedShift.jobName
+      ),
+      customer: phase21ClockSharkText(
+        closedShift.customer
+      ),
+      description: phase21ClockSharkText(
+        closedShift.notes
+      )
+    };
+
+    let previousMatch = null;
+    if (
+      closedShift.joshuaWorkOrderKey &&
+      data.workOrders?.[
+        closedShift.joshuaWorkOrderKey
+      ]
+    ) {
+      previousMatch = {
+        key: closedShift.joshuaWorkOrderKey,
+        workOrder:
+          data.workOrders[
+            closedShift.joshuaWorkOrderKey
+          ],
+        serviceChannel:
+          data.workOrders[
+            closedShift.joshuaWorkOrderKey
+          ]?.sourceSystem === "servicechannel"
+      };
+    } else {
+      previousMatch =
+        phase22ClockSharkFindWorkOrder(
+          data,
+          previousJob
+        );
+    }
+
+    if (previousMatch) {
+      phase22ClockSharkRecalculateMatchedWorkOrder(
+        data,
+        state,
+        previousMatch,
+        previousJob
+      );
+    }
+
+    closed.push(closedShift);
+  }
+
+  return closed;
+}
+
 function phase22ClockSharkCloseUnmatchedTasks(
   data,
   shift,
@@ -530,6 +802,66 @@ function phase22ClockSharkMatchAndRecalculateWorkOrder(
     description: phase21ClockSharkText(shift.notes)
   };
 
+  phase22ClockSharkCloseOtherOpenShifts(
+    data,
+    state,
+    shift
+  );
+
+  if (phase22ClockSharkIsBreakShift(shift)) {
+    shift.isBreak = true;
+    shift.clockSharkBreakLabel =
+      phase21ClockSharkText(
+        shift.task ||
+        shift.jobName ||
+        shift.notes ||
+        "Break"
+      );
+    shift.clockSharkSourceJobId =
+      phase21ClockSharkText(shift.jobId);
+    shift.clockSharkSourceJobNumber =
+      phase21ClockSharkText(shift.jobNumber);
+    shift.clockSharkSourceJobName =
+      phase21ClockSharkText(shift.jobName);
+    shift.jobId = "";
+    shift.jobNumber = "";
+    shift.jobName = "";
+    shift.trackingNumber = "";
+    shift.joshuaWorkOrderKey = "";
+    shift.joshuaTrackingNumber = "";
+
+    phase22ClockSharkSetTechnicianActivity(
+      data,
+      state,
+      shift,
+      "on_break",
+      "On Break",
+      ""
+    );
+
+    return null;
+  }
+
+  phase22ClockSharkSetTechnicianActivity(
+    data,
+    state,
+    shift,
+    shift.status === "open"
+      ? "clocked_in"
+      : "clocked_out",
+    shift.status === "open"
+      ? phase21ClockSharkText(
+          shift.jobName ||
+          shift.jobNumber
+        )
+      : "",
+    shift.status === "open"
+      ? phase21ClockSharkText(
+          shift.trackingNumber
+        )
+      : ""
+  );
+
   const originalTracking = shift.trackingNumber;
   const match = phase22ClockSharkEnsureWorkOrder(
     data,
@@ -683,7 +1015,15 @@ function phase22ClockSharkReconcileInternalWorkOrders(
     }
   }
 
-  for (const shift of Object.values(state.shifts || {})) {
+  const orderedShifts = Object.values(
+    state.shifts || {}
+  ).sort(
+    (a, b) =>
+      phase22ClockSharkShiftTime(a) -
+      phase22ClockSharkShiftTime(b)
+  );
+
+  for (const shift of orderedShifts) {
     if (
       phase22ClockSharkMatchAndRecalculateWorkOrder(
         data,
@@ -695,6 +1035,7 @@ function phase22ClockSharkReconcileInternalWorkOrders(
     }
   }
 
+  state.sync.phase22SingleActiveJobRule = true;
   state.sync.phase22InternalWorkOrders = true;
   state.sync.phase22LastReconciledAt = phase21ClockSharkNow();
   state.sync.phase22CreatedWorkOrders =
@@ -773,7 +1114,7 @@ function phase22ClockSharkReconcileInternalWorkOrders(
   );
 
   console.log(
-    "Joshua Phase 22 ClockShark internal work orders and automatic reconciliation installed."
+    "Joshua Phase 22.1 ClockShark one-technician-one-active-job correction installed."
   );
 }
 
