@@ -3,7 +3,7 @@ import path from "node:path";
 
 const ROOT = new URL("./", import.meta.url);
 const SERVER_MARKER =
-  "JOSHUA_PHASE23_8_CLOCKSHARK_NOTES_ON_CHECKOUT_V1";
+  "JOSHUA_PHASE23_8_1_EXACT_MODAL_TECH_NOTES_V1";
 const SERVICECHANNEL_MARKER =
   "JOSHUA_PHASE23_7_1_QUIET_CHECKOUT_WORKFLOW_V1";
 const EXCEPTION_MARKER =
@@ -984,6 +984,144 @@ function cleanExistingFalseTasks() {
   }
 }
 
+function patchExactWorkOrderTechnicianNotes() {
+  const marker =
+    "JOSHUA_PHASE23_8_1_HOME_WORK_ORDER_TECH_NOTES_V1";
+
+  const panelPaths = [
+    new URL("./public/control-panel.html", ROOT),
+    new URL("./control-panel.html", ROOT)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let panel = readFile(panelPath);
+    if (panel.includes(marker)) continue;
+
+    const css = `
+/* ${marker} */
+.job-tech-notes-card{
+  margin-top:12px;
+  padding:14px;
+  border:1px solid #43617f;
+  border-radius:12px;
+  background:#0c1722;
+}
+.job-tech-notes-card h3{
+  margin:0 0 8px;
+  color:#f7cb63;
+  letter-spacing:.04em;
+}
+.job-tech-notes-content{
+  white-space:pre-wrap;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.job-tech-notes-empty{
+  color:#9fb0c7;
+  font-style:italic;
+}
+`;
+
+    panel = panel.replace(
+      "</style>",
+      css + "\n</style>"
+    );
+
+    const detailsMarkup =
+      '<div id="homeWorkOrderDetails" class="job-detail-grid"></div>';
+
+    const notesMarkup =
+      detailsMarkup +
+      `
+ <div id="homeWorkOrderTechNotes" class="job-tech-notes-card">
+  <h3>TECHNICIAN NOTES</h3>
+  <div id="homeWorkOrderTechNotesContent" class="job-tech-notes-content job-tech-notes-empty">No ClockShark checkout notes received.</div>
+ </div>`;
+
+    if (!panel.includes(detailsMarkup)) {
+      throw new Error(
+        "Could not locate the exact dashboard Work Order details area."
+      );
+    }
+
+    panel = panel.replace(
+      detailsMarkup,
+      notesMarkup
+    );
+
+    const openFunction =
+      " function openWorkOrder(tracking){";
+
+    const helper = ` function clockSharkNotesText(order){
+  const raw=order&&order.clockSharkNotes;
+  if(Array.isArray(raw))return raw.map(safe).map(v=>v.trim()).filter(Boolean).join("\\n\\n");
+  return safe(raw).trim();
+ }
+
+ function renderHomeWorkOrderTechNotes(order){
+  const box=el("homeWorkOrderTechNotesContent");
+  if(!box)return;
+  const notes=clockSharkNotesText(order);
+  box.textContent=notes||"No ClockShark checkout notes received.";
+  box.classList.toggle("job-tech-notes-empty",!notes);
+ }
+
+`;
+
+    if (!panel.includes(openFunction)) {
+      throw new Error(
+        "Could not locate the exact dashboard Work Order opener."
+      );
+    }
+
+    panel = panel.replace(
+      openFunction,
+      helper + openFunction
+    );
+
+    const detailsEnd =
+      '   detail("Check-out",selectedWorkOrder.checkOutAt?new Date(selectedWorkOrder.checkOutAt).toLocaleString():"");';
+
+    if (!panel.includes(detailsEnd)) {
+      throw new Error(
+        "Could not locate the exact Work Order Check-out detail."
+      );
+    }
+
+    panel = panel.replace(
+      detailsEnd,
+      detailsEnd +
+      '\n  renderHomeWorkOrderTechNotes(selectedWorkOrder);'
+    );
+
+    const refreshNeedle =
+      `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
+   return result;`;
+
+    const refreshReplacement =
+      `   if(el("homeWorkOrderSearchInput")&&el("homeWorkOrderSearchInput").value.trim())renderSearch();
+   const dialog=el("homeWorkOrderDialog");
+   if(
+    dialog&&dialog.open&&selectedWorkOrder
+   ){
+    openWorkOrder(selectedWorkOrder.trackingNumber);
+   }
+   return result;`;
+
+    if (panel.includes(refreshNeedle)) {
+      panel = panel.replace(
+        refreshNeedle,
+        refreshReplacement
+      );
+    }
+
+    writeFile(panelPath, panel);
+  }
+}
+
+
 function patchClockSharkNotesPanel() {
   const marker =
     "JOSHUA_PHASE23_8_CLOCKSHARK_NOTES_PANEL_V1";
@@ -1143,6 +1281,7 @@ patchReleaseOnlyMatchingTracking();
 cleanExistingFalseTasks();
 repairVerifiedCurrentOnsite();
 patchClockSharkNotesPanel();
+patchExactWorkOrderTechnicianNotes();
 disableLegacyServiceChannelRecovery();
 connectPhase235Chain();
 
@@ -1152,9 +1291,12 @@ setTimeout(
 ).unref?.();
 
 console.log(
-  "Joshua Phase 23.8 ClockShark notes-on-checkout panel installed."
+  "Joshua Phase 23.8.1 technician notes added to the exact dashboard Work Order window."
 );
 
 await import(
   "./phase23-4-servicechannel-webhook-readable-preload.mjs"
 );
+
+patchExactWorkOrderTechnicianNotes();
+
