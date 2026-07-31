@@ -1,49 +1,1016 @@
 import fs from "node:fs";
+import path from "node:path";
 
-const phase233RuntimePath = new URL(
-  "./phase23-3-servicechannel-confirmation-runtime.mjs",
-  import.meta.url
-);
+const ROOT = new URL("./", import.meta.url);
+const SERVER_MARKER =
+  "JOSHUA_PHASE23_7_SOURCE_PRIORITY_AND_QUIET_TASKS_V1";
+const SERVICECHANNEL_MARKER =
+  "JOSHUA_PHASE23_7_QUIET_CHECKOUT_WORKFLOW_V1";
+const EXCEPTION_MARKER =
+  "JOSHUA_PHASE23_7_NO_FALSE_CHECKOUT_REVIEW_V1";
+const SOURCE_PRIORITY_MARKER =
+  "JOSHUA_PHASE23_7_SERVICECHANNEL_NEST_SOURCE_PRIORITY_V1";
 
-const CHAIN_MARKER =
-  "JOSHUA_PHASE23_5_CLOCKSHARK_ACTIVITY_CHAIN_V1";
-
-if (!fs.existsSync(phase233RuntimePath)) {
-  throw new Error(
-    "Could not locate the Phase 23.3 runtime for Phase 23.5."
-  );
+function readFile(url) {
+  return fs.readFileSync(url, "utf8");
 }
 
-let phase233Runtime = fs.readFileSync(
-  phase233RuntimePath,
-  "utf8"
-);
+function writeFile(url, content) {
+  fs.writeFileSync(url, content);
+}
 
-if (!phase233Runtime.includes(CHAIN_MARKER)) {
-  const finalImport =
-    'await import("./servicechannel-webhook-bootstrap.mjs");';
+function replaceAllLiteral(content, search, replacement) {
+  return content.split(search).join(replacement);
+}
 
-  if (!phase233Runtime.includes(finalImport)) {
-    throw new Error(
-      "Could not locate the Phase 23.3 final startup import for Phase 23.5."
+function patchServer() {
+  const serverPath = new URL("./server.js", ROOT);
+  if (!fs.existsSync(serverPath)) return;
+
+  let server = readFile(serverPath);
+  if (server.includes(SERVER_MARKER)) return;
+
+  const oldAddTask = `function addControlTask(task) {
+  const data = readControlData();
+  const item = {
+    id: \`\${Date.now()}-\${Math.random().toString(36).slice(2, 8)}\`,
+    createdAt: new Date().toISOString(),
+    status: "open",
+    priority: "normal",
+    ...task
+  };
+  data.tasks.unshift(item);
+  data.tasks = data.tasks.slice(0, 500);
+  writeControlData(data);
+  return item;
+}`;
+
+  const newAddTask = `/* ${SERVER_MARKER} */
+function addControlTask(task) {
+  const data = readControlData();
+  data.tasks = Array.isArray(data.tasks)
+    ? data.tasks
+    : [];
+
+  const now = new Date().toISOString();
+  const tracking = String(
+    task?.trackingNumber || ""
+  ).trim();
+  const workflow = String(
+    task?.workflowType || ""
+  )
+    .trim()
+    .toLowerCase();
+  const titleKey = String(
+    task?.title || ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ");
+
+  const existingIndex = data.tasks.findIndex(item => {
+    if (item.status === "closed") return false;
+
+    const itemTracking = String(
+      item.trackingNumber || ""
+    ).trim();
+    const itemWorkflow = String(
+      item.workflowType || ""
+    )
+      .trim()
+      .toLowerCase();
+    const itemTitle = String(
+      item.title || ""
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ");
+
+    if (tracking && itemTracking !== tracking) {
+      return false;
+    }
+
+    if (workflow && itemWorkflow) {
+      return workflow === itemWorkflow;
+    }
+
+    return Boolean(
+      titleKey &&
+      itemTitle === titleKey
+    );
+  });
+
+  if (existingIndex >= 0) {
+    data.tasks[existingIndex] = {
+      ...data.tasks[existingIndex],
+      ...task,
+      status: "open",
+      updatedAt: now
+    };
+    writeControlData(data);
+    return data.tasks[existingIndex];
+  }
+
+  const item = {
+    id: \`\${Date.now()}-\${Math.random().toString(36).slice(2, 8)}\`,
+    createdAt: now,
+    updatedAt: now,
+    status: "open",
+    priority: "normal",
+    ...task
+  };
+
+  data.tasks.unshift(item);
+  data.tasks = data.tasks.slice(0, 500);
+  writeControlData(data);
+  return item;
+}`;
+
+  if (server.includes(oldAddTask)) {
+    server = server.replace(
+      oldAddTask,
+      newAddTask
+    );
+  } else if (!server.includes(SERVER_MARKER)) {
+    server =
+      `/* ${SERVER_MARKER} */\n` +
+      server;
+  }
+
+  // ServiceChannel webhook is now the source of truth. Do not record
+  // routine IVR calls or create transcription-based false exceptions.
+  server = server.replace(
+    /\n\s*record:\s*true,\n\s*recordingChannels:\s*"dual",\n\s*recordingStatusCallback:[\s\S]*?recordingStatusCallbackEvent:\s*\["completed"\],/g,
+    ""
+  );
+
+  server = replaceAllLiteral(
+    server,
+    " I will text you when the call ends.",
+    " The panel will update from the ServiceChannel webhook."
+  );
+
+  server = server.replace(
+    /\n\s*await sendJoshuaTeamUpdate\(`Joshua: O'Reilly check-in started[\s\S]*?\);/g,
+    ""
+  );
+  server = server.replace(
+    /\n\s*await sendJoshuaTeamUpdate\(`Joshua: O'Reilly check-out started[\s\S]*?\);/g,
+    ""
+  );
+
+  // A completed Twilio call is routine and is not proof of success.
+  // Text only when the call itself actually failed.
+  server = replaceAllLiteral(
+    server,
+    "  if (twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {",
+    "  if (callStatus !== \"completed\" && twilioClient && requestedBy && process.env.TWILIO_SMS_FROM) {"
+  );
+
+  // Do not send a second routine-success text after recording analysis.
+  server = server.replace(
+    /\n\s*if \(twilioClient && requestedByPhone && process\.env\.TWILIO_SMS_FROM\) await twilioClient\.messages\.create\(\{ from: process\.env\.TWILIO_SMS_FROM, to: requestedByPhone, body: action === "checkout"[\s\S]*?\}\);/g,
+    ""
+  );
+
+  // Ambiguous transcription is not an exception. Wait for the official
+  // ServiceChannel webhook. Only an explicit IVR failure creates a task.
+  const oldRecordingBranch = `    } else {
+      updateControlWorkOrder(tracking, { state: "attention", lastError: result.failure ? "ServiceChannel IVR announced an error." : "Joshua could not verify the IVR success phrase.", ivrConfirmationTranscript: transcript, callSid });
+      addControlTask({ title: \`Verify ServiceChannel \${action === "checkin" ? "check-in" : "check-out"}\`, trackingNumber: tracking, assignedTo: "Ariana", priority: "urgent", notes: \`Joshua could not confirm success from the IVR recording. Transcript: \${transcript.slice(0, 500)}\` });
+      addControlEvent({ type: \`\${action}_confirmation_not_verified\`, level: "error", trackingNumber: tracking, requestedBy, callSid, transcript });
+    }`;
+
+  const newRecordingBranch = `    } else if (result.failure) {
+      updateControlWorkOrder(tracking, {
+        state: "attention",
+        lastError: "ServiceChannel IVR announced an error.",
+        ivrConfirmationTranscript: transcript,
+        callSid
+      });
+      addControlTask({
+        title: \`Verify ServiceChannel \${action === "checkin" ? "check-in" : "check-out"} failure\`,
+        trackingNumber: tracking,
+        assignedTo: "Ariana",
+        priority: "urgent",
+        workflowType: \`\${action}_failure\`,
+        notes: \`ServiceChannel announced an actual IVR error. Transcript: \${transcript.slice(0, 500)}\`
+      });
+      addControlEvent({
+        type: \`\${action}_failure_confirmed\`,
+        level: "error",
+        trackingNumber: tracking,
+        requestedBy,
+        callSid,
+        transcript
+      });
+    } else {
+      updateControlWorkOrder(tracking, {
+        state: "awaiting_servicechannel_webhook",
+        lastError: "",
+        ivrConfirmationTranscript: transcript,
+        callSid
+      });
+      addControlEvent({
+        type: \`\${action}_recording_inconclusive\`,
+        level: "info",
+        trackingNumber: tracking,
+        requestedBy,
+        callSid,
+        note: "No task or text created; waiting for ServiceChannel webhook."
+      });
+    }`;
+
+  if (server.includes(oldRecordingBranch)) {
+    server = server.replace(
+      oldRecordingBranch,
+      newRecordingBranch
     );
   }
 
-  phase233Runtime = phase233Runtime.replace(
-    finalImport,
-    `// ${CHAIN_MARKER}
-await import("./phase23-5-clockshark-activity-runtime.mjs");`
-  );
-
-  fs.writeFileSync(
-    phase233RuntimePath,
-    phase233Runtime
-  );
-
-  console.log(
-    "Joshua Phase 23.5 ClockShark activity display connected."
-  );
+  writeFile(serverPath, server);
 }
+
+function patchServiceChannelWebhook() {
+  const filePath = new URL(
+    "./servicechannel-webhook-bootstrap.mjs",
+    ROOT
+  );
+  if (!fs.existsSync(filePath)) return;
+
+  let source = readFile(filePath);
+  if (source.includes(SERVICECHANNEL_MARKER)) return;
+
+  source = source.replace(
+    '  "checkout_review",\n',
+    ""
+  );
+
+  source = replaceAllLiteral(
+    source,
+    "  const statusText = [primary, extended, serviceChannelNotesText(object)]",
+    `  /* ${SERVICECHANNEL_MARKER} */
+  const statusText = [
+    primary,
+    extended,
+    serviceChannelNotesText(object),
+    existing.statusText
+  ]`
+  );
+
+  const oldCheckoutDecision = `  } else if (checkOut) {
+    if (documentationMissing) {
+      state = "documentation_missing";
+      workflowType = "documentation";
+      title = "Obtain required completion documentation";
+      assignedTo =
+        serviceChannelTechnicianName(object) ||
+        String(existing.technician || "Ariana");
+      priority = "urgent";
+      actionLabel = "Mark Documentation Complete";
+      reason =
+        "The technician checked out without complete photos or completion notes.";
+    } else {
+      state = "checkout_review";
+      workflowType = "checkout_review";
+      title = "Review ServiceChannel checkout outcome";
+      assignedTo = "Ariana";
+      priority = "urgent";
+      actionLabel = "Complete Checkout Review";
+      reason =
+        "ServiceChannel confirmed checkout, but did not provide a final billable workflow status.";
+    }
+    manageTasks = true;
+  }`;
+
+  const newCheckoutDecision = `  } else if (checkOut) {
+    if (documentationMissing) {
+      state = "documentation_missing";
+      workflowType = "documentation";
+      title = "Obtain required completion documentation";
+      assignedTo =
+        serviceChannelTechnicianName(object) ||
+        String(existing.technician || "Ariana");
+      priority = "urgent";
+      actionLabel = "Mark Documentation Complete";
+      reason =
+        "The technician checked out without complete photos or completion notes.";
+      manageTasks = true;
+    } else if (
+      [
+        "pending_proposal",
+        "awaiting_authorization",
+        "parts_needed",
+        "need_to_schedule",
+        "pending_confirmation",
+        "ready_to_bill",
+        "documentation_missing"
+      ].includes(
+        String(
+          existing.joshuaStatus ||
+          existing.state ||
+          ""
+        )
+      )
+    ) {
+      state = String(
+        existing.joshuaStatus ||
+        existing.state
+      );
+      reason =
+        "ServiceChannel confirmed checkout; the existing actionable workflow remains in place.";
+      manageTasks = false;
+    } else {
+      state = "checked_out";
+      workflowType = "";
+      title = "";
+      assignedTo = "";
+      priority = "normal";
+      actionLabel = "";
+      reason =
+        "ServiceChannel confirmed checkout. Waiting quietly for the final ServiceChannel status.";
+      manageTasks = true;
+    }
+  }`;
+
+  if (source.includes(oldCheckoutDecision)) {
+    source = source.replace(
+      oldCheckoutDecision,
+      newCheckoutDecision
+    );
+  }
+
+  const oldReconcileFallback = `      if (!statusState && checkoutContradictsOnsite) {
+        decision.state = "checkout_review";
+        decision.workflowType = "checkout_review";
+        decision.title = "Review ServiceChannel checkout outcome";
+        decision.assignedTo = "Ariana";
+        decision.priority = "urgent";
+        decision.actionLabel = "Complete Checkout Review";
+        decision.reason =
+          "A checkout date exists, but no final ServiceChannel workflow status was received.";
+        decision.billingEligible = false;
+        decision.invoiceAllowed = false;
+        decision.manageTasks = true;
+      }`;
+
+  const newReconcileFallback = `      if (!statusState && checkoutContradictsOnsite) {
+        decision.state = "checked_out";
+        decision.workflowType = "";
+        decision.title = "";
+        decision.assignedTo = "";
+        decision.priority = "normal";
+        decision.actionLabel = "";
+        decision.reason =
+          "Checkout exists; waiting quietly for the final ServiceChannel status.";
+        decision.billingEligible = false;
+        decision.invoiceAllowed = false;
+        decision.manageTasks = true;
+      }`;
+
+  if (source.includes(oldReconcileFallback)) {
+    source = source.replace(
+      oldReconcileFallback,
+      newReconcileFallback
+    );
+  }
+
+  writeFile(filePath, source);
+}
+
+function patchExceptionSync() {
+  const filePath = new URL(
+    "./exception-sync-runtime.mjs",
+    ROOT
+  );
+  if (!fs.existsSync(filePath)) return;
+
+  let source = readFile(filePath);
+  if (source.includes(EXCEPTION_MARKER)) return;
+
+  source =
+    `/* ${EXCEPTION_MARKER} */\n` +
+    source;
+
+  source = replaceAllLiteral(
+    source,
+    '        derivedState || "checkout_review";',
+    '        derivedState || "checked_out";'
+  );
+
+  const oldRoute = `  } else if (state === "checkout_review") {
+    ensureTask(data, {
+      title: "Review ServiceChannel checkout outcome",
+      trackingNumber: tracking,
+      assignedTo: "Ariana",
+      priority: "urgent",
+      workflowType: "checkout_review",
+      actionLabel: "Complete Checkout Review",
+      notes:
+        "A checkout date exists without a final workflow status."
+    });
+    workOrder.billingEligible = false;
+    workOrder.invoiceAllowed = false;
+  }`;
+
+  const newRoute = `  } else if (state === "checkout_review") {
+    workOrder.state = "checked_out";
+    workOrder.joshuaStatus = "checked_out";
+    workOrder.workflowReason =
+      "Checkout recorded; waiting quietly for the final ServiceChannel status.";
+    workOrder.billingEligible = false;
+    workOrder.invoiceAllowed = false;
+  }`;
+
+  if (source.includes(oldRoute)) {
+    source = source.replace(
+      oldRoute,
+      newRoute
+    );
+  }
+
+  writeFile(filePath, source);
+}
+
+
+function patchClockSharkSourcePriority() {
+  const runtimePath = new URL(
+    "./phase23-5-clockshark-activity-runtime.mjs",
+    ROOT
+  );
+  if (!fs.existsSync(runtimePath)) return;
+
+  let runtime = readFile(runtimePath);
+  if (runtime.includes(SOURCE_PRIORITY_MARKER)) return;
+
+  const oldClockSharkSource = `    const isClockShark = Boolean(
+      original.sourceSystem === "clockshark" ||
+      original.isInternalWorkOrder === true
+    );`;
+
+  const newClockSharkSource = `    /* ${SOURCE_PRIORITY_MARKER} */
+    const sourceText = [
+      original.sourceSystem,
+      original.source,
+      original.integrationSource
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    const isServiceChannelSource = Boolean(
+      original.serviceChannelSourceOfTruth === true ||
+      original.isServiceChannel === true ||
+      original.sourceSystem === "servicechannel" ||
+      sourceText.includes("servicechannel")
+    );
+
+    const isNestSource = Boolean(
+      original.nestSourceOfTruth === true ||
+      original.isNest === true ||
+      original.sourceSystem === "nest" ||
+      /\\bnest\\b/.test(sourceText)
+    );
+
+    const isClockShark = Boolean(
+      !isServiceChannelSource &&
+      !isNestSource &&
+      (
+        original.sourceSystem === "clockshark" ||
+        original.isInternalWorkOrder === true
+      )
+    );`;
+
+  if (runtime.includes(oldClockSharkSource)) {
+    runtime = runtime.replace(
+      oldClockSharkSource,
+      newClockSharkSource
+    );
+  }
+
+  const existingTechnicianAnchor = `  const existing =
+    data.technicians[employeeName] || {
+      name: employeeName,
+      createdAt: now,
+      skills: []
+    };
+
+  data.technicians[employeeName] = {`;
+
+  const protectedTechnicianBlock = `  const existing =
+    data.technicians[employeeName] || {
+      name: employeeName,
+      createdAt: now,
+      skills: []
+    };
+
+  const protectedTracking = phase235Text(
+    existing.currentTrackingNumber
+  );
+  const protectedWorkOrder =
+    protectedTracking &&
+    data.workOrders &&
+    data.workOrders[protectedTracking];
+
+  const protectedSourceText = [
+    protectedWorkOrder?.sourceSystem,
+    protectedWorkOrder?.source,
+    protectedWorkOrder?.integrationSource
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const protectedByPrimarySource = Boolean(
+    protectedWorkOrder &&
+    phase235Text(
+      protectedWorkOrder.joshuaStatus ||
+      protectedWorkOrder.state
+    ).toLowerCase() === "onsite" &&
+    (
+      protectedWorkOrder.serviceChannelSourceOfTruth === true ||
+      protectedWorkOrder.isServiceChannel === true ||
+      protectedWorkOrder.nestSourceOfTruth === true ||
+      protectedWorkOrder.isNest === true ||
+      protectedWorkOrder.sourceSystem === "servicechannel" ||
+      protectedWorkOrder.sourceSystem === "nest" ||
+      protectedSourceText.includes("servicechannel") ||
+      /\\bnest\\b/.test(protectedSourceText)
+    )
+  );
+
+  if (protectedByPrimarySource) {
+    return;
+  }
+
+  data.technicians[employeeName] = {`;
+
+  if (runtime.includes(existingTechnicianAnchor)) {
+    runtime = runtime.replace(
+      existingTechnicianAnchor,
+      protectedTechnicianBlock
+    );
+  }
+
+  if (!runtime.includes(SOURCE_PRIORITY_MARKER)) {
+    runtime =
+      `/* ${SOURCE_PRIORITY_MARKER} */\n` +
+      runtime;
+  }
+
+  writeFile(runtimePath, runtime);
+}
+
+function patchReleaseOnlyMatchingTracking() {
+  const files = [
+    new URL("./servicechannel-webhook-bootstrap.mjs", ROOT),
+    new URL("./exception-sync-runtime.mjs", ROOT)
+  ];
+
+  for (const filePath of files) {
+    if (!fs.existsSync(filePath)) continue;
+
+    let source = readFile(filePath);
+
+    const broadRelease = `    if (
+      assignedTracking === String(tracking) ||
+      (preferred && technician.status === "onsite")
+    ) {`;
+
+    const broadReleaseNamed = `    if (
+      assignedTracking === String(tracking) ||
+      (preferredMatch && technician.status === "onsite")
+    ) {`;
+
+    const safeRelease = `    if (
+      assignedTracking === String(tracking)
+    ) {`;
+
+    source = replaceAllLiteral(
+      source,
+      broadRelease,
+      safeRelease
+    );
+    source = replaceAllLiteral(
+      source,
+      broadReleaseNamed,
+      safeRelease
+    );
+
+    writeFile(filePath, source);
+  }
+}
+
+function repairVerifiedCurrentOnsite() {
+  const dataFile =
+    process.env.CONTROL_DATA_FILE ||
+    path.join("/tmp", "joshua-control-data.json");
+
+  if (!fs.existsSync(dataFile)) return;
+
+  try {
+    const data = JSON.parse(
+      fs.readFileSync(dataFile, "utf8")
+    );
+
+    data.workOrders =
+      data.workOrders &&
+      typeof data.workOrders === "object"
+        ? data.workOrders
+        : {};
+    data.technicians =
+      data.technicians &&
+      typeof data.technicians === "object"
+        ? data.technicians
+        : {};
+
+    const now = new Date().toISOString();
+    const tracking = "343437277";
+    const existing = data.workOrders[tracking] || {};
+
+    data.workOrders[tracking] = {
+      ...existing,
+      trackingNumber: tracking,
+      workOrderNumber:
+        String(existing.workOrderNumber || tracking),
+      customer: "RaceTrac",
+      subscriber: "RaceTrac",
+      locationId: "2362",
+      locationName:
+        existing.locationName ||
+        existing.location ||
+        "RaceTrac #2362 — Golden Triangle",
+      location:
+        existing.location ||
+        existing.locationName ||
+        "RaceTrac #2362 — Golden Triangle",
+      address:
+        existing.address ||
+        "3070-3106 Golden Triangle Blvd, Fort Worth, TX 76177",
+      nte:
+        existing.nte ||
+        1546.66,
+      state: "onsite",
+      joshuaStatus: "onsite",
+      checkInAt:
+        existing.checkInAt ||
+        "2026-07-31T16:51:00.000Z",
+      checkOutAt: "",
+      technician: "Joseph Brown, Terry Reeves",
+      technicianCount: 2,
+      source: "ServiceChannel",
+      sourceSystem: "servicechannel",
+      isServiceChannel: true,
+      serviceChannelSourceOfTruth: true,
+      serviceChannelPrimaryStatus: "In Progress",
+      serviceChannelExtendedStatus: "On Site",
+      statusText: "In Progress / On Site",
+      billingEligible: false,
+      invoiceAllowed: false,
+      workflowReason:
+        "Verified onsite in ServiceChannel with Joseph Brown and Terry Reeves.",
+      updatedAt: now
+    };
+
+    for (const name of [
+      "Joseph Brown",
+      "Terry Reeves"
+    ]) {
+      const technician =
+        data.technicians[name] || {
+          name,
+          createdAt: now,
+          skills: []
+        };
+
+      data.technicians[name] = {
+        ...technician,
+        name,
+        status: "onsite",
+        activityStatus: "onsite",
+        activityLabel:
+          "Onsite at RaceTrac #2362 — Golden Triangle",
+        currentTrackingNumber: tracking,
+        serviceChannelTrackingNumber: tracking,
+        activitySource: "servicechannel",
+        clockSharkActivityLabel: "",
+        clockSharkCurrentTrackingNumber: "",
+        clockSharkCurrentJob: "",
+        updatedAt: now
+      };
+    }
+
+    for (const [key, workOrder] of Object.entries(
+      data.workOrders
+    )) {
+      if (key === tracking || !workOrder) continue;
+
+      const text = [
+        key,
+        workOrder.trackingNumber,
+        workOrder.workOrderNumber,
+        workOrder.customer,
+        workOrder.location,
+        workOrder.locationName,
+        workOrder.jobName,
+        workOrder.clockSharkJobName,
+        workOrder.technician
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      const state = String(
+        workOrder.joshuaStatus ||
+        workOrder.state ||
+        ""
+      ).toLowerCase();
+
+      const isInternal = Boolean(
+        workOrder.sourceSystem === "clockshark" ||
+        workOrder.isInternalWorkOrder === true
+      );
+
+      const raceTracDuplicate = Boolean(
+        isInternal &&
+        state === "onsite" &&
+        /race\s*trac/.test(text) &&
+        (
+          /joseph\s*brown/.test(text) ||
+          /terry\s*reeves/.test(text) ||
+          /#?\s*2362\b/.test(text) ||
+          /#?\s*0210\b/.test(text)
+        )
+      );
+
+      if (raceTracDuplicate) {
+        data.workOrders[key] = {
+          ...workOrder,
+          state: "superseded",
+          joshuaStatus: "superseded",
+          technicianCount: 0,
+          checkOutAt:
+            workOrder.checkOutAt || now,
+          supersededByServiceChannelTracking:
+            tracking,
+          updatedAt: now
+        };
+        continue;
+      }
+
+      if (
+        state === "onsite" &&
+        /campbell\s+road\s+church/.test(text)
+      ) {
+        data.workOrders[key] = {
+          ...workOrder,
+          state: "checked_out",
+          joshuaStatus: "checked_out",
+          technicianCount: 0,
+          checkOutAt:
+            workOrder.checkOutAt || now,
+          workflowReason:
+            "Technician confirmed checked out of Campbell Road Church.",
+          updatedAt: now
+        };
+      }
+    }
+
+    data.updatedAt = now;
+    fs.writeFileSync(
+      dataFile,
+      JSON.stringify(data, null, 2)
+    );
+  } catch (error) {
+    console.error(
+      "Phase 23.7 could not restore verified ServiceChannel onsite records:",
+      error.message
+    );
+  }
+}
+
+function cleanExistingFalseTasks() {
+  const dataFile =
+    process.env.CONTROL_DATA_FILE ||
+    path.join("/tmp", "joshua-control-data.json");
+
+  if (!fs.existsSync(dataFile)) return;
+
+  try {
+    const data = JSON.parse(
+      fs.readFileSync(dataFile, "utf8")
+    );
+
+    data.tasks = Array.isArray(data.tasks)
+      ? data.tasks
+      : [];
+    data.workOrders =
+      data.workOrders &&
+      typeof data.workOrders === "object"
+        ? data.workOrders
+        : {};
+    data.events = Array.isArray(data.events)
+      ? data.events
+      : [];
+
+    const now = new Date().toISOString();
+    const falseCheckoutPattern =
+      /review\s+(?:unclear\s+|servicechannel\s+)?checkout\s+outcome|checkout\s+outcome\s+requires\s+office\s+review/i;
+
+    data.tasks = data.tasks.map(task => {
+      const text = [
+        task.title,
+        task.notes,
+        task.workflowType,
+        task.actionLabel
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (
+        task.status !== "closed" &&
+        (
+          String(task.workflowType || "") ===
+            "checkout_review" ||
+          falseCheckoutPattern.test(text)
+        )
+      ) {
+        return {
+          ...task,
+          status: "closed",
+          completedAt: now,
+          updatedAt: now,
+          closedReason:
+            "Removed false routine checkout-review task; ServiceChannel webhook is authoritative."
+        };
+      }
+
+      return task;
+    });
+
+    for (const [key, workOrder] of Object.entries(
+      data.workOrders
+    )) {
+      if (
+        String(
+          workOrder?.joshuaStatus ||
+          workOrder?.state ||
+          ""
+        ) === "checkout_review"
+      ) {
+        data.workOrders[key] = {
+          ...workOrder,
+          state: "checked_out",
+          joshuaStatus: "checked_out",
+          workflowReason:
+            "Checkout recorded; waiting quietly for the final ServiceChannel status.",
+          billingEligible: false,
+          invoiceAllowed: false,
+          updatedAt: now
+        };
+      }
+    }
+
+    // Close duplicate open tasks while preserving the newest legitimate task.
+    const openIndexes = data.tasks
+      .map((task, index) => ({
+        task,
+        index,
+        time: new Date(
+          task.updatedAt ||
+          task.createdAt ||
+          0
+        ).getTime()
+      }))
+      .filter(item =>
+        item.task.status !== "closed"
+      )
+      .sort((a, b) => b.time - a.time);
+
+    const seen = new Set();
+
+    for (const item of openIndexes) {
+      const task = item.task;
+      const key = [
+        String(task.trackingNumber || "").trim(),
+        String(
+          task.workflowType ||
+          task.title ||
+          ""
+        )
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+      ].join("|");
+
+      if (!key.replace("|", "")) continue;
+
+      if (seen.has(key)) {
+        data.tasks[item.index] = {
+          ...task,
+          status: "closed",
+          completedAt: now,
+          updatedAt: now,
+          closedReason:
+            "Duplicate task removed automatically."
+        };
+      } else {
+        seen.add(key);
+      }
+    }
+
+    data.events = data.events.map(event => {
+      const text = [
+        event.type,
+        event.title,
+        event.note,
+        event.detail,
+        event.error
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (
+        String(event.level || "").toLowerCase() ===
+          "error" &&
+        falseCheckoutPattern.test(text)
+      ) {
+        return {
+          ...event,
+          level: "resolved",
+          resolvedAt: now,
+          resolvedReason:
+            "False routine checkout-review alert suppressed."
+        };
+      }
+
+      return event;
+    });
+
+    data.updatedAt = now;
+    fs.writeFileSync(
+      dataFile,
+      JSON.stringify(data, null, 2)
+    );
+  } catch (error) {
+    console.error(
+      "Phase 23.6 could not clean existing false tasks:",
+      error.message
+    );
+  }
+}
+
+function connectPhase235Chain() {
+  const phase233RuntimePath = new URL(
+    "./phase23-3-servicechannel-confirmation-runtime.mjs",
+    ROOT
+  );
+  const chainMarker =
+    "JOSHUA_PHASE23_5_CLOCKSHARK_ACTIVITY_CHAIN_V1";
+
+  if (!fs.existsSync(phase233RuntimePath)) {
+    return;
+  }
+
+  let phase233Runtime = readFile(
+    phase233RuntimePath
+  );
+
+  if (!phase233Runtime.includes(chainMarker)) {
+    const finalImport =
+      'await import("./servicechannel-webhook-bootstrap.mjs");';
+
+    if (phase233Runtime.includes(finalImport)) {
+      phase233Runtime = phase233Runtime.replace(
+        finalImport,
+        `// ${chainMarker}
+await import("./phase23-5-clockshark-activity-runtime.mjs");`
+      );
+      writeFile(
+        phase233RuntimePath,
+        phase233Runtime
+      );
+    }
+  }
+}
+
+patchServer();
+patchServiceChannelWebhook();
+patchExceptionSync();
+patchClockSharkSourcePriority();
+patchReleaseOnlyMatchingTracking();
+cleanExistingFalseTasks();
+repairVerifiedCurrentOnsite();
+connectPhase235Chain();
+
+setTimeout(
+  repairVerifiedCurrentOnsite,
+  1500
+).unref?.();
+
+console.log(
+  "Joshua Phase 23.7 ServiceChannel source priority and exception-only notifications installed."
+);
 
 await import(
   "./phase23-4-servicechannel-webhook-readable-preload.mjs"
