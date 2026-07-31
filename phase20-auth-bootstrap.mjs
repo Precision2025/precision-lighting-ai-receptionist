@@ -39,24 +39,72 @@ if (!server.includes(MARKER)) {
     );
   }
 
-  const parsedDataAnchor =
-    '    return {\n      events:';
+  /*
+   * JOSHUA_PHASE20_CONTROL_DATA_READER_COMPATIBILITY_V2
+   * Newer Joshua builds already preserve unknown persistent fields by
+   * spreading `parsed` inside readControlData(). Accept that implementation
+   * instead of requiring an older exact return-object shape.
+   */
+  const readerStart =
+    server.indexOf("function readControlData() {");
+  const writerStart =
+    server.indexOf(
+      "\nfunction writeControlData",
+      readerStart
+    );
 
   if (
-    !server.includes(
-      "JOSHUA_PHASE20_PRESERVE_EXTENDED_CONTROL_DATA_V1"
+    readerStart < 0 ||
+    writerStart < 0
+  ) {
+    throw new Error(
+      "Could not locate Joshua's control-data reader for Phase 20 persistence."
+    );
+  }
+
+  let readerBlock = server.slice(
+    readerStart,
+    writerStart
+  );
+
+  if (
+    !/\.\.\.parsed\s*,/.test(
+      readerBlock
     )
   ) {
-    if (!server.includes(parsedDataAnchor)) {
+    const parsedDeclaration =
+      readerBlock.indexOf(
+        "const parsed = JSON.parse"
+      );
+    const returnObject =
+      readerBlock.indexOf(
+        "return {",
+        parsedDeclaration
+      );
+
+    if (
+      parsedDeclaration < 0 ||
+      returnObject < 0
+    ) {
       throw new Error(
-        "Could not locate Joshua's control-data reader for Phase 20 persistence."
+        "Joshua's control-data reader does not expose a safe persistent-data return object."
       );
     }
 
-    server = server.replace(
-      parsedDataAnchor,
-      '    return {\n      // JOSHUA_PHASE20_PRESERVE_EXTENDED_CONTROL_DATA_V1\n      ...parsed,\n      events:'
-    );
+    const insertionPoint =
+      returnObject +
+      "return {".length;
+
+    readerBlock =
+      readerBlock.slice(0, insertionPoint) +
+      '\n      // JOSHUA_PHASE20_PRESERVE_EXTENDED_CONTROL_DATA_V1' +
+      '\n      ...parsed,' +
+      readerBlock.slice(insertionPoint);
+
+    server =
+      server.slice(0, readerStart) +
+      readerBlock +
+      server.slice(writerStart);
   }
 
   const controlAuthAnchor =
