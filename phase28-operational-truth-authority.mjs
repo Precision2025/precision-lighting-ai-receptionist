@@ -574,7 +574,7 @@ function serviceChannelPhase28DashboardAuthority(data) {
   if (!source.includes("serviceChannelPhase28DashboardAuthority(data);")) {
     const injectionAnchor = `  server = server.replace(
     "function controlAuthorized(request) {",
-    helpers + "\nfunction controlAuthorized(request) {"
+    helpers + "\\nfunction controlAuthorized(request) {"
   );`;
 
     if (!source.includes(injectionAnchor)) {
