@@ -283,6 +283,53 @@ function patchFinalServer() {
   let server = fs.readFileSync(serverPath, "utf8");
   if (server.includes(RUNTIME_MARKER)) return;
 
+  const insightsStart = server.indexOf(
+    "function getJoshuaInsights("
+  );
+  const insightsEnd = server.indexOf(
+    "\nfunction controlAuthorized(",
+    insightsStart
+  );
+  if (insightsStart < 0 || insightsEnd < 0) {
+    throw new Error("Could not locate Joshua Intelligence status logic.");
+  }
+
+  let insightsBlock = server.slice(insightsStart, insightsEnd);
+  const legacyInsightsOnsite =
+    '  const onsite = workOrders.filter(item => item.state === "onsite");';
+  if (!insightsBlock.includes(legacyInsightsOnsite)) {
+    throw new Error(
+      "Could not locate the legacy Joshua Intelligence onsite filter."
+    );
+  }
+
+  insightsBlock = insightsBlock.replace(
+    legacyInsightsOnsite,
+    `  const onsite = workOrders.filter(item =>
+    phase24IsServiceChannel(item) &&
+    String(item.state || item.joshuaStatus || "").toLowerCase() === "onsite" &&
+    item.serviceChannelCheckoutNeeded !== true
+  );`
+  );
+
+  const legacyInsightsTitle =
+    '      title: `${onsite.length} technician${onsite.length === 1 ? "" : "s"} currently onsite`,';
+  if (!insightsBlock.includes(legacyInsightsTitle)) {
+    throw new Error(
+      "Could not locate the legacy Joshua Intelligence onsite title."
+    );
+  }
+
+  insightsBlock = insightsBlock.replace(
+    legacyInsightsTitle,
+    '      title: `${onsite.length} ServiceChannel job${onsite.length === 1 ? "" : "s"} currently onsite`,'
+  );
+
+  server =
+    server.slice(0, insightsStart) +
+    insightsBlock +
+    server.slice(insightsEnd);
+
   const summaryAnchor = "function controlSummary() {";
   const summaryIndex = server.lastIndexOf(summaryAnchor);
   if (summaryIndex < 0) {
