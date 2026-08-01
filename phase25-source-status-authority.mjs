@@ -1103,6 +1103,115 @@ function repairPersistedSourceAndStatus() {
 }
 
 
+
+function patchBillingAuthority() {
+  const serverPath = new URL("./server.js", ROOT);
+  if (!fs.existsSync(serverPath)) {
+    console.warn(
+      "Joshua Phase 25 V5: server.js not found; billing authority patch skipped."
+    );
+    return;
+  }
+
+  let server = fs.readFileSync(serverPath, "utf8");
+  if (server.includes("JOSHUA_PHASE25_V5_BILLING_AUTHORITY")) {
+    return;
+  }
+
+  const insightAnchor =
+    "function getJoshuaInsights(workOrders, technicians, settings) {";
+
+  const helper = `// JOSHUA_PHASE25_V5_BILLING_AUTHORITY
+function phase25BillingReady(item = {}) {
+  return String(item.joshuaStatus || "")
+    .trim()
+    .toLowerCase() === "ready_to_bill";
+}
+
+`;
+
+  if (!server.includes(insightAnchor)) {
+    throw new Error(
+      "Phase 25 V5 could not locate Joshua Intelligence billing logic."
+    );
+  }
+
+  server = server.replace(
+    insightAnchor,
+    helper + insightAnchor
+  );
+
+  const oldInsight =
+    '  const readyInvoices = workOrders.filter(item => item.invoiceStatus === "ready_for_review");';
+  const newInsight =
+    '  const readyInvoices = workOrders.filter(phase25BillingReady);';
+
+  if (!server.includes(oldInsight)) {
+    throw new Error(
+      "Phase 25 V5 could not locate the legacy Intelligence invoice filter."
+    );
+  }
+  server = server.replace(oldInsight, newInsight);
+
+  const oldBacklog = `  const invoiceBacklog = workOrders
+    .filter(item => ["documentation_missing", "ready_for_review"].includes(item.invoiceStatus))
+    .reduce((sum, item) => sum + Number(item.invoiceAmount || item.estimatedTotal || 0), 0);`;
+
+  const newBacklog = `  const invoiceBacklog = workOrders
+    .filter(phase25BillingReady)
+    .reduce((sum, item) => sum + Number(item.invoiceAmount || item.estimatedTotal || 0), 0);`;
+
+  if (!server.includes(oldBacklog)) {
+    throw new Error(
+      "Phase 25 V5 could not locate the legacy invoice backlog filter."
+    );
+  }
+  server = server.replace(oldBacklog, newBacklog);
+
+  // If workflowQueues is already present in server.js, make it use the same
+  // predicate. On the normal Office Suite boot it is added by Phase 7 later,
+  // so Phase 7 itself is patched below as well.
+  const oldQueue =
+    '      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill")';
+  const newQueue =
+    '      readyToBill: workOrders.filter(phase25BillingReady)';
+
+  if (server.includes(oldQueue)) {
+    server = server.replace(oldQueue, newQueue);
+  }
+
+  fs.writeFileSync(serverPath, server);
+
+  // Defense in depth: when Phase 7 builds the Office Suite workflow queues,
+  // it uses the exact same billing predicate as Intelligence and Backlog.
+  const phase7Path = new URL("./phase7-bootstrap.mjs", ROOT);
+  if (!fs.existsSync(phase7Path)) {
+    throw new Error(
+      "Phase 25 V5 could not locate phase7-bootstrap.mjs for Billing Queue authority."
+    );
+  }
+
+  let phase7 = fs.readFileSync(phase7Path, "utf8");
+  const phase7Old =
+    '      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill")';
+  const phase7New =
+    '      readyToBill: workOrders.filter(phase25BillingReady)';
+
+  if (phase7.includes(phase7Old)) {
+    phase7 = phase7.replace(phase7Old, phase7New);
+    fs.writeFileSync(phase7Path, phase7);
+  } else if (!phase7.includes(phase7New)) {
+    throw new Error(
+      "Phase 25 V5 could not locate the Phase 7 Billing Queue filter."
+    );
+  }
+
+  console.log(
+    "Joshua Phase 25 V5 billing authority installed: Billing Queue, " +
+    "Joshua Intelligence, and Invoice Backlog now use ready_to_bill."
+  );
+}
+
 function patchOnsitePopupTruth() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -1150,10 +1259,11 @@ patchPhase2387ClockSharkIsolation();
 patchPhase24Classifier();
 patchPhase24ClockSharkLiveCounter();
 patchOnsitePopupTruth();
+patchBillingAuthority();
 repairPersistedSourceAndStatus();
 
 console.log(
-  "Joshua Phase 25 V4 live source/status authority installed."
+  "Joshua Phase 25 V5 live source/status + billing authority installed."
 );
 
 await import("./phase24-servicechannel-authority.mjs");
