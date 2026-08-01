@@ -18,7 +18,7 @@ function time(value = "") {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function isServiceChannel(item = {}, key = "") {
+function clockSharkEvidence(item = {}) {
   const source = [
     item.sourceSystem,
     item.source,
@@ -30,11 +30,109 @@ function isServiceChannel(item = {}, key = "") {
     .toLowerCase();
 
   return Boolean(
-    item.serviceChannelSourceOfTruth === true ||
-    item.isServiceChannel === true ||
-    source.includes("servicechannel") ||
-    /^\d{7,12}$/.test(text(key || item.trackingNumber))
+    source.includes("clockshark") ||
+    item.isInternalWorkOrder === true ||
+    item.clockSharkJobId ||
+    item.clockSharkJobNumber ||
+    item.clockSharkJobName
   );
+}
+
+function serviceChannelIdentifiers(item = {}) {
+  return Boolean(
+    item.serviceChannelTrackingNumber ||
+    item.scTrackingNumber ||
+    item.serviceChannelWorkOrderNumber ||
+    item.scWorkOrderNumber ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript ||
+    item.callSid
+  );
+}
+
+function isServiceChannel(item = {}, key = "", data = {}) {
+  const source = [
+    item.sourceSystem,
+    item.source,
+    item.integrationSource,
+    item.provider
+  ]
+    .map(text)
+    .join(" ")
+    .toLowerCase();
+  const latestEvent = latestServiceChannelEvent(data, key);
+  const hasClockShark = clockSharkEvidence(item);
+  const hasServiceChannelIdentifiers = serviceChannelIdentifiers(item);
+
+  // A numeric job number alone does not make a job ServiceChannel.
+  // ClockShark-only jobs stay ClockShark unless a real ServiceChannel
+  // identifier or webhook event proves otherwise.
+  if (
+    hasClockShark &&
+    !hasServiceChannelIdentifiers &&
+    !latestEvent
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    item.serviceChannelSourceOfTruth === true ||
+    hasServiceChannelIdentifiers ||
+    latestEvent ||
+    (
+      item.isServiceChannel === true &&
+      !hasClockShark
+    ) ||
+    (
+      source.includes("servicechannel") &&
+      !hasClockShark
+    )
+  );
+}
+
+function repairClockSharkOnlyClassification(
+  data,
+  key,
+  workOrder = {},
+  now = new Date().toISOString()
+) {
+  const latestEvent = latestServiceChannelEvent(data, key);
+  if (
+    !clockSharkEvidence(workOrder) ||
+    serviceChannelIdentifiers(workOrder) ||
+    latestEvent
+  ) {
+    return null;
+  }
+
+  const alreadyCorrect = Boolean(
+    text(workOrder.sourceSystem).toLowerCase() === "clockshark" &&
+    workOrder.isServiceChannel === false &&
+    workOrder.serviceChannelSourceOfTruth !== true &&
+    workOrder.serviceChannelOnsiteConfirmed !== true &&
+    workOrder.serviceChannelCheckoutNeeded !== true
+  );
+  if (alreadyCorrect) return null;
+
+  return {
+    ...workOrder,
+    source: "ClockShark",
+    sourceSystem: "clockshark",
+    isInternalWorkOrder: true,
+    isServiceChannel: false,
+    serviceChannelSourceOfTruth: false,
+    serviceChannelOnsiteConfirmed: false,
+    serviceChannelCheckoutNeeded: false,
+    serviceChannelTrackingNumber: "",
+    scTrackingNumber: "",
+    serviceChannelWorkOrderNumber: "",
+    scWorkOrderNumber: "",
+    workflowReason:
+      "ClockShark is authoritative for this non-ServiceChannel job.",
+    updatedAt: now
+  };
 }
 
 function explicitClockSharkActive(
@@ -167,7 +265,22 @@ function reconcilePersistedServiceChannelState() {
 
     for (const [key, workOrder] of Object.entries(data.workOrders)) {
       if (!workOrder || typeof workOrder !== "object") continue;
-      if (!isServiceChannel(workOrder, key)) continue;
+
+      const repairedClockShark = repairClockSharkOnlyClassification(
+        data,
+        key,
+        workOrder,
+        now
+      );
+      if (repairedClockShark) {
+        data.workOrders[key] = repairedClockShark;
+        changed += 1;
+        // The existing ClockShark reconciliation later in startup will use
+        // the actual open/closed shift data to set onsite or checked-out.
+        continue;
+      }
+
+      if (!isServiceChannel(workOrder, key, data)) continue;
 
       const state = text(
         workOrder.joshuaStatus || workOrder.state
@@ -359,12 +472,40 @@ function phase24IsServiceChannel(item = {}) {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+  const hasClockShark = Boolean(
+    source.includes("clockshark") ||
+    item.isInternalWorkOrder === true ||
+    item.clockSharkJobId ||
+    item.clockSharkJobNumber ||
+    item.clockSharkJobName
+  );
+  const hasServiceChannelIdentifiers = Boolean(
+    item.serviceChannelTrackingNumber ||
+    item.scTrackingNumber ||
+    item.serviceChannelWorkOrderNumber ||
+    item.scWorkOrderNumber ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript ||
+    item.callSid
+  );
+
+  if (hasClockShark && !hasServiceChannelIdentifiers) {
+    return false;
+  }
 
   return Boolean(
     item.serviceChannelSourceOfTruth === true ||
-    item.isServiceChannel === true ||
-    source.includes("servicechannel") ||
-    /^\\d{7,12}$/.test(String(item.trackingNumber || ""))
+    hasServiceChannelIdentifiers ||
+    (
+      item.isServiceChannel === true &&
+      !hasClockShark
+    ) ||
+    (
+      source.includes("servicechannel") &&
+      !hasClockShark
+    )
   );
 }
 
