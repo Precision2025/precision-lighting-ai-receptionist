@@ -1335,16 +1335,16 @@ patchExceptionSync();
 patchClockSharkSourcePriority();
 patchReleaseOnlyMatchingTracking();
 cleanExistingFalseTasks();
-repairVerifiedCurrentOnsite();
+// JOSHUA_PHASE25_V7_TRUSTWORTHY_ALERTS:
+// Obsolete hardcoded RaceTrac onsite restoration is disabled.
+// Current ServiceChannel webhook data is authoritative.
 patchClockSharkNotesPanel();
 patchExactWorkOrderTechnicianNotes();
 disableLegacyServiceChannelRecovery();
 connectPhase235Chain();
 
-setTimeout(
-  repairVerifiedCurrentOnsite,
-  1500
-).unref?.();
+// JOSHUA_PHASE25_V7_TRUSTWORTHY_ALERTS:
+// Do not re-inject historical onsite records after startup.
 
 console.log(
   "Joshua Phase 23.8.2 safely adds technician notes to the exact dashboard Work Order window."

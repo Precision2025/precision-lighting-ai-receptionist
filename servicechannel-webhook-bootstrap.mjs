@@ -644,10 +644,39 @@ function serviceChannelCloseManagedTasks(
 }
 
 function serviceChannelEnsureTask(data, task = {}) {
-  const existingIndex = data.tasks.findIndex(item =>
+  const sameTask = item =>
     String(item.trackingNumber || "") === String(task.trackingNumber || "") &&
-    item.status !== "closed" &&
-    String(item.workflowType || "") === String(task.workflowType || "")
+    String(item.workflowType || "") === String(task.workflowType || "");
+
+  const resolvedIndex = data.tasks.findIndex(item => {
+    if (!sameTask(item)) return false;
+
+    const closed = ["closed", "completed"].includes(
+      String(item.status || "").toLowerCase()
+    );
+    if (!closed) return false;
+
+    return Boolean(
+      item.phase25HumanResolved === true ||
+      (
+        (item.closedAt || item.completedAt || item.completedBy) &&
+        !item.closedReason &&
+        !item.autoClosedReason
+      )
+    );
+  });
+
+  // A person already handled this exact work-order workflow. Do not reopen
+  // the same task on each webhook/reconciliation pass.
+  if (resolvedIndex >= 0) {
+    return data.tasks[resolvedIndex];
+  }
+
+  const existingIndex = data.tasks.findIndex(item =>
+    sameTask(item) &&
+    !["closed", "completed"].includes(
+      String(item.status || "").toLowerCase()
+    )
   );
 
   const now = new Date().toISOString();

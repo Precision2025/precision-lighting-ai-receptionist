@@ -1289,7 +1289,12 @@ function phase25CallbackTaskStillApplies(data = {}, task = {}) {
 
 function phase25AutoTaskStillApplies(data = {}, task = {}) {
   const source = String(task.source || "").trim().toLowerCase();
-  if (source !== "phase 19 accountability") return true;
+  const autoManaged = Boolean(
+    source === "phase 19 accountability" ||
+    task.serviceChannelManaged === true ||
+    source.includes("servicechannel reconciler")
+  );
+  if (!autoManaged) return true;
 
   const workflow = String(task.workflowType || "general")
     .trim()
@@ -1475,6 +1480,417 @@ function phase25ReconcileStaleAccountabilityTasks(data = {}) {
   );
 }
 
+
+function patchHumanResolutionAndAttentionAuthority() {
+  const serverPath = new URL("./server.js", ROOT);
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(
+      "Phase 25 V7 could not locate server.js."
+    );
+  }
+
+  let server = fs.readFileSync(serverPath, "utf8");
+
+  // The main Tasks page uses /close. Mark that as a HUMAN resolution so
+  // automatic generators know the office already handled the alert.
+  const oldCloseRoute = `app.post("/api/control/tasks/:id/close", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const task = updateControlTask(String(request.params.id || ""), {
+    status: "closed",
+    closedAt: new Date().toISOString()
+  });
+  if (!task) return reply.code(404).send({ ok: false, error: "Task not found." });
+  return reply.send({ ok: true, task });
+});`;
+
+  const newCloseRoute = `app.post("/api/control/tasks/:id/close", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const resolvedAt = new Date().toISOString();
+  const task = updateControlTask(String(request.params.id || ""), {
+    status: "closed",
+    closedAt: resolvedAt,
+    completedAt: resolvedAt,
+    completedBy: "Office",
+    phase25HumanResolved: true,
+    phase25ResolvedAt: resolvedAt
+  });
+  if (!task) return reply.code(404).send({ ok: false, error: "Task not found." });
+  return reply.send({ ok: true, task });
+});`;
+
+  if (server.includes(oldCloseRoute)) {
+    server = server.replace(oldCloseRoute, newCloseRoute);
+  } else if (!server.includes("phase25HumanResolved: true")) {
+    throw new Error(
+      "Phase 25 V7 could not locate the main task close route."
+    );
+  }
+
+  // Generic raw state="attention" is not proof of a current exception.
+  // Only measurable/current conditions belong in Needs Attention.
+  const oldAttentionFunction = `function workOrderNeedsAttention(item, settings) {
+  if (item.state === "attention") return true;
+  if (item.state === "onsite" && item.checkInAt) {
+    const elapsed = Date.now() - new Date(item.checkInAt).getTime();
+    return elapsed > Number(settings.maxOnsiteMinutes || 240) * 60000;
+  }
+  if (item.nte && item.estimatedTotal && Number(item.estimatedTotal) > Number(item.nte)) {
+    return true;
+  }
+  return false;
+}`;
+
+  const newAttentionFunction = `function workOrderNeedsAttention(item, settings) {
+  const state = String(
+    item.joshuaStatus ||
+    item.state ||
+    ""
+  ).trim().toLowerCase();
+
+  if (state === "checkout_needed") return true;
+
+  if (state === "onsite" && item.checkInAt) {
+    const checkedInAt = new Date(item.checkInAt).getTime();
+    if (Number.isFinite(checkedInAt)) {
+      const elapsed = Date.now() - checkedInAt;
+      if (
+        elapsed >
+        Number(settings.maxOnsiteMinutes || 240) * 60000
+      ) {
+        return true;
+      }
+    }
+  }
+
+  const nte = Number(item.nte || 0);
+  const total = Number(
+    item.estimatedTotal ||
+    item.invoiceAmount ||
+    0
+  );
+
+  if (nte > 0 && total > nte) return true;
+
+  if (
+    item.lastError ||
+    item.syncError ||
+    item.invoiceRejected
+  ) {
+    return true;
+  }
+
+  return false;
+}`;
+
+  if (server.includes(oldAttentionFunction)) {
+    server = server.replace(
+      oldAttentionFunction,
+      newAttentionFunction
+    );
+  } else if (!server.includes('if (state === "checkout_needed") return true;')) {
+    throw new Error(
+      "Phase 25 V7 could not locate workOrderNeedsAttention."
+    );
+  }
+
+  // 90% NTE stays an Intelligence warning; it does not inflate the main
+  // Needs Attention exception counter until the NTE is actually exceeded.
+  const oldNeedsAttention = `      needsAttention:
+        workOrderNeedsAttention(item, data.settings) ||
+        ntePercent >= Number(data.settings.nteWarningPercent || 90)`;
+
+  const newNeedsAttention = `      needsAttention:
+        workOrderNeedsAttention(item, data.settings)`;
+
+  if (server.includes(oldNeedsAttention)) {
+    server = server.replace(
+      oldNeedsAttention,
+      newNeedsAttention
+    );
+  }
+
+  fs.writeFileSync(serverPath, server);
+
+  console.log(
+    "Joshua Phase 25 V7 human-resolution and high-confidence attention authority installed."
+  );
+}
+
+function phase25HumanResolvedTask(task = {}) {
+  const status = String(task.status || "").toLowerCase();
+  if (!["closed", "completed"].includes(status)) return false;
+
+  return Boolean(
+    task.phase25HumanResolved === true ||
+    (
+      (task.closedAt || task.completedAt || task.completedBy) &&
+      !task.closedReason &&
+      !task.autoClosedReason
+    )
+  );
+}
+
+function phase25StrongServiceChannelWorkOrder(item = {}) {
+  const source = [
+    item.sourceSystem,
+    item.source,
+    item.integrationSource,
+    item.provider
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return Boolean(
+    item.serviceChannelSourceOfTruth === true ||
+    item.isServiceChannel === true ||
+    item.serviceChannelPrimaryStatus ||
+    item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    source.includes("servicechannel")
+  );
+}
+
+function repairNuisanceTasksAndLegacySeeds() {
+  const dataFile =
+    process.env.CONTROL_DATA_FILE ||
+    path.join("/tmp", "joshua-control-data.json");
+
+  if (!fs.existsSync(dataFile)) return;
+
+  try {
+    const raw = fs.readFileSync(dataFile, "utf8");
+    const data = raw.trim() ? JSON.parse(raw) : {};
+
+    data.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    data.events = Array.isArray(data.events) ? data.events : [];
+    data.workOrders =
+      data.workOrders && typeof data.workOrders === "object"
+        ? data.workOrders
+        : {};
+    data.technicians =
+      data.technicians && typeof data.technicians === "object"
+        ? data.technicians
+        : {};
+
+    const now = new Date().toISOString();
+    let closedNuisance = 0;
+    let closedRegenerated = 0;
+    let clearedLegacyStatus = 0;
+
+    const resolvedKeys = new Set();
+
+    for (const task of data.tasks) {
+      if (!phase25HumanResolvedTask(task)) continue;
+
+      const key = [
+        String(task.trackingNumber || "").trim(),
+        String(task.workflowType || task.title || "")
+          .trim()
+          .toLowerCase(),
+        String(task.clockSharkIdentity || "").trim()
+      ].join("|");
+
+      resolvedKeys.add(key);
+    }
+
+    for (const task of data.tasks) {
+      if (!task || typeof task !== "object") continue;
+
+      const status = String(task.status || "open").toLowerCase();
+      if (["closed", "completed"].includes(status)) continue;
+
+      const workflow = String(task.workflowType || "")
+        .trim()
+        .toLowerCase();
+
+      const tracking = String(task.trackingNumber || "").trim();
+      const identity = String(task.clockSharkIdentity || "").trim();
+
+      if (workflow === "clockshark_missing_notes") {
+        task.status = "closed";
+        task.completedAt = now;
+        task.closedAt = now;
+        task.updatedAt = now;
+        task.closedReason =
+          "Missing ClockShark notes are informational and no longer generate alerts.";
+        closedNuisance += 1;
+        continue;
+      }
+
+      if (workflow === "clockshark_servicechannel_mismatch") {
+        const item =
+          data.workOrders[tracking] ||
+          Object.values(data.workOrders).find(workOrder =>
+            String(
+              workOrder?.trackingNumber ||
+              workOrder?.workOrderNumber ||
+              ""
+            ).trim() === tracking
+          );
+
+        if (!item || !phase25StrongServiceChannelWorkOrder(item)) {
+          task.status = "closed";
+          task.completedAt = now;
+          task.closedAt = now;
+          task.updatedAt = now;
+          task.closedReason =
+            "ClockShark-only jobs do not create ServiceChannel mismatch alerts.";
+          closedNuisance += 1;
+          continue;
+        }
+      }
+
+      const exactKey = [
+        tracking,
+        String(task.workflowType || task.title || "")
+          .trim()
+          .toLowerCase(),
+        identity
+      ].join("|");
+
+      const workflowKey = [
+        tracking,
+        String(task.workflowType || task.title || "")
+          .trim()
+          .toLowerCase(),
+        ""
+      ].join("|");
+
+      if (
+        resolvedKeys.has(exactKey) ||
+        (!identity && resolvedKeys.has(workflowKey))
+      ) {
+        task.status = "closed";
+        task.completedAt = now;
+        task.closedAt = now;
+        task.updatedAt = now;
+        task.closedReason =
+          "Duplicate automatic task suppressed because this workflow was already resolved by the office.";
+        closedRegenerated += 1;
+      }
+    }
+
+    // Remove the two historical RaceTrac onsite/checkout seeds unless a
+    // CURRENT genuine ServiceChannel WorkOrderCheckIn says the job is onsite.
+    for (const tracking of ["343437277", "358160087"]) {
+      const item = data.workOrders[tracking];
+      if (!item) continue;
+
+      const latest = genuineServiceChannelEvent(
+        data,
+        tracking
+      );
+
+      const latestType = text(latest?.type);
+      const latestState = lower(
+        latest?.resultingState ||
+        latest?.joshuaStatus ||
+        latest?.state
+      );
+
+      const currentRealCheckIn = Boolean(
+        latest &&
+        latestType === "WorkOrderCheckIn" &&
+        (!latestState || latestState === "onsite")
+      );
+
+      if (currentRealCheckIn) continue;
+
+      const state = lower(
+        item.joshuaStatus || item.state
+      );
+
+      if (
+        state !== "onsite" &&
+        state !== "checkout_needed" &&
+        item.serviceChannelCheckoutNeeded !== true
+      ) {
+        continue;
+      }
+
+      const statusState = correctedServiceChannelState(
+        item.serviceChannelPrimaryStatus,
+        item.serviceChannelExtendedStatus
+      );
+
+      const nextState =
+        statusState && statusState !== "onsite"
+          ? statusState
+          : "open";
+
+      data.workOrders[tracking] = {
+        ...item,
+        state: nextState,
+        joshuaStatus: nextState,
+        technicianCount: 0,
+        serviceChannelOnsiteConfirmed: false,
+        serviceChannelCheckoutNeeded: false,
+        checkoutNeededSince: "",
+        checkOutAt: item.checkOutAt || now,
+        workflowReason:
+          "Historical hardcoded onsite seed removed; current webhook/status is authoritative.",
+        updatedAt: now
+      };
+
+      releaseTechniciansForTracking(
+        data,
+        tracking,
+        now
+      );
+
+      clearedLegacyStatus += 1;
+    }
+
+    if (
+      closedNuisance ||
+      closedRegenerated ||
+      clearedLegacyStatus
+    ) {
+      data.events.unshift({
+        id:
+          Date.now() +
+          "-" +
+          Math.random().toString(36).slice(2, 8),
+        createdAt: now,
+        type: "phase25_v7_trustworthy_alert_cleanup",
+        level: "success",
+        requestedBy: "Joshua Phase 25 V7",
+        closedNuisance,
+        closedRegenerated,
+        clearedLegacyStatus
+      });
+
+      data.events = data.events.slice(0, 500);
+      data.updatedAt = now;
+
+      fs.writeFileSync(
+        dataFile,
+        JSON.stringify(data, null, 2)
+      );
+    }
+
+    console.log(
+      "Joshua Phase 25 V7 trustworthy-alert cleanup:",
+      {
+        closedNuisance,
+        closedRegenerated,
+        clearedLegacyStatus
+      }
+    );
+  } catch (error) {
+    console.error(
+      "Joshua Phase 25 V7 trustworthy-alert cleanup failed:",
+      error.message
+    );
+  }
+}
+
 function patchOnsitePopupTruth() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -1524,10 +1940,12 @@ patchPhase24ClockSharkLiveCounter();
 patchOnsitePopupTruth();
 patchBillingAuthority();
 patchTaskExceptionAuthority();
+patchHumanResolutionAndAttentionAuthority();
 repairPersistedSourceAndStatus();
+repairNuisanceTasksAndLegacySeeds();
 
 console.log(
-  "Joshua Phase 25 V6 live source/status + billing + task authority installed."
+  "Joshua Phase 25 V7 trustworthy live operations + billing + alert authority installed."
 );
 
 await import("./phase24-servicechannel-authority.mjs");
