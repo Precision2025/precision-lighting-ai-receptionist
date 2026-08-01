@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_1";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -714,7 +714,8 @@ function serviceChannelPhase28DashboardAuthority(data) {
       ),
       billingEligible: false,
       invoiceAllowed: false,
-      workflowReason:\n        verifiedBy + " manually verified that the technician is currently Checked In on ServiceChannel."
+      workflowReason:
+        verifiedBy + " manually verified that the technician is currently Checked In on ServiceChannel."
     };
 
     const technicianName = String(
@@ -765,7 +766,10 @@ function serviceChannelPhase28DashboardAuthority(data) {
           : existing.checkOutAt || "",
       technicianCount: 0,
       serviceChannelOnsiteConfirmed: false,
-      workflowReason:\n        status === "checked_out"\n          ? verifiedBy + " manually verified that the technician is Checked Out on ServiceChannel."\n          : verifiedBy + " manually verified that the technician is Not Onsite on ServiceChannel."
+      workflowReason:
+        status === "checked_out"
+          ? verifiedBy + " manually verified that the technician is Checked Out on ServiceChannel."
+          : verifiedBy + " manually verified that the technician is Not Onsite on ServiceChannel."
     };
 
     if (
@@ -985,7 +989,7 @@ patchServiceChannelWorkflowAuthority();
 patchControlPanels();
 
 console.log(
-  "Joshua Phase 28 operational truth authority installed: " +
+  "Joshua Phase 28.1 operational truth authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
   "Pending Confirmation normal-state handling, and Completed/Confirmed billing."
 );
