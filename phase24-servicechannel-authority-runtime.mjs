@@ -347,7 +347,7 @@ function phase24ClockSharkTechnicianActive(technician = {}) {
     throw new Error("Could not determine Joshua control summary boundary.");
   }
 
-  let summaryBlock = server.slice(insertedSummaryIndex, summaryEnd + 3);
+  let summaryBlock = server.slice(insertedSummaryIndex, summaryEnd);
   const activeCandidates = [
     '  const active = workOrders.filter(item => item.state === "onsite");',
     '  const active = workOrders.filter(phase232IsOnsite);'
