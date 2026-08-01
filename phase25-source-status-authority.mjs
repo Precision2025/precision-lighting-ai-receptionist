@@ -1102,15 +1102,58 @@ function repairPersistedSourceAndStatus() {
   }
 }
 
+
+function patchOnsitePopupTruth() {
+  const panelPaths = [
+    new URL("./control-panel.html", ROOT),
+    new URL("./public/control-panel.html", ROOT)
+  ];
+
+  const oldBlock = ` const onsite=(cache.active||[]).length
+   ? cache.active
+   : (cache.workOrders||[]).filter(x=>String(x.state||x.joshuaStatus||"").toLowerCase()==="onsite");`;
+
+  const newBlock = ` // JOSHUA_PHASE25_V4_ONSITE_POPUP_TRUTH
+ const onsite=Array.isArray(cache.serviceChannelOnsite)
+   ? cache.serviceChannelOnsite
+   : (Array.isArray(cache.active) ? cache.active : []);`;
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let html = fs.readFileSync(panelPath, "utf8");
+    if (html.includes("JOSHUA_PHASE25_V4_ONSITE_POPUP_TRUTH")) {
+      continue;
+    }
+
+    if (!html.includes(oldBlock)) {
+      console.warn(
+        "Joshua Phase 25 V4: legacy onsite popup fallback not found in " +
+        panelPath.pathname
+      );
+      continue;
+    }
+
+    html = html.replace(oldBlock, newBlock);
+    fs.writeFileSync(panelPath, html);
+
+    console.log(
+      "Joshua Phase 25 V4 corrected onsite popup source in " +
+      panelPath.pathname
+    );
+  }
+}
+
 patchServiceChannelStatusPriority();
 patchClockSharkActivitySource();
 patchPhase2387ClockSharkIsolation();
 patchPhase24Classifier();
 patchPhase24ClockSharkLiveCounter();
+patchOnsitePopupTruth();
 repairPersistedSourceAndStatus();
 
 console.log(
-  "Joshua Phase 25 V3 live source/status authority installed."
+  "Joshua Phase 25 V4 live source/status authority installed."
 );
 
 await import("./phase24-servicechannel-authority.mjs");
