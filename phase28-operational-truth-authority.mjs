@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_6_CITY_GATE";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_7_SC_DISPLAY";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -1428,6 +1428,199 @@ function patchCityGatedClockSharkRouting() {
   );
 }
 
+
+function patchClockSharkCannotClaimServiceChannel() {
+  const filePath = new URL(
+    "./phase23-1-clockshark-data-hotfix-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_7_SC_PROTECTION")) {
+    return;
+  }
+
+  const repairAnchor =
+    "function phase231ClockSharkRepairWorkOrders(\n  data,\n  state = {}\n) {";
+
+  if (!source.includes(repairAnchor)) {
+    throw new Error(
+      "Phase 28.7 could not locate ClockShark repair for ServiceChannel protection."
+    );
+  }
+
+  const helper = `// JOSHUA_PHASE28_7_SC_PROTECTION
+function phase287HasServiceChannelEvidence(workOrder = {}) {
+  const sourceText = [
+    workOrder.source,
+    workOrder.sourceSystem,
+    workOrder.provider,
+    workOrder.platform,
+    workOrder.integration,
+    workOrder.intakeSource
+  ]
+    .map(phase231ClockSharkText)
+    .join(" ")
+    .toLowerCase();
+
+  return Boolean(
+    /service\s*channel/.test(sourceText) ||
+    workOrder.isServiceChannel === true ||
+    phase231ClockSharkText(workOrder.serviceChannelTrackingNumber) ||
+    phase231ClockSharkText(workOrder.scTrackingNumber) ||
+    phase231ClockSharkText(workOrder.serviceChannelWorkOrderNumber) ||
+    phase231ClockSharkText(workOrder.scWorkOrderNumber) ||
+    workOrder.ivrConfirmed === true ||
+    phase231ClockSharkText(workOrder.ivrConfirmationTranscript) ||
+    phase231ClockSharkText(workOrder.serviceChannelCheckInEventAt) ||
+    phase231ClockSharkText(workOrder.serviceChannelCheckOutEventAt) ||
+    (
+      phase231ClockSharkText(workOrder.callSid) &&
+      /checkin|checkout|ivr|service\s*channel/.test(
+        [
+          workOrder.state,
+          workOrder.joshuaStatus,
+          workOrder.statusText,
+          workOrder.workflowReason,
+          workOrder.lastError
+        ]
+          .map(phase231ClockSharkText)
+          .join(" ")
+          .toLowerCase()
+      )
+    )
+  );
+}
+
+`;
+
+  source = source.replace(
+    repairAnchor,
+    helper + repairAnchor
+  );
+
+  const skipAnchor = `    if (
+      originalSystem === "servicechannel" ||
+      originalSystem === "nest"
+    ) {
+      continue;
+    }`;
+
+  if (!source.includes(skipAnchor)) {
+    throw new Error(
+      "Phase 28.7 could not locate ClockShark source skip rule."
+    );
+  }
+
+  source = source.replace(
+    skipAnchor,
+    `    if (
+      originalSystem === "servicechannel" ||
+      originalSystem === "nest" ||
+      phase287HasServiceChannelEvidence(original)
+    ) {
+      continue;
+    }`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.7 prevents ClockShark reconciliation from claiming ServiceChannel work orders."
+  );
+}
+
+function patchServiceChannelDisplayTruth() {
+  const panelPaths = [
+    new URL("./control-panel.html", ROOT),
+    new URL("./public/control-panel.html", ROOT)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let html = fs.readFileSync(panelPath, "utf8");
+    if (html.includes("JOSHUA_PHASE28_7_SC_DISPLAY_TRUTH")) {
+      continue;
+    }
+
+    const helperAnchor =
+      "function renderInsights(){";
+
+    if (!html.includes(helperAnchor)) {
+      throw new Error(
+        `Phase 28.7 could not locate display helper insertion point in ${panelPath.pathname}.`
+      );
+    }
+
+    const helper = `// JOSHUA_PHASE28_7_SC_DISPLAY_TRUTH
+function phase287DisplayTracking(item={}){
+ const source=[item.source,item.sourceSystem,item.provider,item.platform,item.integration,item.intakeSource].filter(Boolean).join(" ").toLowerCase();
+ const isServiceChannel=Boolean(item.isServiceChannel===true||item.serviceChannelSourceOfTruth===true||source.includes("servicechannel")||item.serviceChannelTrackingNumber||item.scTrackingNumber||item.serviceChannelWorkOrderNumber||item.scWorkOrderNumber||item.ivrConfirmed===true);
+ const raw=String(item.trackingNumber||"").trim();
+ const artificial=/^(?:clock\s*shark(?:\s+job)?|service\s*channel(?:\s+job)?)$/i.test(raw)||/^CS-/i.test(raw);
+ if(!isServiceChannel||!artificial)return raw;
+ const candidates=[item.serviceChannelTrackingNumber,item.scTrackingNumber,item.serviceChannelWorkOrderNumber,item.scWorkOrderNumber,item.workOrderNumber,item.displayReference];
+ for(const value of candidates){
+  const text=String(value||"").trim();
+  if(!text)continue;
+  if(/^(?:clock\s*shark(?:\s+job)?|service\s*channel(?:\s+job)?)$/i.test(text)||/^CS-/i.test(text))continue;
+  return text.replace(/^#\s*/,"");
+ }
+ return "ServiceChannel Job";
+}
+
+function phase287DisplayCustomer(item={}){
+ const source=[item.source,item.sourceSystem].filter(Boolean).join(" ").toLowerCase();
+ const isServiceChannel=Boolean(item.isServiceChannel===true||source.includes("servicechannel"));
+ const values=[item.customer,item.customerName,item.locationName,item.location,item.jobName];
+ for(const value of values){
+  const text=String(value||"").trim();
+  if(!text)continue;
+  if(isServiceChannel&&/^clock\s*shark(?:\s+job)?$/i.test(text))continue;
+  return text;
+ }
+ return "Work order";
+}
+`;
+
+    html = html.replace(
+      helperAnchor,
+      helper + "\n" + helperAnchor
+    );
+
+    html = html.replace(
+      'Tracking ${esc(x.trackingNumber)}',
+      'Tracking ${esc(phase287DisplayTracking(x))}'
+    );
+
+    html = html.replace(
+      '<strong>#${esc(x.trackingNumber||"")} — ${esc(x.customer||x.locationName||"Work order")}</strong>',
+      '<strong>#${esc(phase287DisplayTracking(x))} — ${esc(phase287DisplayCustomer(x))}</strong>'
+    );
+
+    html = html.replace(
+      'document.getElementById("phase12Title").textContent=`Work Order #${item.trackingNumber||""}`;',
+      'document.getElementById("phase12Title").textContent=`Work Order #${phase287DisplayTracking(item)}`;'
+    );
+
+    html = html.replace(
+      "el('homeWorkOrderTitle').textContent='Work Order #'+safe(selectedWorkOrder.trackingNumber);",
+      "el('homeWorkOrderTitle').textContent='Work Order #'+safe(phase287DisplayTracking(selectedWorkOrder));"
+    );
+
+    html = html.replace(
+      '<strong>#${esc(x.trackingNumber)}</strong><span class="badge',
+      '<strong>#${esc(phase287DisplayTracking(x))}</strong><span class="badge'
+    );
+
+    fs.writeFileSync(panelPath, html);
+    console.log(
+      "Joshua Phase 28.7 removed stale ClockShark labels from ServiceChannel display in " +
+      panelPath.pathname
+    );
+  }
+}
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -1553,13 +1746,15 @@ patchServiceChannelWorkflowAuthority();
 patchStaleExceptionCleanup();
 patchAccountabilityNoiseControl();
 patchServiceChannelOnsiteIdentity();
+patchClockSharkCannotClaimServiceChannel();
 patchCityGatedClockSharkRouting();
 patchControlPanels();
+patchServiceChannelDisplayTruth();
 
 console.log(
-  "Joshua Phase 28.6 city-gated ServiceChannel/ClockShark authority installed: " +
+  "Joshua Phase 28.7 ServiceChannel display and city-gated authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
