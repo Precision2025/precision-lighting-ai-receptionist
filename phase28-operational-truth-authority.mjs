@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_3";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_4";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -1150,187 +1150,31 @@ function phase282CleanupStaleOnsiteAlerts() {
 
 
 function patchAccountabilityNoiseControl() {
-  const filePath = new URL("./server.js", ROOT);
+  const filePath = new URL("./phase19-accountability-bootstrap.mjs", ROOT);
   let source = fs.readFileSync(filePath, "utf8");
 
-  if (source.includes("JOSHUA_PHASE28_3_ACCOUNTABILITY_NOISE_CONTROL")) {
+  if (source.includes("JOSHUA_PHASE28_4_ACCOUNTABILITY_NOISE_CONTROL")) {
     return;
   }
 
-  const settingsAnchor =
-    "  const settings = accountability.settings;\n  const now = Date.now();";
+  const importAnchor = 'await import("./phase20-auth-bootstrap.mjs");';
 
-  if (!source.includes(settingsAnchor)) {
+  if (!source.includes(importAnchor)) {
     throw new Error(
-      "Phase 28.3 could not locate the Phase 19 accountability sweep settings."
+      "Phase 28.4 could not locate the Phase 19 continuation hook."
     );
   }
 
-  const settingsReplacement = `  const settings = accountability.settings;
-
-  // JOSHUA_PHASE28_3_ACCOUNTABILITY_NOISE_CONTROL
-  // The master accountability switch must stop reminders/escalations too.
-  // Earlier Phase 19 code only honored this switch for scheduled briefings.
-  if (settings.enabled === false) {
-    accountability.lastSweepAt = new Date().toISOString();
-    accountability.lastSweepSource = source;
-    accountability.lastSweepNotificationCount = 0;
-    writeControlData(data);
-
-    return {
-      ok: true,
-      paused: true,
-      notificationsPrepared: 0,
-      notificationsSent: 0,
-      graceActive: false,
-      notificationResults: []
-    };
-  }
-
-  const now = Date.now();`;
-
-  source = source.replace(settingsAnchor, settingsReplacement);
-
-  const notificationsAnchor =
-    "  const notifications = [];\n\n  for (const task of data.tasks) {";
-
-  if (!source.includes(notificationsAnchor)) {
-    throw new Error(
-      "Phase 28.3 could not locate the accountability notification queue."
-    );
-  }
-
-  const notificationsReplacement = `  const notifications = [];
-
-  // Close exact duplicate open tasks before they can create duplicate SMS.
-  // A duplicate is the same tracking number + title + assignee.
-  const phase283OpenTaskKeys = new Set();
-  const phase283ClosedAt = new Date().toISOString();
-
-  for (const candidate of data.tasks) {
-    if (!candidate || typeof candidate !== "object") continue;
-
-    if (
-      ["closed", "completed"].includes(
-        String(candidate.status || "").toLowerCase()
-      )
-    ) {
-      continue;
-    }
-
-    const tracking = String(candidate.trackingNumber || "")
-      .trim()
-      .toLowerCase();
-    const title = String(candidate.title || "")
-      .trim()
-      .replace(/\\s+/g, " ")
-      .toLowerCase();
-    const assignedTo = String(candidate.assignedTo || "")
-      .trim()
-      .toLowerCase();
-
-    if (!tracking || !title) continue;
-
-    const duplicateKey = [tracking, title, assignedTo].join("|");
-
-    if (phase283OpenTaskKeys.has(duplicateKey)) {
-      candidate.status = "closed";
-      candidate.closedAt = candidate.closedAt || phase283ClosedAt;
-      candidate.updatedAt = phase283ClosedAt;
-      candidate.accountabilityStatus = "completed";
-      candidate.autoClosedReason =
-        candidate.autoClosedReason ||
-        "Duplicate accountability task suppressed by Joshua Phase 28.3.";
-      continue;
-    }
-
-    phase283OpenTaskKeys.add(duplicateKey);
-  }
-
-  for (const task of data.tasks) {`;
+  const runtimePatch = "/* JOSHUA_PHASE28_4_ACCOUNTABILITY_NOISE_CONTROL */\n{\n  const phase284ServerPath = new URL(\"./server.js\", import.meta.url);\n  let phase284Server = fs.readFileSync(phase284ServerPath, \"utf8\");\n\n  if (!phase284Server.includes(\"JOSHUA_PHASE28_4_ACCOUNTABILITY_RUNTIME\")) {\n    const sweepStart = phase284Server.indexOf(\n      \"async function phase19RunSweep(\"\n    );\n    const sweepEnd = phase284Server.indexOf(\n      \"\\nfunction phase19StatusPayload()\",\n      sweepStart\n    );\n\n    if (sweepStart < 0 || sweepEnd <= sweepStart) {\n      throw new Error(\n        \"Phase 28.4 could not locate the installed Phase 19 accountability sweep.\"\n      );\n    }\n\n    let sweep = phase284Server.slice(sweepStart, sweepEnd);\n\n    const settingsAnchor =\n      \"  const settings = accountability.settings;\\n  const now = Date.now();\";\n\n    if (!sweep.includes(settingsAnchor)) {\n      throw new Error(\n        \"Phase 28.4 could not locate the accountability sweep settings.\"\n      );\n    }\n\n    sweep = sweep.replace(\n      settingsAnchor,\n      `  const settings = accountability.settings;\n\n  // JOSHUA_PHASE28_4_ACCOUNTABILITY_RUNTIME\n  // Respect the master pause switch for reminders and escalations too.\n  if (settings.enabled === false) {\n    accountability.lastSweepAt = new Date().toISOString();\n    accountability.lastSweepSource = source;\n    accountability.lastSweepNotificationCount = 0;\n    writeControlData(data);\n\n    return {\n      ok: true,\n      paused: true,\n      notificationsPrepared: 0,\n      notificationsSent: 0,\n      graceActive: false,\n      notificationResults: []\n    };\n  }\n\n  const now = Date.now();`\n    );\n\n    const taskLoopAnchor =\n      \"  for (const task of data.tasks) {\\n    phase19EnsureTask(task, settings);\";\n\n    if (!sweep.includes(taskLoopAnchor)) {\n      throw new Error(\n        \"Phase 28.4 could not locate the accountability task loop.\"\n      );\n    }\n\n    sweep = sweep.replace(\n      taskLoopAnchor,\n      `  // Close exact duplicate open tasks before reminders are prepared.\n  const phase284OpenTaskKeys = new Set();\n  const phase284ClosedAt = new Date().toISOString();\n\n  for (const candidate of data.tasks) {\n    if (!candidate || typeof candidate !== \"object\") continue;\n    if ([\"closed\", \"completed\"].includes(\n      String(candidate.status || \"\").toLowerCase()\n    )) continue;\n\n    const phase284Tracking = String(candidate.trackingNumber || \"\")\n      .trim()\n      .toLowerCase();\n    const phase284Title = String(candidate.title || \"\")\n      .trim()\n      .replace(/\\s+/g, \" \")\n      .toLowerCase();\n    const phase284Assignee = String(candidate.assignedTo || \"\")\n      .trim()\n      .toLowerCase();\n\n    if (!phase284Tracking || !phase284Title) continue;\n\n    const phase284TaskKey = [\n      phase284Tracking,\n      phase284Title,\n      phase284Assignee\n    ].join(\"|\");\n\n    if (phase284OpenTaskKeys.has(phase284TaskKey)) {\n      candidate.status = \"closed\";\n      candidate.closedAt = candidate.closedAt || phase284ClosedAt;\n      candidate.completedAt = candidate.completedAt || phase284ClosedAt;\n      candidate.updatedAt = phase284ClosedAt;\n      candidate.accountabilityStatus = \"completed\";\n      candidate.autoClosedReason =\n        candidate.autoClosedReason ||\n        \"Duplicate accountability task suppressed by Joshua Phase 28.4.\";\n      continue;\n    }\n\n    phase284OpenTaskKeys.add(phase284TaskKey);\n  }\n\n  for (const task of data.tasks) {\n    phase19EnsureTask(task, settings);`\n    );\n\n    const escalationCondition = `    if (\n      !task.acknowledgedAt &&\n      escalationDue &&\n      now >= escalationDue.getTime() &&\n      !task.escalatedAt\n    ) {`;\n\n    if (!sweep.includes(escalationCondition)) {\n      throw new Error(\n        \"Phase 28.4 could not locate the accountability escalation condition.\"\n      );\n    }\n\n    sweep = sweep.replace(\n      escalationCondition,\n      `    if (\n      !task.acknowledgedAt &&\n      !String(task.assignedTo || \"\")\n        .trim()\n        .toLowerCase()\n        .startsWith(\"travis\") &&\n      escalationDue &&\n      now >= escalationDue.getTime() &&\n      !task.escalatedAt\n    ) {`\n    );\n\n    const sendLoopAnchor =\n      \"    for (const notification of notifications) {\\n      if (!notification.to) {\";\n\n    if (!sweep.includes(sendLoopAnchor)) {\n      throw new Error(\n        \"Phase 28.4 could not locate the accountability SMS send loop.\"\n      );\n    }\n\n    sweep = sweep.replace(\n      sendLoopAnchor,\n      `    const phase284NotificationKeys = new Set();\n\n    for (const notification of notifications) {\n      const phase284NotificationKey = [\n        String(notification.to || \"\").trim(),\n        String(notification.body || \"\").trim()\n      ].join(\"|\");\n\n      if (phase284NotificationKeys.has(phase284NotificationKey)) {\n        results.push({\n          ok: false,\n          skipped: true,\n          type: notification.type,\n          reason: \"Duplicate SMS suppressed by Joshua Phase 28.4.\"\n        });\n        continue;\n      }\n      phase284NotificationKeys.add(phase284NotificationKey);\n\n      if (!notification.to) {`\n    );\n\n    phase284Server =\n      phase284Server.slice(0, sweepStart) +\n      sweep +\n      phase284Server.slice(sweepEnd);\n\n    fs.writeFileSync(phase284ServerPath, phase284Server);\n    console.log(\n      \"Joshua Phase 28.4 accountability noise control installed.\"\n    );\n  }\n}\n";
 
   source = source.replace(
-    notificationsAnchor,
-    notificationsReplacement
+    importAnchor,
+    runtimePatch + "\n" + importAnchor
   );
-
-  const escalationStart = `      notifications.push({
-        type: "owner",
-        to: phase19OwnerNumber(),
-        body:
-          \`🚨 Joshua accountability escalation\\n\` +
-          \`\${task.assignedTo} has not acknowledged:\\n\` +
-          \`\${task.title}\` +
-          \`\${
-            task.trackingNumber
-              ? \`\\nTracking #\${task.trackingNumber}\`
-              : ""
-          }\`
-      });`;
-
-  if (!source.includes(escalationStart)) {
-    throw new Error(
-      "Phase 28.3 could not locate the accountability escalation SMS."
-    );
-  }
-
-  const escalationReplacement = `      // Do not escalate Travis to Travis. He still receives the normal
-      // assignee acknowledgement reminder, but self-escalation is redundant.
-      if (
-        !String(task.assignedTo || "")
-          .trim()
-          .toLowerCase()
-          .startsWith("travis")
-      ) {
-        notifications.push({
-          type: "owner",
-          to: phase19OwnerNumber(),
-          body:
-            \`🚨 Joshua accountability escalation\\n\` +
-            \`\${task.assignedTo} has not acknowledged:\\n\` +
-            \`\${task.title}\` +
-            \`\${
-              task.trackingNumber
-                ? \`\\nTracking #\${task.trackingNumber}\`
-                : ""
-            }\`
-        });
-      }`;
-
-  source = source.replace(
-    escalationStart,
-    escalationReplacement
-  );
-
-  const sendAnchor = `    for (const notification of notifications) {
-      if (!notification.to) {`;
-
-  if (!source.includes(sendAnchor)) {
-    throw new Error(
-      "Phase 28.3 could not locate the accountability SMS send loop."
-    );
-  }
-
-  const sendReplacement = `    const phase283NotificationKeys = new Set();
-
-    for (const notification of notifications) {
-      const notificationKey = [
-        String(notification.to || "").replace(/\\D/g, ""),
-        String(notification.body || "").trim()
-      ].join("|");
-
-      if (phase283NotificationKeys.has(notificationKey)) {
-        continue;
-      }
-      phase283NotificationKeys.add(notificationKey);
-
-      if (!notification.to) {`;
-
-  source = source.replace(sendAnchor, sendReplacement);
 
   fs.writeFileSync(filePath, source);
   console.log(
-    "Joshua Phase 28.3 accountability noise control installed: master pause honored, exact duplicate tasks suppressed, duplicate SMS blocked, and Travis self-escalations removed."
+    "Joshua Phase 28.4 prepared accountability noise control."
   );
 }
 
@@ -1461,7 +1305,7 @@ patchAccountabilityNoiseControl();
 patchControlPanels();
 
 console.log(
-  "Joshua Phase 28.3 operational truth authority installed: " +
+  "Joshua Phase 28.4 operational truth authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
   "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, and accountability SMS noise control."
 );
