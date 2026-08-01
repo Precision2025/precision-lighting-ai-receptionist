@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_1";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_3";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -864,6 +864,476 @@ function serviceChannelPhase28DashboardAuthority(data) {
   );
 }
 
+function patchStaleExceptionCleanup() {
+  const filePath = new URL("./exception-sync-runtime.mjs", ROOT);
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_2_STALE_ONSITE_EXCEPTION_CLEANUP")) {
+    return;
+  }
+
+  const runAnchor = `patchPhase7ForServiceChannelAutopilot();\nreconcileServiceChannelData();`;
+
+  if (!source.includes(runAnchor)) {
+    throw new Error(
+      "Phase 28.2 could not locate the exception reconciliation startup hook."
+    );
+  }
+
+  const cleanup = String.raw`// JOSHUA_PHASE28_2_STALE_ONSITE_EXCEPTION_CLEANUP
+function phase282Text(value = "") {
+  return String(value ?? "").trim();
+}
+
+function phase282StaleOnsiteText(value = "") {
+  return /technician onsite|missed checkout|onsite too long|onsite over/i.test(
+    phase282Text(value)
+  );
+}
+
+function phase282ExactClockSharkJobActive(
+  data = {},
+  tracking = "",
+  workOrder = {}
+) {
+  if (workOrder.clockSharkCurrentlyClockedIn === true) {
+    return true;
+  }
+
+  return Object.values(data.technicians || {}).some(technician => {
+    if (!technician || typeof technician !== "object") return false;
+
+    return Boolean(
+      technician.clockSharkClockedIn === true &&
+      phase282Text(technician.clockSharkCurrentTrackingNumber) ===
+        phase282Text(tracking)
+    );
+  });
+}
+
+function phase282OnsiteTruthStillCurrent(
+  data = {},
+  tracking = "",
+  workOrder = {}
+) {
+  const state = phase282Text(
+    workOrder.joshuaStatus || workOrder.state
+  ).toLowerCase();
+
+  if (!["onsite", "checkout_needed"].includes(state)) {
+    return false;
+  }
+
+  const source = [
+    workOrder.sourceSystem,
+    workOrder.source,
+    workOrder.provider,
+    workOrder.platform,
+    workOrder.integration,
+    workOrder.intakeSource
+  ]
+    .map(phase282Text)
+    .join(" ")
+    .toLowerCase();
+
+  const clockSharkAuthoritative = Boolean(
+    workOrder.isInternalWorkOrder === true ||
+    workOrder.sourceSystem === "clockshark" ||
+    source.includes("clockshark")
+  );
+
+  if (clockSharkAuthoritative) {
+    return phase282ExactClockSharkJobActive(
+      data,
+      tracking,
+      workOrder
+    );
+  }
+
+  return true;
+}
+
+function phase282CleanupStaleOnsiteAlerts() {
+  const data = readData();
+  if (!data) return;
+
+  data.workOrders =
+    data.workOrders && typeof data.workOrders === "object"
+      ? data.workOrders
+      : {};
+  data.technicians =
+    data.technicians && typeof data.technicians === "object"
+      ? data.technicians
+      : {};
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+
+  const now = new Date().toISOString();
+  let clearedWorkOrders = 0;
+  let resolvedEvents = 0;
+  let closedTasks = 0;
+
+  for (const [tracking, workOrder] of Object.entries(
+    data.workOrders
+  )) {
+    if (!workOrder || typeof workOrder !== "object") continue;
+
+    if (
+      phase282OnsiteTruthStillCurrent(
+        data,
+        tracking,
+        workOrder
+      )
+    ) {
+      continue;
+    }
+
+    let changed = false;
+
+    if (phase282StaleOnsiteText(workOrder.lastError)) {
+      workOrder.lastError = "";
+      changed = true;
+    }
+
+    if (phase282StaleOnsiteText(workOrder.syncError)) {
+      workOrder.syncError = "";
+      changed = true;
+    }
+
+    if (
+      workOrder.serviceChannelCheckoutNeeded === true &&
+      !["onsite", "checkout_needed"].includes(
+        phase282Text(
+          workOrder.joshuaStatus || workOrder.state
+        ).toLowerCase()
+      )
+    ) {
+      workOrder.serviceChannelCheckoutNeeded = false;
+      workOrder.checkoutNeededSince = "";
+      changed = true;
+    }
+
+    if (changed) {
+      workOrder.updatedAt = now;
+      data.workOrders[tracking] = workOrder;
+      clearedWorkOrders += 1;
+    }
+  }
+
+  data.events = data.events.map(event => {
+    if (!event || typeof event !== "object") return event;
+    if (phase282Text(event.level).toLowerCase() !== "error") {
+      return event;
+    }
+
+    const tracking = phase282Text(event.trackingNumber);
+    const workOrder = data.workOrders[tracking];
+    if (!workOrder) return event;
+
+    const eventText = [
+      event.type,
+      event.title,
+      event.message,
+      event.error,
+      event.note,
+      event.detail,
+      event.workflowReason,
+      event.reason
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      phase282StaleOnsiteText(eventText) &&
+      !phase282OnsiteTruthStillCurrent(
+        data,
+        tracking,
+        workOrder
+      )
+    ) {
+      resolvedEvents += 1;
+      return {
+        ...event,
+        level: "resolved",
+        resolvedAt: now,
+        resolvedReason:
+          "Current source-of-truth shows no technician onsite; stale onsite alert removed by Joshua Phase 28.2."
+      };
+    }
+
+    return event;
+  });
+
+  data.tasks = data.tasks.map(task => {
+    if (!task || typeof task !== "object") return task;
+
+    const status = phase282Text(task.status).toLowerCase();
+    if (["closed", "completed"].includes(status)) return task;
+
+    const tracking = phase282Text(task.trackingNumber);
+    const workOrder = data.workOrders[tracking];
+    if (!workOrder) return task;
+
+    const taskText = [
+      task.title,
+      task.notes,
+      task.workflowType
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      phase282StaleOnsiteText(taskText) &&
+      !phase282OnsiteTruthStillCurrent(
+        data,
+        tracking,
+        workOrder
+      )
+    ) {
+      closedTasks += 1;
+      return {
+        ...task,
+        status: "closed",
+        completedAt: now,
+        closedAt: now,
+        updatedAt: now,
+        closedReason:
+          "Current source-of-truth shows no technician onsite; stale onsite task removed by Joshua Phase 28.2."
+      };
+    }
+
+    return task;
+  });
+
+  if (clearedWorkOrders || resolvedEvents || closedTasks) {
+    data.events.unshift({
+      id:
+        Date.now() +
+        "-" +
+        Math.random().toString(36).slice(2, 8),
+      createdAt: now,
+      type: "phase28_2_stale_onsite_alert_cleanup",
+      level: "success",
+      requestedBy: "Joshua Phase 28.2",
+      clearedWorkOrders,
+      resolvedEvents,
+      closedTasks
+    });
+    data.events = data.events.slice(0, 500);
+
+    writeData(data);
+
+    console.log(
+      "Joshua Phase 28.2 removed stale onsite alerts:",
+      {
+        clearedWorkOrders,
+        resolvedEvents,
+        closedTasks
+      }
+    );
+  }
+}
+`;
+
+  source = source.replace(
+    runAnchor,
+    cleanup +
+      "\n" +
+      `patchPhase7ForServiceChannelAutopilot();\nreconcileServiceChannelData();\nphase282CleanupStaleOnsiteAlerts();`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.2 stale onsite exception cleanup installed."
+  );
+}
+
+
+function patchAccountabilityNoiseControl() {
+  const filePath = new URL("./server.js", ROOT);
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_3_ACCOUNTABILITY_NOISE_CONTROL")) {
+    return;
+  }
+
+  const settingsAnchor =
+    "  const settings = accountability.settings;\n  const now = Date.now();";
+
+  if (!source.includes(settingsAnchor)) {
+    throw new Error(
+      "Phase 28.3 could not locate the Phase 19 accountability sweep settings."
+    );
+  }
+
+  const settingsReplacement = `  const settings = accountability.settings;
+
+  // JOSHUA_PHASE28_3_ACCOUNTABILITY_NOISE_CONTROL
+  // The master accountability switch must stop reminders/escalations too.
+  // Earlier Phase 19 code only honored this switch for scheduled briefings.
+  if (settings.enabled === false) {
+    accountability.lastSweepAt = new Date().toISOString();
+    accountability.lastSweepSource = source;
+    accountability.lastSweepNotificationCount = 0;
+    writeControlData(data);
+
+    return {
+      ok: true,
+      paused: true,
+      notificationsPrepared: 0,
+      notificationsSent: 0,
+      graceActive: false,
+      notificationResults: []
+    };
+  }
+
+  const now = Date.now();`;
+
+  source = source.replace(settingsAnchor, settingsReplacement);
+
+  const notificationsAnchor =
+    "  const notifications = [];\n\n  for (const task of data.tasks) {";
+
+  if (!source.includes(notificationsAnchor)) {
+    throw new Error(
+      "Phase 28.3 could not locate the accountability notification queue."
+    );
+  }
+
+  const notificationsReplacement = `  const notifications = [];
+
+  // Close exact duplicate open tasks before they can create duplicate SMS.
+  // A duplicate is the same tracking number + title + assignee.
+  const phase283OpenTaskKeys = new Set();
+  const phase283ClosedAt = new Date().toISOString();
+
+  for (const candidate of data.tasks) {
+    if (!candidate || typeof candidate !== "object") continue;
+
+    if (
+      ["closed", "completed"].includes(
+        String(candidate.status || "").toLowerCase()
+      )
+    ) {
+      continue;
+    }
+
+    const tracking = String(candidate.trackingNumber || "")
+      .trim()
+      .toLowerCase();
+    const title = String(candidate.title || "")
+      .trim()
+      .replace(/\\s+/g, " ")
+      .toLowerCase();
+    const assignedTo = String(candidate.assignedTo || "")
+      .trim()
+      .toLowerCase();
+
+    if (!tracking || !title) continue;
+
+    const duplicateKey = [tracking, title, assignedTo].join("|");
+
+    if (phase283OpenTaskKeys.has(duplicateKey)) {
+      candidate.status = "closed";
+      candidate.closedAt = candidate.closedAt || phase283ClosedAt;
+      candidate.updatedAt = phase283ClosedAt;
+      candidate.accountabilityStatus = "completed";
+      candidate.autoClosedReason =
+        candidate.autoClosedReason ||
+        "Duplicate accountability task suppressed by Joshua Phase 28.3.";
+      continue;
+    }
+
+    phase283OpenTaskKeys.add(duplicateKey);
+  }
+
+  for (const task of data.tasks) {`;
+
+  source = source.replace(
+    notificationsAnchor,
+    notificationsReplacement
+  );
+
+  const escalationStart = `      notifications.push({
+        type: "owner",
+        to: phase19OwnerNumber(),
+        body:
+          \`🚨 Joshua accountability escalation\\n\` +
+          \`\${task.assignedTo} has not acknowledged:\\n\` +
+          \`\${task.title}\` +
+          \`\${
+            task.trackingNumber
+              ? \`\\nTracking #\${task.trackingNumber}\`
+              : ""
+          }\`
+      });`;
+
+  if (!source.includes(escalationStart)) {
+    throw new Error(
+      "Phase 28.3 could not locate the accountability escalation SMS."
+    );
+  }
+
+  const escalationReplacement = `      // Do not escalate Travis to Travis. He still receives the normal
+      // assignee acknowledgement reminder, but self-escalation is redundant.
+      if (
+        !String(task.assignedTo || "")
+          .trim()
+          .toLowerCase()
+          .startsWith("travis")
+      ) {
+        notifications.push({
+          type: "owner",
+          to: phase19OwnerNumber(),
+          body:
+            \`🚨 Joshua accountability escalation\\n\` +
+            \`\${task.assignedTo} has not acknowledged:\\n\` +
+            \`\${task.title}\` +
+            \`\${
+              task.trackingNumber
+                ? \`\\nTracking #\${task.trackingNumber}\`
+                : ""
+            }\`
+        });
+      }`;
+
+  source = source.replace(
+    escalationStart,
+    escalationReplacement
+  );
+
+  const sendAnchor = `    for (const notification of notifications) {
+      if (!notification.to) {`;
+
+  if (!source.includes(sendAnchor)) {
+    throw new Error(
+      "Phase 28.3 could not locate the accountability SMS send loop."
+    );
+  }
+
+  const sendReplacement = `    const phase283NotificationKeys = new Set();
+
+    for (const notification of notifications) {
+      const notificationKey = [
+        String(notification.to || "").replace(/\\D/g, ""),
+        String(notification.body || "").trim()
+      ].join("|");
+
+      if (phase283NotificationKeys.has(notificationKey)) {
+        continue;
+      }
+      phase283NotificationKeys.add(notificationKey);
+
+      if (!notification.to) {`;
+
+  source = source.replace(sendAnchor, sendReplacement);
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.3 accountability noise control installed: master pause honored, exact duplicate tasks suppressed, duplicate SMS blocked, and Travis self-escalations removed."
+  );
+}
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -986,12 +1456,14 @@ async function phase28ConfirmServiceChannelStatus(){
 patchPhase25StrictClockShark();
 patchPhase24ExactClockSharkJob();
 patchServiceChannelWorkflowAuthority();
+patchStaleExceptionCleanup();
+patchAccountabilityNoiseControl();
 patchControlPanels();
 
 console.log(
-  "Joshua Phase 28.1 operational truth authority installed: " +
+  "Joshua Phase 28.3 operational truth authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, and Completed/Confirmed billing."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, and accountability SMS noise control."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
