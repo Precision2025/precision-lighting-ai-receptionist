@@ -267,10 +267,10 @@ if (!panel.includes(DASHBOARD_FIX_MARKER)) {
 }
 
 
-const DASHBOARD_CARD_LINKS_MARKER = "JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4";
+const DASHBOARD_CARD_LINKS_MARKER = "JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V5";
 if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
   panel = panel.replace('</style>', `
-/* JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4 */
+/* JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V5 */
 .dashboard-clickable{cursor:pointer;position:relative;touch-action:manipulation;transition:border-color .14s ease,transform .14s ease,background .14s ease}
 .dashboard-clickable:hover{border-color:#eab308;background:#172536;transform:translateY(-1px)}
 .dashboard-clickable:focus-visible{outline:3px solid #eab308;outline-offset:2px}
@@ -278,7 +278,7 @@ if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
 @media(max-width:760px){.dashboard-clickable:hover{transform:none}.dashboard-clickable{padding-right:42px!important}}
 </style>`);
   panel = panel.replace('</body>', `<script>
-// JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V4
+// JOSHUA_DASHBOARD_ALL_CARDS_CLICKABLE_V5
 (function(){
  function openTab(tab){
   if(typeof window.officeOpenTab==='function'){window.officeOpenTab(tab);return;}
@@ -291,6 +291,25 @@ if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
   if(typeof window.officeOpenQueue==='function'){window.officeOpenQueue(queue);return;}
   openTab('operations');
  }
+ function openNeedsAttention(){
+  // JOSHUA_NEEDS_ATTENTION_POPUP_V5
+  try{
+   if(typeof window.renderAllExceptions==='function')window.renderAllExceptions();
+   else if(typeof renderAllExceptions==='function')renderAllExceptions();
+  }catch(e){}
+  const dialog=document.getElementById('exceptionDialog');
+  if(dialog){
+   if(typeof dialog.showModal==='function'){
+    if(!dialog.open)dialog.showModal();
+   }else{
+    dialog.setAttribute('open','open');
+   }
+   return;
+  }
+  const viewAll=document.getElementById('viewAllExceptions');
+  if(viewAll){viewAll.click();return;}
+  openTab('operations');
+ }
  function markCard(element,action,value){
   if(!element)return;
   const card=element.classList&&element.classList.contains('card')?element:element.closest('.card');
@@ -300,7 +319,7 @@ if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
   card.dataset.dashboardAction=action;card.dataset.dashboardValue=value;
  }
  function installClickableCards(){
-  markCard(document.getElementById('fails'),'tab','operations');
+  markCard(document.getElementById('fails'),'exceptions','current');
   markCard(document.getElementById('taskCount'),'tab','tasks');
   markCard(document.getElementById('completedToday'),'tab','workorders');
   markCard(document.getElementById('openOrders'),'tab','workorders');
@@ -317,7 +336,9 @@ if (!panel.includes(DASHBOARD_CARD_LINKS_MARKER)) {
   if(!card)return;
   if(e){e.preventDefault();e.stopImmediatePropagation();}
   const action=card.dataset.dashboardAction,value=card.dataset.dashboardValue;
-  if(action==='queue')openQueue(value);else if(action==='tab')openTab(value);
+  if(action==='exceptions')openNeedsAttention();
+  else if(action==='queue')openQueue(value);
+  else if(action==='tab')openTab(value);
  }
  document.addEventListener('click',function(e){
   const card=e.target.closest('.dashboard-clickable');if(card)activate(card,e);
