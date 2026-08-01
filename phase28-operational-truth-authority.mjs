@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_7_SC_DISPLAY";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_8_SC_CANONICAL";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -1429,6 +1429,238 @@ function patchCityGatedClockSharkRouting() {
 }
 
 
+
+function patchPhase23OperationalServiceChannelEvidence() {
+  const filePath = new URL(
+    "./phase23-source-priority-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_8_SC_OPERATIONAL_EVIDENCE")) {
+    return;
+  }
+
+  const anchor = `  if (\n    workOrder.serviceChannelTrackingNumber ||`;
+  if (!source.includes(anchor)) {
+    throw new Error(
+      "Phase 28.8 could not locate ServiceChannel source-priority evidence."
+    );
+  }
+
+  const operationalEvidence = `  // JOSHUA_PHASE28_8_SC_OPERATIONAL_EVIDENCE\n  // ServiceChannel operational evidence outranks stale ClockShark labels.\n  if (\n    workOrder.serviceChannelCheckInEventAt ||\n    workOrder.serviceChannelCheckOutEventAt ||\n    workOrder.serviceChannelPrimaryStatus ||\n    workOrder.serviceChannelExtendedStatus ||\n    workOrder.serviceChannelSourceOfTruth === true ||\n    workOrder.serviceChannelOnsiteConfirmed === true ||\n    workOrder.ivrConfirmed === true ||\n    phase23ClockSharkText(workOrder.ivrConfirmationTranscript)\n  ) {\n    return \"servicechannel\";\n  }\n\n`;
+
+  source = source.replace(
+    anchor,
+    operationalEvidence + anchor
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.8 made ServiceChannel operational evidence authoritative over stale ClockShark identity."
+  );
+}
+
+function patchServiceChannelTrackingRecovery() {
+  const filePath = new URL(
+    "./phase23-2-servicechannel-onsite-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_8_SC_TRACKING_RECOVERY")) {
+    return;
+  }
+
+  const trackingAnchor =
+    "function phase232TrackingForRecord(\n  key = \"\",\n  workOrder = {}\n) {";
+
+  if (!source.includes(trackingAnchor)) {
+    throw new Error(
+      "Phase 28.8 could not locate ServiceChannel tracking helper."
+    );
+  }
+
+  const recoveryHelper = String.raw`// JOSHUA_PHASE28_8_SC_TRACKING_RECOVERY
+function phase288RecoverServiceChannelTracking(
+  data = {},
+  key = "",
+  workOrder = {}
+) {
+  const direct = phase232TrackingForRecord(key, workOrder);
+  if (direct) return direct;
+
+  const targetTime = new Date(
+    workOrder.serviceChannelCheckInEventAt ||
+    workOrder.checkInAt ||
+    workOrder.updatedAt ||
+    0
+  ).getTime();
+  const technician = phase232Text(
+    workOrder.technician ||
+    workOrder.assignedTechnician
+  ).toLowerCase();
+
+  const byTracking = new Map();
+  for (const event of (Array.isArray(data.events) ? data.events : [])) {
+    if (!event || typeof event !== "object") continue;
+
+    const tracking = phase232Digits(
+      event.trackingNumber ||
+      event.serviceChannelTrackingNumber ||
+      event.workOrderTrackingNumber ||
+      event.workOrderNumber
+    );
+    if (!tracking) continue;
+
+    const type = phase232Text(event.type).toLowerCase();
+    const requestedBy = phase232Text(event.requestedBy).toLowerCase();
+    const resultingState = phase232Text(event.resultingState).toLowerCase();
+    const serviceChannelEvent = Boolean(
+      /service\s*channel/.test(requestedBy) ||
+      /(?:^|_)(?:checkin|checkout)(?:_|$)/.test(type) ||
+      /^workorder(?:checkin|checkout|status|updated)/.test(type)
+    );
+    if (!serviceChannelEvent) continue;
+
+    const when = new Date(
+      event.createdAt ||
+      event.completedAt ||
+      event.updatedAt ||
+      0
+    ).getTime();
+    const eventTechnician = phase232Text(
+      event.technician || event.technicianName
+    ).toLowerCase();
+
+    const bucket = byTracking.get(tracking) || {
+      tracking,
+      latestCheckIn: 0,
+      latestCheckOut: 0,
+      latestOnsite: 0,
+      bestTechMatch: false,
+      nearestCheckInDistance: Number.POSITIVE_INFINITY
+    };
+
+    if (/checkin/.test(type) || resultingState === "onsite") {
+      bucket.latestCheckIn = Math.max(bucket.latestCheckIn, when || 0);
+      if (resultingState === "onsite") {
+        bucket.latestOnsite = Math.max(bucket.latestOnsite, when || 0);
+      }
+      if (targetTime && when) {
+        bucket.nearestCheckInDistance = Math.min(
+          bucket.nearestCheckInDistance,
+          Math.abs(targetTime - when)
+        );
+      }
+    }
+
+    if (
+      /checkout/.test(type) ||
+      [
+        "checked_out",
+        "completed",
+        "pending_confirmation",
+        "ready_to_bill"
+      ].includes(resultingState)
+    ) {
+      bucket.latestCheckOut = Math.max(bucket.latestCheckOut, when || 0);
+    }
+
+    if (
+      technician &&
+      eventTechnician &&
+      technician === eventTechnician
+    ) {
+      bucket.bestTechMatch = true;
+    }
+
+    byTracking.set(tracking, bucket);
+  }
+
+  const active = [...byTracking.values()].filter(item =>
+    item.latestCheckIn > item.latestCheckOut ||
+    item.latestOnsite > item.latestCheckOut
+  );
+
+  if (!active.length) return "";
+  if (active.length === 1) return active[0].tracking;
+
+  active.sort((left, right) => {
+    const leftTech = left.bestTechMatch ? 1 : 0;
+    const rightTech = right.bestTechMatch ? 1 : 0;
+    if (leftTech !== rightTech) return rightTech - leftTech;
+
+    if (
+      left.nearestCheckInDistance !==
+      right.nearestCheckInDistance
+    ) {
+      return (
+        left.nearestCheckInDistance -
+        right.nearestCheckInDistance
+      );
+    }
+
+    return right.latestCheckIn - left.latestCheckIn;
+  });
+
+  const best = active[0];
+  const second = active[1];
+
+  // If timestamps are available, only accept the best candidate when it is
+  // materially closer than the next one. This prevents one technician who is
+  // legitimately on multiple ServiceChannel work orders from being merged
+  // into the wrong tracking number.
+  if (
+    Number.isFinite(best.nearestCheckInDistance) &&
+    Number.isFinite(second?.nearestCheckInDistance) &&
+    best.nearestCheckInDistance === second.nearestCheckInDistance &&
+    best.bestTechMatch === second.bestTechMatch
+  ) {
+    return "";
+  }
+
+  return best.tracking;
+}
+
+`;
+
+  source = source.replace(
+    trackingAnchor,
+    recoveryHelper + trackingAnchor
+  );
+
+  const recordEvidenceAnchor = `    /service\\s*channel/.test(sourceText) ||\n    workOrder.isServiceChannel === true ||`;
+  if (!source.includes(recordEvidenceAnchor)) {
+    throw new Error(
+      "Phase 28.8 could not locate ServiceChannel record-evidence rule."
+    );
+  }
+
+  source = source.replace(
+    recordEvidenceAnchor,
+    `    /service\\s*channel/.test(sourceText) ||\n    workOrder.isServiceChannel === true ||\n    workOrder.serviceChannelSourceOfTruth === true ||\n    workOrder.serviceChannelOnsiteConfirmed === true ||\n    workOrder.serviceChannelCheckInEventAt ||\n    workOrder.serviceChannelCheckOutEventAt ||\n    workOrder.serviceChannelPrimaryStatus ||\n    workOrder.serviceChannelExtendedStatus ||`
+  );
+
+  const repairTrackingAnchor = `    const tracking =\n      phase232TrackingForRecord(\n        oldKey,\n        original\n      ) ||\n      phase232Text(oldKey);`;
+
+  if (!source.includes(repairTrackingAnchor)) {
+    throw new Error(
+      "Phase 28.8 could not locate ServiceChannel repair tracking assignment."
+    );
+  }
+
+  source = source.replace(
+    repairTrackingAnchor,
+    `    const tracking =\n      phase288RecoverServiceChannelTracking(\n        data,\n        oldKey,\n        original\n      ) ||\n      phase232Text(oldKey);`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.8 recovers the real ServiceChannel tracking number before repairing contaminated onsite records."
+  );
+}
+
 function patchClockSharkCannotClaimServiceChannel() {
   const filePath = new URL(
     "./phase23-1-clockshark-data-hotfix-runtime.mjs",
@@ -1745,6 +1977,8 @@ patchPhase24ExactClockSharkJob();
 patchServiceChannelWorkflowAuthority();
 patchStaleExceptionCleanup();
 patchAccountabilityNoiseControl();
+patchPhase23OperationalServiceChannelEvidence();
+patchServiceChannelTrackingRecovery();
 patchServiceChannelOnsiteIdentity();
 patchClockSharkCannotClaimServiceChannel();
 patchCityGatedClockSharkRouting();
@@ -1752,9 +1986,9 @@ patchControlPanels();
 patchServiceChannelDisplayTruth();
 
 console.log(
-  "Joshua Phase 28.7 ServiceChannel display and city-gated authority installed: " +
+  "Joshua Phase 28.8 canonical ServiceChannel identity and city-gated authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
