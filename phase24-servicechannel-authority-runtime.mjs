@@ -295,35 +295,47 @@ function patchFinalServer() {
   }
 
   let insightsBlock = server.slice(insightsStart, insightsEnd);
-  const legacyInsightsOnsite =
-    '  const onsite = workOrders.filter(item => item.state === "onsite");';
-  if (!insightsBlock.includes(legacyInsightsOnsite)) {
-    throw new Error(
-      "Could not locate the legacy Joshua Intelligence onsite filter."
-    );
-  }
-
-  insightsBlock = insightsBlock.replace(
-    legacyInsightsOnsite,
-    `  const onsite = workOrders.filter(item =>
+  const authorityInsightsOnsite = `  const onsite = workOrders.filter(item =>
     phase24IsServiceChannel(item) &&
     String(item.state || item.joshuaStatus || "").toLowerCase() === "onsite" &&
     item.serviceChannelCheckoutNeeded !== true
-  );`
+  );`;
+  const insightsOnsiteCandidates = [
+    '  const onsite = workOrders.filter(item => item.state === "onsite");',
+    '  const onsite = workOrders.filter(phase232IsOnsite);'
+  ];
+  const insightsOnsiteLine = insightsOnsiteCandidates.find(line =>
+    insightsBlock.includes(line)
   );
 
-  const legacyInsightsTitle =
-    '      title: `${onsite.length} technician${onsite.length === 1 ? "" : "s"} currently onsite`,';
-  if (!insightsBlock.includes(legacyInsightsTitle)) {
-    throw new Error(
-      "Could not locate the legacy Joshua Intelligence onsite title."
+  if (insightsOnsiteLine) {
+    insightsBlock = insightsBlock.replace(
+      insightsOnsiteLine,
+      authorityInsightsOnsite
+    );
+  } else if (!insightsBlock.includes(authorityInsightsOnsite)) {
+    // Intelligence is display-only. Never stop Joshua from starting because
+    // an earlier phase changed this cosmetic filter again.
+    console.warn(
+      "Joshua Phase 24 skipped the Intelligence onsite-label patch because the current filter was not recognized."
     );
   }
 
-  insightsBlock = insightsBlock.replace(
-    legacyInsightsTitle,
-    '      title: `${onsite.length} ServiceChannel job${onsite.length === 1 ? "" : "s"} currently onsite`,'
-  );
+  const legacyInsightsTitle =
+    '      title: `${onsite.length} technician${onsite.length === 1 ? "" : "s"} currently onsite`,';
+  const authorityInsightsTitle =
+    '      title: `${onsite.length} ServiceChannel job${onsite.length === 1 ? "" : "s"} currently onsite`,';
+
+  if (insightsBlock.includes(legacyInsightsTitle)) {
+    insightsBlock = insightsBlock.replace(
+      legacyInsightsTitle,
+      authorityInsightsTitle
+    );
+  } else if (!insightsBlock.includes(authorityInsightsTitle)) {
+    console.warn(
+      "Joshua Phase 24 skipped the Intelligence onsite-title patch because the current title was not recognized."
+    );
+  }
 
   server =
     server.slice(0, insightsStart) +
