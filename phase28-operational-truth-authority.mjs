@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_4";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_6_CITY_GATE";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -1178,6 +1178,256 @@ function patchAccountabilityNoiseControl() {
   );
 }
 
+
+function patchServiceChannelOnsiteIdentity() {
+  const filePath = new URL(
+    "./phase23-2-servicechannel-onsite-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_6_SERVICECHANNEL_CITY_AUTHORITY")) {
+    return;
+  }
+
+  const artificialAnchor = `function phase232IsArtificialServiceChannelLabel(
+  value = "",
+  tracking = ""
+) {
+  const text = phase232Text(value);
+  if (!text) return true;`;
+
+  if (!source.includes(artificialAnchor)) {
+    throw new Error(
+      "Phase 28.6 could not locate the ServiceChannel display-label filter."
+    );
+  }
+
+  const cityAuthorityHelper = `// JOSHUA_PHASE28_6_SERVICECHANNEL_CITY_AUTHORITY
+function phase286ServiceChannelCityAllowedForClockShark(
+  workOrder = {}
+) {
+  const city = phase232Text(
+    workOrder.city ||
+    workOrder.jobCity ||
+    workOrder.locationCity
+  ).toLowerCase();
+
+  // Preserve the existing Joshua rule: a missing city is not treated as
+  // out-of-town, but a known city must appear in LOCAL_JOB_CITIES.
+  if (!city) return true;
+
+  const configured = String(
+    process.env.LOCAL_JOB_CITIES ||
+      "Dallas,Fort Worth,Arlington,Garland,Plano,Irving,Frisco,McKinney,Richardson,Carrollton,Mesquite,Grand Prairie,Rowlett,Sachse,Rockwall,Allen,Addison,Coppell,Lewisville,The Colony,Grapevine,Euless,Bedford,Hurst"
+  )
+    .split(",")
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  return configured.includes(city);
+}
+
+`;
+
+  source = source.replace(
+    "function phase232IsArtificialServiceChannelLabel(",
+    cityAuthorityHelper +
+      "function phase232IsArtificialServiceChannelLabel("
+  );
+
+  source = source.replace(
+    artificialAnchor,
+    artificialAnchor + `
+
+  // A ServiceChannel work order must never display the generic ClockShark
+  // placeholder label. This only fixes the display identity; the city gate
+  // below decides whether a legitimate ClockShark mirror may exist.
+  if (/^clock\\s*shark(?:\\s+job)?$/i.test(text)) {
+    return true;
+  }`
+  );
+
+  const workOrderFilter = `    if (
+      !text ||
+      phase23ClockSharkIsInternalReference(text) ||
+      /^service\\s*channel/i.test(text)
+    ) {
+      continue;
+    }`;
+
+  if (!source.includes(workOrderFilter)) {
+    throw new Error(
+      "Phase 28.6 could not locate the ServiceChannel work-order number filter."
+    );
+  }
+
+  source = source.replace(
+    workOrderFilter,
+    `    if (
+      !text ||
+      phase23ClockSharkIsInternalReference(text) ||
+      /^service\\s*channel/i.test(text) ||
+      /^clock\\s*shark(?:\\s+job)?$/i.test(text)
+    ) {
+      continue;
+    }`
+  );
+
+  const repairedAnchor = `      serviceChannelTrackingNumber:
+        tracking
+    };`;
+
+  if (!source.includes(repairedAnchor)) {
+    throw new Error(
+      "Phase 28.6 could not locate the ServiceChannel repair object."
+    );
+  }
+
+  source = source.replace(
+    repairedAnchor,
+    `      serviceChannelTrackingNumber:
+        tracking,
+      // LOCAL ServiceChannel jobs may also have a real ClockShark mirror.
+      // OUT-OF-TOWN ServiceChannel jobs (for example Houston, unless added to
+      // LOCAL_JOB_CITIES) must remain ServiceChannel-only and must not carry
+      // ClockShark identity or onsite state.
+      ...(phase286ServiceChannelCityAllowedForClockShark(original)
+        ? {}
+        : {
+            clockSharkJobId: "",
+            clockSharkJobNumber: "",
+            clockSharkJobName: "",
+            clockSharkCurrentlyClockedIn: false,
+            clockSharkOpenShiftCount: 0
+          })
+    };`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.6 ServiceChannel identity now obeys the ClockShark city allowlist."
+  );
+}
+
+function patchCityGatedClockSharkRouting() {
+  const filePath = new URL("./server.js", ROOT);
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_6_CLOCKSHARK_CITY_GATE")) {
+    return;
+  }
+
+  const createBlock = `  if (clockSharkZapierWebhookUrl) {
+    try {
+      const result = await sendJobToClockSharkZapier({
+        name: [item.customer, item.locationName].filter(Boolean).join(" — ") || \`Work Order \${trackingNumber}\`,
+        jobNumber: item.workOrderNumber,
+        description: item.problemDescription || item.trade || "Service job",
+        address: item.address,
+        city: item.city,
+        stateProvince: item.stateProvince,
+        postalCode: item.postalCode,
+        customerName: item.customer,
+        technician_id: technicianId,
+        technician_name: technicianName
+      });
+      results.clockShark = { ok: true, status: result.status };
+    } catch (error) { results.clockShark = { ok: false, error: error.message }; }
+  }`;
+
+  if (!source.includes(createBlock)) {
+    throw new Error(
+      "Phase 28.6 could not locate Control Panel ClockShark creation routing."
+    );
+  }
+
+  const createReplacement = `  /* JOSHUA_PHASE28_6_CLOCKSHARK_CITY_GATE */
+  if (clockSharkZapierWebhookUrl && !isOutOfTownJob(item)) {
+    try {
+      const result = await sendJobToClockSharkZapier({
+        name: [item.customer, item.locationName].filter(Boolean).join(" — ") || \`Work Order \${trackingNumber}\`,
+        jobNumber: item.workOrderNumber,
+        description: item.problemDescription || item.trade || "Service job",
+        address: item.address,
+        city: item.city,
+        stateProvince: item.stateProvince,
+        postalCode: item.postalCode,
+        customerName: item.customer,
+        technician_id: technicianId,
+        technician_name: technicianName
+      });
+      results.clockShark = { ok: true, status: result.status };
+    } catch (error) {
+      results.clockShark = { ok: false, error: error.message };
+    }
+  } else if (clockSharkZapierWebhookUrl && isOutOfTownJob(item)) {
+    results.clockShark = {
+      ok: false,
+      skipped: true,
+      reason: "out_of_town_city",
+      error: "Not created — city is not in LOCAL_JOB_CITIES",
+      city: item.city || ""
+    };
+  }`;
+
+  source = source.replace(createBlock, createReplacement);
+
+  const statusLine = `clockSharkStatus: results.clockShark.ok ? "created" : (results.clockShark.skipped ? "not_configured" : "retry_needed")`;
+  if (source.includes(statusLine)) {
+    source = source.replace(
+      statusLine,
+      `clockSharkStatus: results.clockShark.ok ? "created" : (results.clockShark.skipped ? "not_required" : "retry_needed")`
+    );
+  }
+
+  const retryAnchor = `  const item = readControlData().workOrders[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Work order not found." });
+  try {`;
+
+  if (!source.includes(retryAnchor)) {
+    throw new Error(
+      "Phase 28.6 could not locate the ClockShark retry route."
+    );
+  }
+
+  source = source.replace(
+    retryAnchor,
+    `  const item = readControlData().workOrders[tracking];
+  if (!item) return reply.code(404).send({ ok: false, error: "Work order not found." });
+
+  // JOSHUA_PHASE28_6_CLOCKSHARK_CITY_GATE_RETRY
+  // Manual retry must obey the exact same city allowlist as automatic creation.
+  if (isOutOfTownJob(item)) {
+    updateControlWorkOrder(tracking, {
+      clockSharkStatus: "not_required",
+      clockSharkLastError: "",
+      clockSharkLastRetryAt: new Date().toISOString()
+    });
+    addControlEvent({
+      type: "clockshark_retry_skipped_out_of_town",
+      level: "success",
+      trackingNumber: tracking,
+      requestedBy: "Control Panel",
+      city: item.city || ""
+    });
+    return reply.send({
+      ok: true,
+      skipped: true,
+      reason: "out_of_town_city",
+      city: item.city || ""
+    });
+  }
+
+  try {`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.6 enforced LOCAL_JOB_CITIES before every direct ClockShark job creation/retry."
+  );
+}
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -1302,12 +1552,14 @@ patchPhase24ExactClockSharkJob();
 patchServiceChannelWorkflowAuthority();
 patchStaleExceptionCleanup();
 patchAccountabilityNoiseControl();
+patchServiceChannelOnsiteIdentity();
+patchCityGatedClockSharkRouting();
 patchControlPanels();
 
 console.log(
-  "Joshua Phase 28.4 operational truth authority installed: " +
+  "Joshua Phase 28.6 city-gated ServiceChannel/ClockShark authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, and accountability SMS noise control."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
