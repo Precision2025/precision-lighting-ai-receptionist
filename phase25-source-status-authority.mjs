@@ -1212,6 +1212,269 @@ function phase25BillingReady(item = {}) {
   );
 }
 
+
+function patchTaskExceptionAuthority() {
+  const serverPath = new URL("./server.js", ROOT);
+  const searchSyncPath = new URL("./search-sync-runtime.mjs", ROOT);
+
+  if (!fs.existsSync(serverPath)) {
+    throw new Error(
+      "Phase 25 V6 could not locate server.js for task/exception authority."
+    );
+  }
+
+  let server = fs.readFileSync(serverPath, "utf8");
+
+  if (!server.includes("JOSHUA_PHASE25_V6_TASK_EXCEPTION_AUTHORITY")) {
+    const summaryAnchor = "function controlSummary() {";
+    if (!server.includes(summaryAnchor)) {
+      throw new Error(
+        "Phase 25 V6 could not locate controlSummary in server.js."
+      );
+    }
+
+    const helpers = `// JOSHUA_PHASE25_V6_TASK_EXCEPTION_AUTHORITY
+function phase25FindWorkOrderForTask(data = {}, task = {}) {
+  const tracking = String(task.trackingNumber || "").trim();
+  if (!tracking) return null;
+
+  if (data.workOrders && data.workOrders[tracking]) {
+    return data.workOrders[tracking];
+  }
+
+  return Object.values(data.workOrders || {}).find(item =>
+    String(
+      item?.trackingNumber ||
+      item?.workOrderNumber ||
+      item?.jobNumber ||
+      ""
+    ).trim() === tracking
+  ) || null;
+}
+
+function phase25DocumentationMissing(item = {}) {
+  const status = String(
+    item.joshuaDocumentation ||
+    item.documentationStatus ||
+    ""
+  ).toLowerCase();
+
+  return Boolean(
+    /missing/.test(status) ||
+    item.photosComplete === false ||
+    item.completionNotesComplete === false ||
+    String(item.joshuaStatus || item.state || "")
+      .toLowerCase() === "documentation_missing"
+  );
+}
+
+function phase25CallbackTaskStillApplies(data = {}, task = {}) {
+  const tracking = String(task.trackingNumber || "").trim();
+  if (!tracking) return false;
+
+  return (Array.isArray(data.callbacks) ? data.callbacks : []).some(callback => {
+    const ids = [
+      callback.id,
+      callback.callSid,
+      callback.phone,
+      callback.createdAt,
+      callback.trackingNumber
+    ].map(value => String(value || "").trim());
+
+    const status = String(callback.status || "open").toLowerCase();
+    return ids.includes(tracking) &&
+      !["closed", "completed"].includes(status);
+  });
+}
+
+function phase25AutoTaskStillApplies(data = {}, task = {}) {
+  const source = String(task.source || "").trim().toLowerCase();
+  if (source !== "phase 19 accountability") return true;
+
+  const workflow = String(task.workflowType || "general")
+    .trim()
+    .toLowerCase();
+
+  if (workflow === "callback") {
+    return phase25CallbackTaskStillApplies(data, task);
+  }
+
+  const item = phase25FindWorkOrderForTask(data, task);
+  if (!item) return false;
+
+  const state = String(
+    item.joshuaStatus ||
+    item.state ||
+    ""
+  ).trim().toLowerCase();
+
+  if (workflow === "pending_confirmation") {
+    return state === "pending_confirmation";
+  }
+
+  if (workflow === "documentation") {
+    return phase25DocumentationMissing(item);
+  }
+
+  if (workflow === "checkout_review") {
+    if (state === "checkout_review") return true;
+
+    if (state !== "onsite" || !item.checkInAt) {
+      return false;
+    }
+
+    const checkedInAt = new Date(item.checkInAt).getTime();
+    if (!Number.isFinite(checkedInAt)) return false;
+
+    const maxMinutes = Number(
+      data.settings?.maxOnsiteMinutes || 240
+    );
+
+    return Date.now() - checkedInAt > maxMinutes * 60000;
+  }
+
+  if (workflow === "proposal") {
+    return state === "pending_proposal";
+  }
+
+  if (workflow === "authorization") {
+    return state === "awaiting_authorization";
+  }
+
+  if (workflow === "parts") {
+    return state === "parts_needed";
+  }
+
+  if (workflow === "return_trip") {
+    return state === "need_to_schedule";
+  }
+
+  if (workflow === "billing") {
+    const invoiceStatus = String(item.invoiceStatus || "")
+      .trim()
+      .toLowerCase();
+
+    return state === "ready_to_bill" &&
+      !["submitted", "paid"].includes(invoiceStatus);
+  }
+
+  if (workflow === "customer_update") {
+    return [
+      "pending_confirmation",
+      "awaiting_authorization",
+      "parts_needed",
+      "need_to_schedule"
+    ].includes(state) && item.customerUpdated !== true;
+  }
+
+  // Unknown/general accountability tasks are left alone so a real manual
+  // obligation is never deleted by this cleanup.
+  return true;
+}
+
+function phase25ReconcileStaleAccountabilityTasks(data = {}) {
+  data.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  const now = new Date().toISOString();
+  let closed = 0;
+
+  for (const task of data.tasks) {
+    if (!task || typeof task !== "object") continue;
+
+    const status = String(task.status || "open").toLowerCase();
+    if (["closed", "completed"].includes(status)) continue;
+
+    if (phase25AutoTaskStillApplies(data, task)) continue;
+
+    task.status = "closed";
+    task.completedAt = task.completedAt || now;
+    task.closedAt = task.closedAt || now;
+    task.updatedAt = now;
+    task.accountabilityStatus = "completed";
+    task.autoClosedAt = now;
+    task.autoClosedReason =
+      "Underlying workflow condition is no longer active.";
+    closed += 1;
+  }
+
+  if (closed > 0) {
+    writeControlData(data);
+  }
+
+  return closed;
+}
+
+`;
+
+    server = server.replace(
+      summaryAnchor,
+      helpers + summaryAnchor
+    );
+
+    const summaryStart = `function controlSummary() {
+  const data = readControlData();`;
+    const summaryReplacement = `function controlSummary() {
+  const data = readControlData();
+  phase25ReconcileStaleAccountabilityTasks(data);`;
+
+    if (!server.includes(summaryStart)) {
+      throw new Error(
+        "Phase 25 V6 could not locate controlSummary data load."
+      );
+    }
+    server = server.replace(summaryStart, summaryReplacement);
+
+    const failuresOld = `  const failures = data.events.filter(item =>
+    item.level === "error" &&
+    Date.now() - new Date(item.createdAt).getTime() < 24 * 60 * 60 * 1000
+  );`;
+
+    const failuresNew = `  const failures = data.events.filter(item =>
+    item.level === "error" &&
+    !String(item.type || "").toLowerCase().startsWith("accountability_") &&
+    Date.now() - new Date(item.createdAt).getTime() < 24 * 60 * 60 * 1000
+  );`;
+
+    if (!server.includes(failuresOld)) {
+      throw new Error(
+        "Phase 25 V6 could not locate the dashboard failure filter."
+      );
+    }
+    server = server.replace(failuresOld, failuresNew);
+
+    fs.writeFileSync(serverPath, server);
+  }
+
+  if (!fs.existsSync(searchSyncPath)) {
+    throw new Error(
+      "Phase 25 V6 could not locate search-sync-runtime.mjs."
+    );
+  }
+
+  let searchSync = fs.readFileSync(searchSyncPath, "utf8");
+  const oldReplacement = `  const openTasks = data.tasks.filter(item => item.status !== "closed");
+  const openCallbacks = (Array.isArray(data.callbacks) ? data.callbacks : [])`;
+  const newReplacement = `  const openTasks = data.tasks.filter(item =>
+    !["closed", "completed"].includes(
+      String(item.status || "").toLowerCase()
+    )
+  );
+  const openCallbacks = (Array.isArray(data.callbacks) ? data.callbacks : [])`;
+
+  if (searchSync.includes(oldReplacement)) {
+    searchSync = searchSync.replace(oldReplacement, newReplacement);
+    fs.writeFileSync(searchSyncPath, searchSync);
+  } else if (!searchSync.includes(newReplacement)) {
+    throw new Error(
+      "Phase 25 V6 could not locate the Phase 15 open-task summary replacement."
+    );
+  }
+
+  console.log(
+    "Joshua Phase 25 V6 task/exception authority installed: stale Phase 19 " +
+    "tasks auto-close and accountability history no longer inflates Needs Attention."
+  );
+}
+
 function patchOnsitePopupTruth() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -1260,10 +1523,11 @@ patchPhase24Classifier();
 patchPhase24ClockSharkLiveCounter();
 patchOnsitePopupTruth();
 patchBillingAuthority();
+patchTaskExceptionAuthority();
 repairPersistedSourceAndStatus();
 
 console.log(
-  "Joshua Phase 25 V5 live source/status + billing authority installed."
+  "Joshua Phase 25 V6 live source/status + billing + task authority installed."
 );
 
 await import("./phase24-servicechannel-authority.mjs");
