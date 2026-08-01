@@ -4,9 +4,9 @@ import path from "node:path";
 const ROOT = new URL("./", import.meta.url);
 
 const STATUS_PRIORITY_MARKER =
-  "JOSHUA_PHASE25_SERVICECHANNEL_STATUS_PRIORITY_V2";
+  "JOSHUA_PHASE25_SERVICECHANNEL_STATUS_PRIORITY_V3";
 const PHASE24_CLASSIFIER_MARKER =
-  "JOSHUA_PHASE25_PHASE24_SOURCE_CLASSIFIER_V2";
+  "JOSHUA_PHASE25_PHASE24_SOURCE_CLASSIFIER_V3";
 
 function text(value = "") {
   return String(value ?? "").trim();
@@ -85,27 +85,31 @@ function strongServiceChannelEvidence(data = {}, tracking = "", item = {}) {
     .map(lower)
     .join(" ");
 
-  const strongItem = strongServiceChannelItemEvidence(item);
   const strongEvent = genuineServiceChannelEvent(data, tracking);
+  const operationalEvidence = Boolean(
+    item.serviceChannelPrimaryStatus ||
+    item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript
+  );
 
-  // Explicit ClockShark records must not become ServiceChannel merely because
-  // an older bad repair left serviceChannelSourceOfTruth=true or a generic
-  // ServiceChannel event behind.
-  if (clockSharkEvidence(item) && !strongItem && !strongEvent) {
-    return false;
+  /*
+   * Explicit ClockShark identity wins unless ServiceChannel has actual
+   * operational evidence. A stale tracking-number field or old flag alone
+   * cannot turn a ClockShark job into ServiceChannel.
+   */
+  if (clockSharkEvidence(item)) {
+    return Boolean(strongEvent || operationalEvidence);
   }
 
   return Boolean(
-    strongItem ||
+    strongServiceChannelItemEvidence(item) ||
     strongEvent ||
-    (
-      !clockSharkEvidence(item) &&
-      (
-        item.serviceChannelSourceOfTruth === true ||
-        item.isServiceChannel === true ||
-        source.includes("servicechannel")
-      )
-    )
+    item.serviceChannelSourceOfTruth === true ||
+    item.isServiceChannel === true ||
+    source.includes("servicechannel")
   );
 }
 
@@ -252,7 +256,7 @@ function patchServiceChannelStatusPriority() {
 
   if (!fs.existsSync(filePath)) {
     console.warn(
-      "Joshua Phase 25 V2: ServiceChannel webhook bootstrap not found; " +
+      "Joshua Phase 25 V3: ServiceChannel webhook bootstrap not found; " +
       "status-priority patch skipped."
     );
     return;
@@ -280,7 +284,7 @@ function patchServiceChannelStatusPriority() {
 
   if (start < 0 || end <= start) {
     console.warn(
-      "Joshua Phase 25 V2: ServiceChannel status function was not found; " +
+      "Joshua Phase 25 V3: ServiceChannel status function was not found; " +
       "status-priority patch skipped."
     );
     return;
@@ -330,7 +334,7 @@ function serviceChannelStatusState(primary = "", extended = "") {
   fs.writeFileSync(filePath, source);
 
   console.log(
-    "Joshua Phase 25 V2 corrected ServiceChannel status priority."
+    "Joshua Phase 25 V3 corrected ServiceChannel status priority."
   );
 }
 
@@ -413,28 +417,26 @@ function phase25StrongServiceChannelEvidence(
     .toLowerCase();
 
   const hasClockShark = clockSharkEvidence(item);
-  const hasStrongIdentifiers = serviceChannelIdentifiers(item);
   const genuineEvent = phase25GenuineServiceChannelEvent(data, key);
+  const operationalEvidence = Boolean(
+    item.serviceChannelPrimaryStatus ||
+    item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript
+  );
 
-  if (
-    hasClockShark &&
-    !hasStrongIdentifiers &&
-    !genuineEvent
-  ) {
-    return false;
+  if (hasClockShark) {
+    return Boolean(genuineEvent || operationalEvidence);
   }
 
   return Boolean(
-    hasStrongIdentifiers ||
+    serviceChannelIdentifiers(item) ||
     genuineEvent ||
-    (
-      !hasClockShark &&
-      (
-        item.serviceChannelSourceOfTruth === true ||
-        item.isServiceChannel === true ||
-        source.includes("servicechannel")
-      )
-    )
+    item.serviceChannelSourceOfTruth === true ||
+    item.isServiceChannel === true ||
+    source.includes("servicechannel")
   );
 }
 
@@ -583,33 +585,28 @@ function isServiceChannel(item = {}, key = "", data = {}) {
     item.clockSharkSourceJobName
   );
 
-  const hasStrongServiceChannelEvidence = Boolean(
-    item.serviceChannelTrackingNumber ||
-    item.scTrackingNumber ||
-    item.serviceChannelWorkOrderNumber ||
-    item.scWorkOrderNumber ||
-    item.serviceChannelCheckInEventAt ||
-    item.serviceChannelCheckOutEventAt ||
+  const operationalServiceChannelEvidence = Boolean(
     item.serviceChannelPrimaryStatus ||
     item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
     item.ivrConfirmed === true ||
     item.ivrConfirmationTranscript
   );
 
-  if (hasClockShark && !hasStrongServiceChannelEvidence) {
+  if (hasClockShark && !operationalServiceChannelEvidence) {
     return false;
   }
 
   return Boolean(
-    hasStrongServiceChannelEvidence ||
-    (
-      !hasClockShark &&
-      (
-        item.serviceChannelSourceOfTruth === true ||
-        item.isServiceChannel === true ||
-        source.includes("servicechannel")
-      )
-    )
+    operationalServiceChannelEvidence ||
+    item.serviceChannelTrackingNumber ||
+    item.scTrackingNumber ||
+    item.serviceChannelWorkOrderNumber ||
+    item.scWorkOrderNumber ||
+    item.serviceChannelSourceOfTruth === true ||
+    item.isServiceChannel === true ||
+    source.includes("servicechannel")
   );
 }
 `;
@@ -622,7 +619,329 @@ function isServiceChannel(item = {}, key = "", data = {}) {
   fs.writeFileSync(filePath, source);
 
   console.log(
-    "Joshua Phase 25 V2 hardened Phase 24 source classification."
+    "Joshua Phase 25 V3 hardened Phase 24 source classification."
+  );
+}
+
+function patchClockSharkActivitySource() {
+  const files = [
+    new URL("./phase22-clockshark-internal-jobs-runtime.mjs", ROOT),
+    new URL("./phase23-5-clockshark-activity-runtime.mjs", ROOT)
+  ];
+
+  for (const filePath of files) {
+    if (!fs.existsSync(filePath)) continue;
+
+    let source = fs.readFileSync(filePath, "utf8");
+    const before = source;
+
+    source = source.replace(
+      /(\n\s*)clockSharkStatus:/g,
+      '$1activitySource: "clockshark",$1clockSharkStatus:'
+    );
+
+    if (source !== before) {
+      fs.writeFileSync(filePath, source);
+    }
+  }
+
+  console.log(
+    "Joshua Phase 25 V3 stamped ClockShark technician activity source."
+  );
+}
+
+function patchPhase2387ClockSharkIsolation() {
+  const filePath = new URL(
+    "./phase23-8-7-safe-servicechannel-reconciliation.mjs",
+    ROOT
+  );
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      "Phase 23.8.7 ServiceChannel reconciliation is missing."
+    );
+  }
+
+  let source = fs.readFileSync(filePath, "utf8");
+
+  const helperStart = source.indexOf(
+    "function phase2387IsServiceChannel("
+  );
+  const helperEnd = source.indexOf(
+    "\nfunction phase2387TemporaryIvrState(",
+    helperStart
+  );
+
+  if (helperStart < 0 || helperEnd <= helperStart) {
+    throw new Error(
+      "Could not locate Phase 23.8.7 source classifier."
+    );
+  }
+
+  const helperReplacement = `function phase2387ExplicitClockShark(
+  key = "",
+  item = {}
+) {
+  const source = [
+    item.sourceSystem,
+    item.source,
+    item.provider,
+    item.platform,
+    item.integration,
+    item.intakeSource
+  ]
+    .map(phase2387Text)
+    .join(" ")
+    .toLowerCase();
+
+  return Boolean(
+    /clock\\s*shark/.test(source) ||
+    item.isInternalWorkOrder === true ||
+    item.clockSharkJobId ||
+    item.clockSharkJobNumber ||
+    item.clockSharkJobName ||
+    item.clockSharkSourceJobId ||
+    item.clockSharkSourceJobNumber ||
+    item.clockSharkSourceJobName
+  );
+}
+
+function phase2387OperationalServiceChannelEvidence(
+  item = {}
+) {
+  return Boolean(
+    item.serviceChannelPrimaryStatus ||
+    item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript
+  );
+}
+
+function phase2387IncomingServiceChannelUpdate(
+  updates = {}
+) {
+  const source = [
+    updates.sourceSystem,
+    updates.source,
+    updates.provider,
+    updates.integration
+  ]
+    .map(phase2387Text)
+    .join(" ")
+    .toLowerCase();
+
+  return Boolean(
+    /service\\s*channel/.test(source) ||
+    phase2387OperationalServiceChannelEvidence(updates)
+  );
+}
+
+function phase2387IsServiceChannel(
+  key = "",
+  item = {}
+) {
+  const source = [
+    item.sourceSystem,
+    item.source,
+    item.provider,
+    item.platform,
+    item.integration,
+    item.intakeSource
+  ]
+    .map(phase2387Text)
+    .join(" ")
+    .toLowerCase();
+
+  const explicitClockShark =
+    phase2387ExplicitClockShark(key, item);
+  const operationalServiceChannel =
+    phase2387OperationalServiceChannelEvidence(item);
+
+  if (explicitClockShark && !operationalServiceChannel) {
+    return false;
+  }
+
+  return Boolean(
+    /service\\s*channel/.test(source) ||
+    item.isServiceChannel === true ||
+    item.serviceChannelTrackingNumber ||
+    item.serviceChannelWorkOrderNumber ||
+    item.scTrackingNumber ||
+    item.scWorkOrderNumber ||
+    /^\\d{7,12}$/.test(phase2387Text(key)) ||
+    /^\\d{7,12}$/.test(
+      phase2387Text(item.trackingNumber)
+    )
+  );
+}
+`;
+
+  source =
+    source.slice(0, helperStart) +
+    helperReplacement +
+    source.slice(helperEnd);
+
+  const reconcileNeedle = `  for (const [key, duplicate] of Object.entries({
+    ...workOrders
+  })) {
+    if (!workOrders[key]) continue;
+`;
+
+  if (!source.includes(reconcileNeedle)) {
+    throw new Error(
+      "Could not locate Phase 23.8.7 direct reconciliation loop."
+    );
+  }
+
+  source = source.replace(
+    reconcileNeedle,
+    `${reconcileNeedle}
+    if (
+      phase2387ExplicitClockShark(key, duplicate) &&
+      !phase2387IsServiceChannel(key, duplicate)
+    ) {
+      continue;
+    }
+`
+  );
+
+  const updateStart = source.indexOf(
+    "function updateControlWorkOrder("
+  );
+  const updateEnd = source.indexOf(
+    "\n/*\n * Repair existing duplicates",
+    updateStart
+  );
+
+  if (updateStart < 0 || updateEnd <= updateStart) {
+    throw new Error(
+      "Could not locate Phase 23.8.7 updateControlWorkOrder."
+    );
+  }
+
+  let updateBlock = source.slice(updateStart, updateEnd);
+  const numericNeedle =
+    `  if (/^\\d{7,12}$/.test(key)) {`;
+
+  if (!updateBlock.includes(numericNeedle)) {
+    throw new Error(
+      "Could not locate Phase 23.8.7 numeric ServiceChannel promotion."
+    );
+  }
+
+  updateBlock = updateBlock.replace(
+    numericNeedle,
+    `  if (
+    /^\\d{7,12}$/.test(key) &&
+    !(
+      phase2387ExplicitClockShark(
+        key,
+        data.workOrders[key]
+      ) &&
+      !phase2387IncomingServiceChannelUpdate(updates)
+    )
+  ) {`
+  );
+
+  source =
+    source.slice(0, updateStart) +
+    updateBlock +
+    source.slice(updateEnd);
+
+  fs.writeFileSync(filePath, source);
+
+  console.log(
+    "Joshua Phase 25 V3 isolated ClockShark records from legacy ServiceChannel reconciliation."
+  );
+}
+
+function patchPhase24ClockSharkLiveCounter() {
+  const filePath = new URL(
+    "./phase24-servicechannel-authority-runtime.mjs",
+    ROOT
+  );
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      "Phase 24 authority runtime is missing."
+    );
+  }
+
+  let source = fs.readFileSync(filePath, "utf8");
+
+  const functionStart = source.indexOf(
+    "function phase24ClockSharkTechnicianActive(technician = {}) {"
+  );
+  const functionEnd = source.indexOf(
+    "\n}\n\n`;",
+    functionStart
+  );
+
+  if (functionStart < 0 || functionEnd <= functionStart) {
+    throw new Error(
+      "Could not locate Phase 24 ClockShark live predicate."
+    );
+  }
+
+  const replacement = `function phase24ClockSharkTechnicianActive(technician = {}) {
+  const status = String(
+    technician.clockSharkStatus ||
+    technician.activityStatus ||
+    technician.status ||
+    ""
+  ).toLowerCase();
+
+  if (technician.clockSharkClockedIn === true) {
+    return true;
+  }
+
+  if (technician.clockSharkClockedIn === false) {
+    return false;
+  }
+
+  const source = String(
+    technician.activitySource || ""
+  ).toLowerCase();
+
+  return Boolean(
+    ["onsite", "clocked_in", "working", "traveling", "on_break", "non_job"].includes(status) &&
+    (
+      source === "clockshark" ||
+      technician.clockSharkCurrentJob ||
+      technician.clockSharkActivityLabel ||
+      technician.clockSharkCurrentTrackingNumber
+    )
+  );
+}`;
+
+  source =
+    source.slice(0, functionStart) +
+    replacement +
+    source.slice(functionEnd + 2);
+
+  const oldCounter = `  const clockSharkClockedIn = technicians.filter(
+    phase24ClockSharkTechnicianActive
+  );`;
+
+  if (!source.includes(oldCounter)) {
+    throw new Error(
+      "Could not locate Phase 24 ClockShark dashboard counter."
+    );
+  }
+
+  source = source.replace(
+    oldCounter,
+    `  const clockSharkClockedIn = Object.values(
+    data.technicians || {}
+  ).filter(phase24ClockSharkTechnicianActive);`
+  );
+
+  fs.writeFileSync(filePath, source);
+
+  console.log(
+    "Joshua Phase 25 V3 connected the ClockShark card to live technician state."
   );
 }
 
@@ -752,9 +1071,9 @@ function repairPersistedSourceAndStatus() {
           "-" +
           Math.random().toString(36).slice(2, 8),
         createdAt: now,
-        type: "phase25_v2_source_status_reconciled",
+        type: "phase25_v3_source_status_reconciled",
         level: "success",
-        requestedBy: "Joshua Phase 25 V2",
+        requestedBy: "Joshua Phase 25 V3",
         correctedClockShark,
         correctedServiceChannel
       });
@@ -768,7 +1087,7 @@ function repairPersistedSourceAndStatus() {
       );
 
       console.log(
-        "Joshua Phase 25 V2 repaired source/status records:",
+        "Joshua Phase 25 V3 repaired source/status records:",
         {
           correctedClockShark,
           correctedServiceChannel
@@ -777,18 +1096,21 @@ function repairPersistedSourceAndStatus() {
     }
   } catch (error) {
     console.error(
-      "Joshua Phase 25 V2 persisted-data repair failed:",
+      "Joshua Phase 25 V3 persisted-data repair failed:",
       error.message
     );
   }
 }
 
 patchServiceChannelStatusPriority();
+patchClockSharkActivitySource();
+patchPhase2387ClockSharkIsolation();
 patchPhase24Classifier();
+patchPhase24ClockSharkLiveCounter();
 repairPersistedSourceAndStatus();
 
 console.log(
-  "Joshua Phase 25 V2 source/status authority installed."
+  "Joshua Phase 25 V3 live source/status authority installed."
 );
 
 await import("./phase24-servicechannel-authority.mjs");
