@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_8_SC_CANONICAL";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_9_NO_RESURRECTION";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -1661,6 +1661,329 @@ function phase288RecoverServiceChannelTracking(
   );
 }
 
+
+function patchServiceChannelNoHistoricalResurrection() {
+  const filePath = new URL(
+    "./phase23-2-servicechannel-onsite-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_9_NO_HISTORICAL_RESURRECTION")) {
+    return;
+  }
+
+  const confirmedAnchor = `function phase232ConfirmedAction(
+  data = {},
+  key = "",
+  tracking = "",
+  workOrder = {}
+) {`;
+
+  if (!source.includes(confirmedAnchor)) {
+    throw new Error(
+      "Phase 28.9 could not locate the ServiceChannel confirmed-action helper."
+    );
+  }
+
+  const helpers = String.raw`// JOSHUA_PHASE28_9_NO_HISTORICAL_RESURRECTION
+function phase289ServiceChannelStatusText(workOrder = {}) {
+  return [
+    workOrder.serviceChannelPrimaryStatus,
+    workOrder.serviceChannelExtendedStatus,
+    workOrder.primaryStatus,
+    workOrder.extendedStatus
+  ]
+    .map(phase232Text)
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function phase289HasExplicitCurrentOnsite(workOrder = {}) {
+  const statusIsOnsite =
+    /\bon\s*site\b|\bonsite\b|\bin\s*progress\b/.test(
+      phase289ServiceChannelStatusText(workOrder)
+    );
+  if (!statusIsOnsite) return false;
+
+  // A stored "On Site" label is not enough by itself. Require recent
+  // ServiceChannel/IVR evidence so yesterday's status cannot become live again.
+  const evidenceAt =
+    workOrder.serviceChannelStatusUpdatedAt ||
+    workOrder.serviceChannelLastEventAt ||
+    workOrder.serviceChannelWebhookAt ||
+    workOrder.serviceChannelCheckInEventAt ||
+    workOrder.checkInAt ||
+    "";
+
+  return phase289CheckInIsFresh(evidenceAt);
+}
+
+function phase289HasTerminalEvidence(workOrder = {}) {
+  const state = phase232Text(
+    workOrder.joshuaStatus || workOrder.state
+  ).toLowerCase();
+  const status = phase289ServiceChannelStatusText(workOrder);
+
+  return Boolean(
+    workOrder.checkOutAt ||
+    [
+      "checked_out",
+      "completed",
+      "paid",
+      "ready_to_bill",
+      "pending_confirmation",
+      "closed",
+      "cancelled",
+      "canceled"
+    ].includes(state) ||
+    /completed|confirmed|closed|invoiced|paid|cancelled|canceled/.test(status)
+  );
+}
+
+function phase289EventTime(event = {}) {
+  const value =
+    event.completedAt ||
+    event.createdAt ||
+    event.updatedAt ||
+    "";
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function phase289CheckInIsFresh(value) {
+  const parsed = new Date(value || 0).getTime();
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+
+  const maxHours = Math.max(
+    1,
+    Number(
+      process.env.SERVICECHANNEL_HISTORICAL_CHECKIN_MAX_HOURS ||
+      24
+    )
+  );
+
+  return Date.now() - parsed <= maxHours * 60 * 60 * 1000;
+}
+
+function phase289HistoricalOnsiteIsStale(
+  data = {},
+  key = "",
+  tracking = "",
+  workOrder = {}
+) {
+  if (phase289HasTerminalEvidence(workOrder)) return true;
+  if (phase289HasExplicitCurrentOnsite(workOrder)) return false;
+
+  const events = (Array.isArray(data.events) ? data.events : [])
+    .filter(event => {
+      if (!event || typeof event !== "object") return false;
+      const type = phase232Text(event.type).toLowerCase();
+      if (type !== "checkin_confirmed") return false;
+      return phase232RecordMatchesTracking(
+        event.trackingNumber,
+        key,
+        tracking
+      );
+    })
+    .sort((left, right) =>
+      phase289EventTime(right) - phase289EventTime(left)
+    );
+
+  const latestCheckInAt =
+    events[0]?.completedAt ||
+    events[0]?.createdAt ||
+    events[0]?.updatedAt ||
+    workOrder.serviceChannelCheckInEventAt ||
+    workOrder.checkInAt ||
+    "";
+
+  return !phase289CheckInIsFresh(latestCheckInAt);
+}
+
+`;
+
+  source = source.replace(
+    confirmedAnchor,
+    helpers + confirmedAnchor
+  );
+
+  const eventDecision = `  if (events.length) {
+    return phase232Text(events[0].type)
+      .toLowerCase()
+      .startsWith("checkout")
+        ? "checkout"
+        : "checkin";
+  }`;
+
+  if (!source.includes(eventDecision)) {
+    throw new Error(
+      "Phase 28.9 could not locate the ServiceChannel confirmed-event decision."
+    );
+  }
+
+  source = source.replace(
+    eventDecision,
+    `  if (events.length) {
+    const latest = events[0];
+    const action = phase232Text(latest.type)
+      .toLowerCase()
+      .startsWith("checkout")
+        ? "checkout"
+        : "checkin";
+
+    if (action === "checkout") return "checkout";
+    if (phase289HasTerminalEvidence(workOrder)) return "checkout";
+    if (phase289HasExplicitCurrentOnsite(workOrder)) return "checkin";
+
+    const latestAt =
+      latest.completedAt ||
+      latest.createdAt ||
+      latest.updatedAt ||
+      "";
+
+    return phase289CheckInIsFresh(latestAt)
+      ? "checkin"
+      : "";
+  }`
+  );
+
+  const ivrFallback = `  if (
+    workOrder.ivrConfirmed === true &&
+    workOrder.checkInAt &&
+    !workOrder.checkOutAt
+  ) {
+    return "checkin";
+  }`;
+
+  if (!source.includes(ivrFallback)) {
+    throw new Error(
+      "Phase 28.9 could not locate the ServiceChannel IVR onsite fallback."
+    );
+  }
+
+  source = source.replace(
+    ivrFallback,
+    `  if (
+    workOrder.ivrConfirmed === true &&
+    workOrder.checkInAt &&
+    !workOrder.checkOutAt &&
+    !phase289HasTerminalEvidence(workOrder) &&
+    (
+      phase289HasExplicitCurrentOnsite(workOrder) ||
+      phase289CheckInIsFresh(workOrder.checkInAt)
+    )
+  ) {
+    return "checkin";
+  }`
+  );
+
+  const onsiteFunction = `function phase232IsOnsite(item = {}) {
+  if (
+    phase232Text(item.state).toLowerCase() ===
+      "onsite" ||
+    phase232Text(item.joshuaStatus).toLowerCase() ===
+      "onsite"
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    phase23ClockSharkSourceSystem(item, {}) ===
+      "servicechannel" &&
+    item.ivrConfirmed === true &&
+    item.checkInAt &&
+    !item.checkOutAt
+  );
+}`;
+
+  if (!source.includes(onsiteFunction)) {
+    throw new Error(
+      "Phase 28.9 could not locate the ServiceChannel onsite predicate."
+    );
+  }
+
+  source = source.replace(
+    onsiteFunction,
+    `function phase232IsOnsite(item = {}) {
+  if (phase289HasTerminalEvidence(item)) return false;
+
+  const stateOnsite = Boolean(
+    phase232Text(item.state).toLowerCase() === "onsite" ||
+    phase232Text(item.joshuaStatus).toLowerCase() === "onsite"
+  );
+
+  if (phase289HasExplicitCurrentOnsite(item)) {
+    return true;
+  }
+
+  if (stateOnsite) {
+    return phase289CheckInIsFresh(
+      item.serviceChannelCheckInEventAt ||
+      item.checkInAt
+    );
+  }
+
+  return Boolean(
+    phase23ClockSharkSourceSystem(item, {}) ===
+      "servicechannel" &&
+    item.ivrConfirmed === true &&
+    item.checkInAt &&
+    !item.checkOutAt &&
+    phase289CheckInIsFresh(item.checkInAt)
+  );
+}`
+  );
+
+  const checkinApply = `    if (confirmedAction === "checkin") {
+      repaired.state = "onsite";
+      repaired.joshuaStatus = "onsite";`;
+
+  if (!source.includes(checkinApply)) {
+    throw new Error(
+      "Phase 28.9 could not locate the ServiceChannel repair check-in application."
+    );
+  }
+
+  source = source.replace(
+    checkinApply,
+    `    const staleHistoricalOnsite =
+      phase289HistoricalOnsiteIsStale(
+        data,
+        oldKey,
+        tracking,
+        original
+      );
+
+    if (
+      staleHistoricalOnsite &&
+      (
+        phase232Text(original.state).toLowerCase() === "onsite" ||
+        phase232Text(original.joshuaStatus).toLowerCase() === "onsite"
+      )
+    ) {
+      repaired.state = "checked_out";
+      repaired.joshuaStatus = "checked_out";
+      repaired.serviceChannelOnsiteConfirmed = false;
+      repaired.serviceChannelCheckoutNeeded = false;
+      repaired.ivrConfirmed = false;
+      repaired.technicianCount = 0;
+      repaired.workflowReason =
+        "Historical ServiceChannel check-in was not allowed to resurrect as a current onsite job.";
+    }
+
+    if (confirmedAction === "checkin" && !staleHistoricalOnsite) {
+      repaired.state = "onsite";
+      repaired.joshuaStatus = "onsite";`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.9 blocks historical ServiceChannel check-ins from resurrecting cleared jobs."
+  );
+}
+
 function patchClockSharkCannotClaimServiceChannel() {
   const filePath = new URL(
     "./phase23-1-clockshark-data-hotfix-runtime.mjs",
@@ -1979,6 +2302,7 @@ patchStaleExceptionCleanup();
 patchAccountabilityNoiseControl();
 patchPhase23OperationalServiceChannelEvidence();
 patchServiceChannelTrackingRecovery();
+patchServiceChannelNoHistoricalResurrection();
 patchServiceChannelOnsiteIdentity();
 patchClockSharkCannotClaimServiceChannel();
 patchCityGatedClockSharkRouting();
@@ -1986,9 +2310,9 @@ patchControlPanels();
 patchServiceChannelDisplayTruth();
 
 console.log(
-  "Joshua Phase 28.8 canonical ServiceChannel identity and city-gated authority installed: " +
+  "Joshua Phase 28.9 no-resurrection ServiceChannel authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
