@@ -2,23 +2,76 @@ import fs from "node:fs";
 import path from "node:path";
 
 /*
- * Joshua Phase 28.16 — corrected IVR exception finalizer
+ * Joshua Phase 28.17 — persistent control-data migration
  *
- * IMPORTANT:
- * - Phase 28.15 remains untouched/frozen.
- * - package.json already starts this file.
- * - This file directly clears the one historical #356413923 IVR exception
- *   from persisted work-order state, even when there is no matching error
- *   event in data.events.
- * - Fresh future IVR errors are NOT suppressed.
+ * Purpose:
+ * - Move Joshua's runtime control data from ephemeral /tmp to Render's
+ *   persistent disk at /var/data.
+ * - Preserve the current /tmp data on first migration if the persistent
+ *   file does not already exist.
+ * - Set CONTROL_DATA_FILE BEFORE Phase 28.15/28.16 code loads so every
+ *   downstream runtime reads/writes the persistent file.
+ * - Keep the corrected 28.16 IVR cleanup behavior.
  */
 
+const PERSISTENT_DIR = "/var/data";
+const PERSISTENT_FILE = path.join(
+  PERSISTENT_DIR,
+  "joshua-control-data.json"
+);
+const LEGACY_TMP_FILE = path.join(
+  "/tmp",
+  "joshua-control-data.json"
+);
+
+function ensurePersistentControlData() {
+  fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
+
+  // First migration only: preserve current live runtime state.
+  if (
+    !fs.existsSync(PERSISTENT_FILE) &&
+    fs.existsSync(LEGACY_TMP_FILE)
+  ) {
+    fs.copyFileSync(LEGACY_TMP_FILE, PERSISTENT_FILE);
+    console.log(
+      "Joshua Phase 28.17 migrated control data from /tmp to /var/data."
+    );
+  }
+
+  // If neither file exists yet, initialize a minimal valid shell.
+  if (!fs.existsSync(PERSISTENT_FILE)) {
+    fs.writeFileSync(
+      PERSISTENT_FILE,
+      JSON.stringify(
+        {
+          events: [],
+          workOrders: {},
+          callbacks: [],
+          tasks: [],
+          technicians: {},
+          wishlist: [],
+          settings: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        null,
+        2
+      )
+    );
+    console.log(
+      "Joshua Phase 28.17 initialized persistent control data."
+    );
+  }
+
+  process.env.CONTROL_DATA_FILE = PERSISTENT_FILE;
+}
+
+ensurePersistentControlData();
+
+// Load the frozen Phase 28.15 chain only after persistent storage is active.
 await import("./phase28-operational-truth-authority.mjs");
 
-const CONTROL_DATA_FILE =
-  process.env.CONTROL_DATA_FILE ||
-  path.join("/tmp", "joshua-control-data.json");
-
+const CONTROL_DATA_FILE = PERSISTENT_FILE;
 const LEGACY_TRACKING = "356413923";
 
 function text(value = "") {
@@ -32,7 +85,6 @@ function time(value = "") {
 
 function readData() {
   try {
-    if (!fs.existsSync(CONTROL_DATA_FILE)) return null;
     const raw = fs.readFileSync(CONTROL_DATA_FILE, "utf8");
     if (!raw.trim()) return null;
     const data = JSON.parse(raw);
@@ -44,14 +96,13 @@ function readData() {
         : {};
     return data;
   } catch (error) {
-    console.error("Phase 28.16 read failed:", error.message);
+    console.error("Phase 28.17 read failed:", error.message);
     return null;
   }
 }
 
 function writeData(data) {
   try {
-    fs.mkdirSync(path.dirname(CONTROL_DATA_FILE), { recursive: true });
     data.updatedAt = new Date().toISOString();
     fs.writeFileSync(
       CONTROL_DATA_FILE,
@@ -59,7 +110,7 @@ function writeData(data) {
     );
     return true;
   } catch (error) {
-    console.error("Phase 28.16 write failed:", error.message);
+    console.error("Phase 28.17 write failed:", error.message);
     return false;
   }
 }
@@ -310,7 +361,7 @@ const timer = setInterval(() => {
     reconcile();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.16 reconciliation failed:",
+      "Joshua Phase 28.17 reconciliation failed:",
       error.message
     );
   }
@@ -319,5 +370,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.16 corrected: historical #356413923 IVR exception is retired directly from persisted work-order state; fresh future IVR failures remain visible."
+  `Joshua Phase 28.17 active: persistent control data at ${PERSISTENT_FILE}.`
 );
