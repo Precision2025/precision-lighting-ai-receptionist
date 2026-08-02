@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_14_COMPLETED_ONSITE_DURATION";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_15_SERVICECHANNEL_METADATA";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -3393,6 +3393,937 @@ function phase2814ConfirmedServiceChannelOnsiteMilliseconds(
 }
 
 
+function patchServiceChannelMetadataAuthority() {
+  const webhookPath = new URL(
+    "./servicechannel-webhook-bootstrap.mjs",
+    ROOT
+  );
+  let webhook = fs.readFileSync(webhookPath, "utf8");
+
+  if (!webhook.includes("JOSHUA_PHASE28_15_SERVICECHANNEL_METADATA_CAPTURE")) {
+    const booleanAnchor = "function serviceChannelBoolean(value) {";
+    if (!webhook.includes(booleanAnchor)) {
+      throw new Error(
+        "Phase 28.15 could not locate the ServiceChannel metadata helper insertion point."
+      );
+    }
+
+    const metadataHelpers = String.raw`// JOSHUA_PHASE28_15_SERVICECHANNEL_METADATA_CAPTURE
+function phase2815Text(value = "") {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value).trim();
+  }
+  return "";
+}
+
+function phase2815FirstText(object = {}, paths = [], fallback = "") {
+  const value = serviceChannelFirstDefined(object, paths);
+  if (value !== undefined && value !== null) {
+    if (typeof value === "object") {
+      const nested =
+        value.Name ||
+        value.DisplayName ||
+        value.Value ||
+        value.Number ||
+        "";
+      const text = phase2815Text(nested);
+      if (text) return text;
+    } else {
+      const text = phase2815Text(value);
+      if (text) return text;
+    }
+  }
+  return phase2815Text(fallback);
+}
+
+function phase2815AddressParts(value = {}) {
+  if (typeof value === "string") {
+    return {
+      address: value.trim(),
+      street1: value.trim(),
+      street2: "",
+      city: "",
+      stateCode: "",
+      postalCode: ""
+    };
+  }
+
+  if (!value || typeof value !== "object") {
+    return {
+      address: "",
+      street1: "",
+      street2: "",
+      city: "",
+      stateCode: "",
+      postalCode: ""
+    };
+  }
+
+  const street1 = phase2815Text(
+    value.Address1 ||
+    value.AddressLine1 ||
+    value.Line1 ||
+    value.Street1 ||
+    value.StreetAddress ||
+    value.Street ||
+    ""
+  );
+  const street2 = phase2815Text(
+    value.Address2 ||
+    value.AddressLine2 ||
+    value.Line2 ||
+    value.Street2 ||
+    ""
+  );
+  const city = phase2815Text(
+    value.City || value.Locality || ""
+  );
+  const stateCode = phase2815Text(
+    value.State ||
+    value.StateCode ||
+    value.StateProvince ||
+    value.Region ||
+    ""
+  );
+  const postalCode = phase2815Text(
+    value.PostalCode ||
+    value.Zip ||
+    value.ZipCode ||
+    ""
+  );
+  const explicit = phase2815Text(
+    value.FullAddress ||
+    value.FormattedAddress ||
+    value.Address ||
+    ""
+  );
+  const address =
+    explicit ||
+    [
+      [street1, street2].filter(Boolean).join(" "),
+      city,
+      [stateCode, postalCode].filter(Boolean).join(" ")
+    ].filter(Boolean).join(", ");
+
+  return {
+    address,
+    street1,
+    street2,
+    city,
+    stateCode,
+    postalCode
+  };
+}
+
+function phase2815ServiceChannelMetadata(object = {}, existing = {}) {
+  const workOrder =
+    object.WorkOrder ||
+    object.Workorder ||
+    object.workOrder ||
+    object.workorder ||
+    {};
+  const location =
+    object.Location ||
+    object.Site ||
+    workOrder.Location ||
+    workOrder.Site ||
+    {};
+  const customerObject =
+    object.Customer ||
+    object.Client ||
+    workOrder.Customer ||
+    workOrder.Client ||
+    {};
+
+  const addressCandidates = [
+    object.Address,
+    object.JobAddress,
+    object.ServiceAddress,
+    location?.Address,
+    location?.ServiceAddress,
+    workOrder?.Address,
+    workOrder?.JobAddress,
+    workOrder?.Location?.Address
+  ];
+
+  let addressParts = phase2815AddressParts({});
+  for (const candidate of addressCandidates) {
+    const parsed = phase2815AddressParts(candidate);
+    if (
+      parsed.address ||
+      parsed.street1 ||
+      parsed.city ||
+      parsed.stateCode ||
+      parsed.postalCode
+    ) {
+      addressParts = parsed;
+      break;
+    }
+  }
+
+  const customer = phase2815FirstText(
+    object,
+    [
+      ["CustomerName"],
+      ["Customer", "Name"],
+      ["Customer", "DisplayName"],
+      ["ClientName"],
+      ["Client", "Name"],
+      ["WorkOrder", "CustomerName"],
+      ["WorkOrder", "Customer", "Name"],
+      ["Workorder", "CustomerName"],
+      ["Workorder", "Customer", "Name"]
+    ],
+    phase2815Text(
+      customerObject?.Name ||
+      customerObject?.DisplayName ||
+      existing.customer ||
+      existing.customerName
+    )
+  );
+
+  const locationName = phase2815FirstText(
+    object,
+    [
+      ["LocationName"],
+      ["Location", "Name"],
+      ["SiteName"],
+      ["Site", "Name"],
+      ["StoreName"],
+      ["WorkOrder", "LocationName"],
+      ["WorkOrder", "Location", "Name"],
+      ["WorkOrder", "Site", "Name"],
+      ["Workorder", "LocationName"],
+      ["Workorder", "Location", "Name"]
+    ],
+    existing.locationName ||
+    existing.location ||
+    existing.jobName
+  );
+
+  const workOrderNumber = phase2815FirstText(
+    object,
+    [
+      ["Number"],
+      ["WorkOrderNumber"],
+      ["WoNumber"],
+      ["WO"],
+      ["WorkOrder", "Number"],
+      ["WorkOrder", "WorkOrderNumber"],
+      ["Workorder", "Number"],
+      ["Workorder", "WorkOrderNumber"]
+    ],
+    existing.workOrderNumber ||
+    existing.serviceChannelWorkOrderNumber
+  );
+
+  const street1 =
+    phase2815FirstText(
+      object,
+      [
+        ["Address1"],
+        ["Street1"],
+        ["StreetAddress"],
+        ["Location", "Address1"],
+        ["Location", "Street1"],
+        ["WorkOrder", "Address1"],
+        ["WorkOrder", "Street1"]
+      ],
+      addressParts.street1 || existing.street1
+    );
+  const street2 =
+    phase2815FirstText(
+      object,
+      [
+        ["Address2"],
+        ["Street2"],
+        ["Location", "Address2"],
+        ["Location", "Street2"],
+        ["WorkOrder", "Address2"],
+        ["WorkOrder", "Street2"]
+      ],
+      addressParts.street2 || existing.street2
+    );
+  const city = phase2815FirstText(
+    object,
+    [
+      ["City"],
+      ["LocationCity"],
+      ["Location", "City"],
+      ["Site", "City"],
+      ["WorkOrder", "City"],
+      ["WorkOrder", "Location", "City"]
+    ],
+    addressParts.city ||
+    existing.city ||
+    existing.locationCity ||
+    existing.jobCity
+  );
+  const stateCode = phase2815FirstText(
+    object,
+    [
+      ["State"],
+      ["StateCode"],
+      ["StateProvince"],
+      ["Location", "State"],
+      ["Location", "StateCode"],
+      ["WorkOrder", "State"],
+      ["WorkOrder", "StateCode"],
+      ["WorkOrder", "Location", "State"]
+    ],
+    addressParts.stateCode ||
+    existing.stateCode ||
+    existing.stateProvince
+  );
+  const postalCode = phase2815FirstText(
+    object,
+    [
+      ["PostalCode"],
+      ["Zip"],
+      ["ZipCode"],
+      ["Location", "PostalCode"],
+      ["Location", "Zip"],
+      ["WorkOrder", "PostalCode"],
+      ["WorkOrder", "Zip"],
+      ["WorkOrder", "Location", "PostalCode"]
+    ],
+    addressParts.postalCode ||
+    existing.postalCode ||
+    existing.zip
+  );
+
+  const address =
+    addressParts.address ||
+    phase2815FirstText(
+      object,
+      [
+        ["FormattedAddress"],
+        ["FullAddress"],
+        ["JobAddress"],
+        ["ServiceAddress"]
+      ],
+      existing.address
+    ) ||
+    [
+      [street1, street2].filter(Boolean).join(" "),
+      city,
+      [stateCode, postalCode].filter(Boolean).join(" ")
+    ].filter(Boolean).join(", ");
+
+  const problemDescription = phase2815FirstText(
+    object,
+    [
+      ["ProblemDescription"],
+      ["Description"],
+      ["Problem"],
+      ["ScopeOfWork"],
+      ["WorkOrder", "ProblemDescription"],
+      ["WorkOrder", "Description"],
+      ["Workorder", "Description"]
+    ],
+    existing.problemDescription ||
+    existing.problem ||
+    existing.description ||
+    existing.scopeOfWork
+  );
+
+  const nteRaw = serviceChannelFirstDefined(object, [
+    ["Nte"],
+    ["NTE"],
+    ["NotToExceed"],
+    ["WorkOrder", "Nte"],
+    ["WorkOrder", "NTE"],
+    ["WorkOrder", "NotToExceed"],
+    ["Workorder", "Nte"],
+    ["Financials", "Nte"],
+    ["Financials", "NTE"]
+  ]);
+  const nte =
+    serviceChannelNumber(nteRaw) ??
+    serviceChannelNumber(existing.nte);
+
+  const metadata = {
+    workOrderNumber,
+    customer,
+    customerName: customer,
+    locationName,
+    location: locationName,
+    jobName: locationName,
+    displayReference: locationName,
+    address,
+    street1,
+    street2,
+    city,
+    stateCode,
+    stateProvince: stateCode,
+    postalCode,
+    zip: postalCode,
+    problemDescription,
+    problem: problemDescription,
+    description: problemDescription,
+    scopeOfWork: problemDescription,
+    storeNumber: phase2815FirstText(
+      object,
+      [
+        ["StoreNumber"],
+        ["SiteNumber"],
+        ["LocationNumber"],
+        ["Location", "Number"],
+        ["WorkOrder", "StoreNumber"],
+        ["WorkOrder", "SiteNumber"]
+      ],
+      existing.storeNumber || existing.siteNumber
+    ),
+    siteNumber: phase2815FirstText(
+      object,
+      [
+        ["SiteNumber"],
+        ["StoreNumber"],
+        ["LocationNumber"],
+        ["Location", "Number"],
+        ["WorkOrder", "SiteNumber"],
+        ["WorkOrder", "StoreNumber"]
+      ],
+      existing.siteNumber || existing.storeNumber
+    ),
+    poNumber: phase2815FirstText(
+      object,
+      [
+        ["PurchaseNumber"],
+        ["PONumber"],
+        ["PoNumber"],
+        ["PurchaseOrderNumber"],
+        ["WorkOrder", "PurchaseNumber"],
+        ["WorkOrder", "PONumber"]
+      ],
+      existing.poNumber || existing.purchaseOrderNumber
+    ),
+    priority: phase2815FirstText(
+      object,
+      [
+        ["Priority"],
+        ["Priority", "Name"],
+        ["WorkOrder", "Priority"],
+        ["WorkOrder", "Priority", "Name"]
+      ],
+      existing.priority || "normal"
+    ),
+    trade: phase2815FirstText(
+      object,
+      [
+        ["Trade"],
+        ["Trade", "Name"],
+        ["WorkOrder", "Trade"],
+        ["WorkOrder", "Trade", "Name"]
+      ],
+      existing.trade
+    ),
+    category: phase2815FirstText(
+      object,
+      [
+        ["Category"],
+        ["Category", "Name"],
+        ["WorkOrder", "Category"],
+        ["WorkOrder", "Category", "Name"]
+      ],
+      existing.category
+    ),
+    nte
+  };
+
+  metadata.hasMetadata = Boolean(
+    metadata.customer ||
+    metadata.locationName ||
+    metadata.address ||
+    metadata.city ||
+    metadata.problemDescription ||
+    (metadata.nte !== null && metadata.nte !== undefined) ||
+    metadata.workOrderNumber
+  );
+
+  return metadata;
+}
+
+`;
+
+    webhook = webhook.replace(
+      booleanAnchor,
+      metadataHelpers + booleanAnchor
+    );
+
+    const commonStart = "  const commonUpdates = {";
+    if (!webhook.includes(commonStart)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel common work-order updates."
+      );
+    }
+    webhook = webhook.replace(
+      commonStart,
+      `  const phase2815Metadata =
+    phase2815ServiceChannelMetadata(object, existing);
+  const commonUpdates = {`
+    );
+
+    const workOrderNumberOld = `    workOrderNumber: String(
+      object.Number ||
+      object.WorkOrderNumber ||
+      object.PurchaseNumber ||
+      existing.workOrderNumber ||
+      ""
+    ),`;
+    if (!webhook.includes(workOrderNumberOld)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel work-order-number mapping."
+      );
+    }
+    webhook = webhook.replace(
+      workOrderNumberOld,
+      `    workOrderNumber:
+      phase2815Metadata.workOrderNumber ||
+      existing.workOrderNumber ||
+      tracking,`
+    );
+
+    const locationOld = `    locationName: String(
+      object.LocationName ||
+      object.Location?.Name ||
+      existing.locationName ||
+      ""
+    ),`;
+    if (!webhook.includes(locationOld)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel location-name mapping."
+      );
+    }
+    webhook = webhook.replace(
+      locationOld,
+      `    customer:
+      phase2815Metadata.customer ||
+      existing.customer ||
+      existing.customerName ||
+      "",
+    customerName:
+      phase2815Metadata.customerName ||
+      existing.customerName ||
+      existing.customer ||
+      "",
+    locationName:
+      phase2815Metadata.locationName ||
+      existing.locationName ||
+      existing.location ||
+      "",
+    location:
+      phase2815Metadata.location ||
+      existing.location ||
+      existing.locationName ||
+      "",
+    jobName:
+      phase2815Metadata.jobName ||
+      existing.jobName ||
+      phase2815Metadata.locationName ||
+      "",
+    displayReference:
+      phase2815Metadata.displayReference ||
+      existing.displayReference ||
+      phase2815Metadata.locationName ||
+      "",
+    address:
+      phase2815Metadata.address ||
+      existing.address ||
+      "",
+    street1:
+      phase2815Metadata.street1 ||
+      existing.street1 ||
+      "",
+    street2:
+      phase2815Metadata.street2 ||
+      existing.street2 ||
+      "",
+    city:
+      phase2815Metadata.city ||
+      existing.city ||
+      existing.locationCity ||
+      "",
+    stateCode:
+      phase2815Metadata.stateCode ||
+      existing.stateCode ||
+      existing.stateProvince ||
+      "",
+    stateProvince:
+      phase2815Metadata.stateProvince ||
+      existing.stateProvince ||
+      existing.stateCode ||
+      "",
+    postalCode:
+      phase2815Metadata.postalCode ||
+      existing.postalCode ||
+      existing.zip ||
+      "",
+    zip:
+      phase2815Metadata.zip ||
+      existing.zip ||
+      existing.postalCode ||
+      "",
+    storeNumber:
+      phase2815Metadata.storeNumber ||
+      existing.storeNumber ||
+      "",
+    siteNumber:
+      phase2815Metadata.siteNumber ||
+      existing.siteNumber ||
+      "",
+    poNumber:
+      phase2815Metadata.poNumber ||
+      existing.poNumber ||
+      existing.purchaseOrderNumber ||
+      "",`
+    );
+
+    const priorityOld = `    priority: String(object.Priority || existing.priority || "normal"),
+    trade: String(object.Trade || existing.trade || ""),
+    category: String(object.Category || existing.category || ""),
+    problemDescription: String(
+      object.Description ||
+      existing.problemDescription ||
+      ""
+    ),`;
+    if (!webhook.includes(priorityOld)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel priority/problem metadata mapping."
+      );
+    }
+    webhook = webhook.replace(
+      priorityOld,
+      `    priority:
+      phase2815Metadata.priority ||
+      existing.priority ||
+      "normal",
+    trade:
+      phase2815Metadata.trade || existing.trade || "",
+    category:
+      phase2815Metadata.category || existing.category || "",
+    problemDescription:
+      phase2815Metadata.problemDescription ||
+      existing.problemDescription ||
+      existing.problem ||
+      existing.description ||
+      "",
+    problem:
+      phase2815Metadata.problem ||
+      existing.problem ||
+      existing.problemDescription ||
+      "",
+    description:
+      phase2815Metadata.description ||
+      existing.description ||
+      existing.problemDescription ||
+      "",
+    scopeOfWork:
+      phase2815Metadata.scopeOfWork ||
+      existing.scopeOfWork ||
+      existing.problemDescription ||
+      "",
+    nte:
+      phase2815Metadata.nte !== null &&
+      phase2815Metadata.nte !== undefined
+        ? phase2815Metadata.nte
+        : existing.nte,
+    serviceChannelMetadataCapturedAt:
+      phase2815Metadata.hasMetadata
+        ? now
+        : (existing.serviceChannelMetadataCapturedAt || ""),`
+    );
+
+    const eventNeedle = `    type: eventType,
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: "ServiceChannel Webhook",`;
+    if (!webhook.includes(eventNeedle)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel success-event metadata block."
+      );
+    }
+    webhook = webhook.replace(
+      eventNeedle,
+      `    type: eventType,
+    level: "success",
+    trackingNumber: tracking,
+    workOrderNumber:
+      data.workOrders[tracking]?.workOrderNumber ||
+      phase2815Metadata.workOrderNumber ||
+      "",
+    customer:
+      data.workOrders[tracking]?.customer ||
+      phase2815Metadata.customer ||
+      "",
+    locationName:
+      data.workOrders[tracking]?.locationName ||
+      phase2815Metadata.locationName ||
+      "",
+    address:
+      data.workOrders[tracking]?.address ||
+      phase2815Metadata.address ||
+      "",
+    city:
+      data.workOrders[tracking]?.city ||
+      phase2815Metadata.city ||
+      "",
+    stateCode:
+      data.workOrders[tracking]?.stateCode ||
+      phase2815Metadata.stateCode ||
+      "",
+    postalCode:
+      data.workOrders[tracking]?.postalCode ||
+      phase2815Metadata.postalCode ||
+      "",
+    nte:
+      data.workOrders[tracking]?.nte ??
+      phase2815Metadata.nte ??
+      "",
+    problemDescription:
+      data.workOrders[tracking]?.problemDescription ||
+      phase2815Metadata.problemDescription ||
+      "",
+    requestedBy: "ServiceChannel Webhook",`
+    );
+
+    fs.writeFileSync(webhookPath, webhook);
+  }
+
+  const safePath = new URL(
+    "./phase23-8-7-safe-servicechannel-reconciliation.mjs",
+    ROOT
+  );
+  let safeSource = fs.readFileSync(safePath, "utf8");
+
+  if (!safeSource.includes("JOSHUA_PHASE28_15_CANONICAL_METADATA_FIELDS")) {
+    const fallbackNeedle = `    "scopeOfWork",
+    "storeNumber",`;
+    if (!safeSource.includes(fallbackNeedle)) {
+      throw new Error(
+        "Phase 28.15 could not locate canonical ServiceChannel metadata merge fields."
+      );
+    }
+    safeSource = safeSource.replace(
+      fallbackNeedle,
+      `    "scopeOfWork",
+    // JOSHUA_PHASE28_15_CANONICAL_METADATA_FIELDS
+    "workOrderNumber",
+    "serviceChannelWorkOrderNumber",
+    "poNumber",
+    "purchaseOrderNumber",
+    "nte",
+    "estimatedTotal",
+    "invoiceAmount",
+    "priority",
+    "trade",
+    "category",
+    "problemDescription",
+    "serviceChannelPrimaryStatus",
+    "serviceChannelExtendedStatus",
+    "storeNumber",`
+    );
+    fs.writeFileSync(safePath, safeSource);
+  }
+
+  const onsitePath = new URL(
+    "./phase23-2-servicechannel-onsite-runtime.mjs",
+    ROOT
+  );
+  let onsiteSource = fs.readFileSync(onsitePath, "utf8");
+
+  if (!onsiteSource.includes("JOSHUA_PHASE28_15_ONSITE_METADATA_FIELDS")) {
+    const mergeNeedle = `    "scopeOfWork",
+    "nte"
+  ]) {`;
+    if (!onsiteSource.includes(mergeNeedle)) {
+      throw new Error(
+        "Phase 28.15 could not locate ServiceChannel onsite metadata merge fields."
+      );
+    }
+    onsiteSource = onsiteSource.replace(
+      mergeNeedle,
+      `    "scopeOfWork",
+    // JOSHUA_PHASE28_15_ONSITE_METADATA_FIELDS
+    "street1",
+    "street2",
+    "storeNumber",
+    "siteNumber",
+    "workOrderNumber",
+    "serviceChannelWorkOrderNumber",
+    "poNumber",
+    "purchaseOrderNumber",
+    "estimatedTotal",
+    "invoiceAmount",
+    "priority",
+    "trade",
+    "category",
+    "serviceChannelPrimaryStatus",
+    "serviceChannelExtendedStatus",
+    "nte"
+  ]) {`
+    );
+    fs.writeFileSync(onsitePath, onsiteSource);
+  }
+
+  console.log(
+    "Joshua Phase 28.15 installed ServiceChannel customer/location/address/NTE metadata capture and preservation."
+  );
+}
+
+function phase2815RepairCurrentCompletedJobMetadata() {
+  const dataFile =
+    process.env.CONTROL_DATA_FILE ||
+    "/tmp/joshua-control-data.json";
+  if (!fs.existsSync(dataFile)) return;
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  } catch (error) {
+    console.warn(
+      "Joshua Phase 28.15 could not read current work-order metadata:",
+      error.message
+    );
+    return;
+  }
+
+  if (!data || typeof data !== "object") return;
+  data.workOrders =
+    data.workOrders && typeof data.workOrders === "object"
+      ? data.workOrders
+      : {};
+
+  const repairs = {
+    "358755018": {
+      customer: "Spring Partners Retail",
+      customerName: "Spring Partners Retail",
+      locationName: "Spring Partners Retail - Honey Farms # 880803",
+      location: "Spring Partners Retail - Honey Farms # 880803",
+      jobName: "Spring Partners Retail - Honey Farms # 880803",
+      displayReference: "Spring Partners Retail - Honey Farms # 880803",
+      address: "10190 Woodlands Parkway, The Woodlands, TX 77382",
+      street1: "10190 Woodlands Parkway",
+      city: "The Woodlands",
+      stateCode: "TX",
+      stateProvince: "TX",
+      postalCode: "77382",
+      zip: "77382",
+      nte: 750,
+      problemDescription: "SALES FLOOR / Electrical / Sales floor 7 lights are out and 3- lights out on the back room.",
+      problem: "SALES FLOOR / Electrical / Sales floor 7 lights are out and 3- lights out on the back room.",
+      description: "SALES FLOOR / Electrical / Sales floor 7 lights are out and 3- lights out on the back room.",
+      scopeOfWork: "SALES FLOOR / Electrical / Sales floor 7 lights are out and 3- lights out on the back room."
+    },
+    "358757906": {
+      customer: "Spring Partners",
+      customerName: "Spring Partners",
+      locationName: "Spring Partners - Honey Farms # 880805",
+      location: "Spring Partners - Honey Farms # 880805",
+      jobName: "Spring Partners - Honey Farms # 880805",
+      displayReference: "Spring Partners - Honey Farms # 880805",
+      address: "4600 Panther Creek Pines Drive, The Woodlands, TX 77380",
+      street1: "4600 Panther Creek Pines Drive",
+      city: "The Woodlands",
+      stateCode: "TX",
+      stateProvince: "TX",
+      postalCode: "77380",
+      zip: "77380",
+      nte: 750,
+      problemDescription: "SALES FLOOR / Lighting / Interor Lights / Interior Lighting Fixture Prob / Is this repair from a Mystery Shopper inspection?: No / light behind Copenhagen sign on Tobacco wall needs lit up / PLEASE NOTE THAT THIS SERVICE REQUEST CONTAINS AN ATTACHMENT THAT CAN BE VIEWED BY LOGGING IN TO SERVICECHANNEL AND FINDING THE SERVICE REQUEST.",
+      problem: "SALES FLOOR / Lighting / Interor Lights / Interior Lighting Fixture Prob / Is this repair from a Mystery Shopper inspection?: No / light behind Copenhagen sign on Tobacco wall needs lit up / PLEASE NOTE THAT THIS SERVICE REQUEST CONTAINS AN ATTACHMENT THAT CAN BE VIEWED BY LOGGING IN TO SERVICECHANNEL AND FINDING THE SERVICE REQUEST.",
+      description: "SALES FLOOR / Lighting / Interor Lights / Interior Lighting Fixture Prob / Is this repair from a Mystery Shopper inspection?: No / light behind Copenhagen sign on Tobacco wall needs lit up / PLEASE NOTE THAT THIS SERVICE REQUEST CONTAINS AN ATTACHMENT THAT CAN BE VIEWED BY LOGGING IN TO SERVICECHANNEL AND FINDING THE SERVICE REQUEST.",
+      scopeOfWork: "SALES FLOOR / Lighting / Interor Lights / Interior Lighting Fixture Prob / Is this repair from a Mystery Shopper inspection?: No / light behind Copenhagen sign on Tobacco wall needs lit up / PLEASE NOTE THAT THIS SERVICE REQUEST CONTAINS AN ATTACHMENT THAT CAN BE VIEWED BY LOGGING IN TO SERVICECHANNEL AND FINDING THE SERVICE REQUEST."
+    }
+  };
+
+  function blank(value) {
+    const text = String(value ?? "").trim();
+    return Boolean(
+      !text ||
+      text === "—" ||
+      /^(?:unknown(?:\s+customer)?|servicechannel\s+job|clockshark\s+job)$/i.test(text)
+    );
+  }
+
+  let changed = false;
+  const now = new Date().toISOString();
+
+  for (const [tracking, metadata] of Object.entries(repairs)) {
+    const current = data.workOrders[tracking];
+    if (!current || typeof current !== "object") continue;
+
+    const beforeState = current.state;
+    const beforeJoshuaStatus = current.joshuaStatus;
+    const beforeCheckInAt = current.checkInAt;
+    const beforeCheckOutAt = current.checkOutAt;
+    const beforeOnsiteMilliseconds = current.onsiteMilliseconds;
+    const beforeTechnician = current.technician;
+
+    let recordChanged = false;
+
+    for (const [field, value] of Object.entries(metadata)) {
+      if (field === "nte") {
+        const existingNte = Number(
+          String(current.nte ?? "").replace(/[$,]/g, "")
+        );
+        if (!Number.isFinite(existingNte) || existingNte <= 0) {
+          current.nte = value;
+          recordChanged = true;
+        }
+        continue;
+      }
+
+      if (blank(current[field])) {
+        current[field] = value;
+        recordChanged = true;
+      }
+    }
+
+    if (!current.workOrderNumber || blank(current.workOrderNumber)) {
+      current.workOrderNumber = tracking;
+      recordChanged = true;
+    }
+
+    if (recordChanged) {
+      current.source = "ServiceChannel";
+      current.sourceSystem = "servicechannel";
+      current.isServiceChannel = true;
+      current.isInternalWorkOrder = false;
+      current.serviceChannelTrackingNumber =
+        current.serviceChannelTrackingNumber || tracking;
+      current.serviceChannelMetadataSource =
+        "Authoritative Jobs sheet repair";
+      current.serviceChannelMetadataRepairedAt = now;
+      current.updatedAt = now;
+
+      // Metadata repair is deliberately forbidden from changing operational
+      // truth, completion history, technician identity, or onsite duration.
+      current.state = beforeState;
+      current.joshuaStatus = beforeJoshuaStatus;
+      current.checkInAt = beforeCheckInAt;
+      current.checkOutAt = beforeCheckOutAt;
+      current.onsiteMilliseconds = beforeOnsiteMilliseconds;
+      current.technician = beforeTechnician;
+
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    data.updatedAt = now;
+    fs.writeFileSync(
+      dataFile,
+      JSON.stringify(data, null, 2)
+    );
+    console.log(
+      "Joshua Phase 28.15 restored metadata for the two completed ServiceChannel Houston work orders without changing their status, checkout history, technician, or onsite time."
+    );
+  }
+}
+
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -3530,11 +4461,13 @@ patchExceptionDashboardCurrentTruthOnly();
 patchOnsiteAttentionLifecycle();
 patchCompletedTodayServiceChannelTruth();
 patchCompletedServiceChannelOnsiteDurationTruth();
+patchServiceChannelMetadataAuthority();
+phase2815RepairCurrentCompletedJobMetadata();
 
 console.log(
-  "Joshua Phase 28.14 ServiceChannel completion and onsite-duration authority installed: " +
+  "Joshua Phase 28.15 ServiceChannel metadata preservation authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, server-side clearing of stale onsite attention after checkout, preservation of ServiceChannel onsite state during long-onsite alerts, Completed Today and Today's check-outs driven by confirmed ServiceChannel checkout events in America/Chicago instead of UTC or synthetic cleanup timestamps, completed ServiceChannel onsite time calculated from the matching confirmed check-in to confirmed checkout, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, server-side clearing of stale onsite attention after checkout, preservation of ServiceChannel onsite state during long-onsite alerts, Completed Today and Today's check-outs driven by confirmed ServiceChannel checkout events in America/Chicago, completed ServiceChannel onsite time calculated from matching confirmed check-in/check-out events, customer/location/address/city/state/ZIP/NTE/problem metadata preserved from ServiceChannel payloads and canonical aliases, current Houston completed-job metadata restored from the authoritative Jobs sheet, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
