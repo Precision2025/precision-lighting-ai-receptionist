@@ -699,11 +699,11 @@ function phase2825PatchAllGeneratedOfficeQueues() {
     }
 
     if(type==="billing"){
-      return (
-        state==="ready_to_bill" ||
-        invoice==="ready_for_review" ||
-        sheet==="bill"
-      );
+      // JOSHUA_PHASE28_26_STRICT_BILLING_AUTHORITY
+      // Billing Queue must contain ONLY the canonical ready_to_bill workflow.
+      // Historical/imported rows can carry invoiceStatus=ready_for_review or
+      // sheetStatus=BILL without actually being an active Joshua billing item.
+      return state==="ready_to_bill";
     }
 
     return false;
@@ -2036,7 +2036,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.25 reconciliation failed:",
+      "Joshua Phase 28.26 reconciliation failed:",
       error.message
     );
   }
@@ -2045,5 +2045,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.25 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.26 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
