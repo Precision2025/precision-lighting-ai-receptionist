@@ -595,6 +595,240 @@ function phase2824PatchGeneratedOfficeSuitePanel() {
   }
 }
 
+
+function phase2825PatchAllGeneratedOfficeQueues() {
+  const panelPath = new URL(
+    "./public/control-panel.html",
+    import.meta.url
+  );
+
+  if (!fs.existsSync(panelPath)) {
+    console.warn(
+      "Joshua Phase 28.25: generated public/control-panel.html not found."
+    );
+    return;
+  }
+
+  let panel = fs.readFileSync(panelPath, "utf8");
+
+  if (
+    panel.includes(
+      "JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY"
+    )
+  ) {
+    return;
+  }
+
+  /*
+   * The sidebar badges and the main dashboard are now correct, but the
+   * Office Suite modal can still read an empty/stale workflowQueues snapshot.
+   * Install a late, runtime-level authority for ALL four Office queues.
+   *
+   * This deliberately derives the modal rows from canonical workOrders
+   * (plus any existing workflow queue rows) so Proposal, Parts, Billing, and
+   * Authorization cannot display "0 work orders" while their dashboard count
+   * is non-zero.
+   */
+  const script = `
+<script>
+// JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY
+(function(){
+  function joshuaQueueData(){
+    try{
+      if(typeof cache!=="undefined" && cache) return cache;
+    }catch(_){}
+    return window.cache||{};
+  }
+
+  function joshuaQueueWorkOrders(data){
+    const source=data&&data.workOrders;
+    if(Array.isArray(source)) return source;
+    if(source&&typeof source==="object") return Object.values(source);
+    return [];
+  }
+
+  function joshuaNorm(value){
+    return String(value||"")
+      .trim()
+      .toLowerCase()
+      .replace(/[\\\\s-]+/g,"_");
+  }
+
+  function joshuaQueueState(item){
+    return joshuaNorm(
+      item.joshuaStatus||
+      item.state||
+      item.sheetStatus||
+      item.status
+    );
+  }
+
+  function joshuaSCStatus(item){
+    return [
+      item.serviceChannelPrimaryStatus,
+      item.serviceChannelExtendedStatus,
+      item.primaryStatus,
+      item.extendedStatus,
+      item.statusDescription
+    ].map(v=>String(v||"").toLowerCase()).join(" ");
+  }
+
+  function joshuaCanonicalQueueMatch(type,item){
+    const state=joshuaQueueState(item);
+    const sc=joshuaSCStatus(item);
+    const invoice=joshuaNorm(item.invoiceStatus);
+    const sheet=joshuaNorm(item.sheetStatus);
+
+    if(type==="authorization"){
+      return state==="awaiting_authorization";
+    }
+
+    if(type==="proposal"){
+      return (
+        state==="pending_proposal" ||
+        state==="proposal_needed" ||
+        /proposal\\s*(?:required|needed|pending)/.test(sc)
+      );
+    }
+
+    if(type==="parts"){
+      return (
+        state==="parts_needed" ||
+        /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc)
+      );
+    }
+
+    if(type==="billing"){
+      return (
+        state==="ready_to_bill" ||
+        invoice==="ready_for_review" ||
+        sheet==="bill"
+      );
+    }
+
+    return false;
+  }
+
+  function joshuaExistingQueueItems(type,data){
+    const cfg=(window.officeQueueConfig||{
+      authorization:{key:"awaitingAuthorization"},
+      proposal:{key:"pendingProposals"},
+      parts:{key:"partsNeeded"},
+      billing:{key:"readyToBill"}
+    })[type];
+
+    if(!cfg) return [];
+    const rows=(((data||{}).workflowQueues||{})[cfg.key])||[];
+    return Array.isArray(rows)?rows:[];
+  }
+
+  function joshuaCanonicalOfficeQueueItems(type){
+    const data=joshuaQueueData();
+    const all=[
+      ...joshuaExistingQueueItems(type,data),
+      ...joshuaQueueWorkOrders(data).filter(item=>
+        joshuaCanonicalQueueMatch(type,item||{})
+      )
+    ];
+
+    const byTracking=new Map();
+    for(const item of all){
+      if(!item||typeof item!=="object") continue;
+      const key=String(
+        item.trackingNumber||
+        item.workOrderNumber||
+        item.serviceChannelTrackingNumber||
+        ""
+      ).trim();
+      if(!key) continue;
+      if(!byTracking.has(key)) byTracking.set(key,item);
+      else byTracking.set(key,{...byTracking.get(key),...item});
+    }
+    return [...byTracking.values()];
+  }
+
+  // Replace the global function used by the existing Office Suite renderer.
+  window.officeQueueItems=joshuaCanonicalOfficeQueueItems;
+
+  // Make sure the global lexical call resolves to the same late authority.
+  try{
+    officeQueueItems=joshuaCanonicalOfficeQueueItems;
+  }catch(_){}
+
+  function rerenderOpenQueue(){
+    try{
+      if(
+        document.getElementById("officeQueueDialog")?.open &&
+        typeof window.officeRenderQueue==="function"
+      ){
+        window.officeRenderQueue();
+      }else if(
+        document.getElementById("officeQueueDialog")?.open &&
+        typeof officeRenderQueue==="function"
+      ){
+        officeRenderQueue();
+      }
+    }catch(error){
+      console.warn("Joshua queue rerender warning",error);
+    }
+  }
+
+  // Original click handlers open the dialog first; rerender immediately after.
+  document.addEventListener("click",event=>{
+    const target=event.target.closest(
+      "[data-office-queue],[data-queue]"
+    );
+    if(!target)return;
+    setTimeout(rerenderOpenQueue,40);
+    setTimeout(rerenderOpenQueue,180);
+  },true);
+
+  // Search/sort should always render from the canonical list too.
+  document.addEventListener("input",event=>{
+    if(event.target?.id==="officeQueueSearch"){
+      setTimeout(rerenderOpenQueue,0);
+    }
+  },true);
+
+  document.addEventListener("change",event=>{
+    if(event.target?.id==="officeQueueSort"){
+      setTimeout(rerenderOpenQueue,0);
+    }
+  },true);
+
+  // Keep the four sidebar counts tied to the same queue authority.
+  function syncQueueBadges(){
+    const pairs=[
+      ["navProposalCount","proposal"],
+      ["navBillingCount","billing"],
+      ["navPartsCount","parts"]
+    ];
+    for(const [id,type] of pairs){
+      const el=document.getElementById(id);
+      if(el) el.textContent=String(
+        joshuaCanonicalOfficeQueueItems(type).length
+      );
+    }
+  }
+
+  setTimeout(syncQueueBadges,250);
+  setInterval(syncQueueBadges,1000);
+})();
+</script>
+`;
+
+  panel = panel.replace(
+    "</body>",
+    script + "\n</body>"
+  );
+
+  fs.writeFileSync(panelPath, panel);
+
+  console.log(
+    "Joshua Phase 28.25 installed canonical modal authority for Proposal, Parts, Billing, and Authorization queues."
+  );
+}
+
 function ensurePersistentControlData() {
   fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
 
@@ -1788,6 +2022,13 @@ await import(
  */
 phase2824PatchGeneratedOfficeSuitePanel();
 
+/*
+ * Phase 28.25: the badges are correct but Proposal/Parts/Billing modals can
+ * still show zero rows. Patch the generated panel AFTER all earlier UI
+ * generation so every queue modal derives from canonical workOrders.
+ */
+phase2825PatchAllGeneratedOfficeQueues();
+
 reconcilePersistentTruth();
 
 const timer = setInterval(() => {
@@ -1795,7 +2036,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.24 reconciliation failed:",
+      "Joshua Phase 28.25 reconciliation failed:",
       error.message
     );
   }
@@ -1804,5 +2045,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.24 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.25 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
