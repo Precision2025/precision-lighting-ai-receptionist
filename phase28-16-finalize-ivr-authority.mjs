@@ -480,6 +480,121 @@ function phase2823PatchPhase10PartsQueueGenerator() {
   }
 }
 
+
+function phase2824PatchGeneratedOfficeSuitePanel() {
+  const panelPath = new URL(
+    "./public/control-panel.html",
+    import.meta.url
+  );
+
+  if (!fs.existsSync(panelPath)) {
+    console.warn(
+      "Joshua Phase 28.24: generated public/control-panel.html not found."
+    );
+    return;
+  }
+
+  let panel = fs.readFileSync(panelPath, "utf8");
+  let changed = false;
+
+  // Phase 10 has now generated the Office Suite. Patch the ACTUAL generated
+  // function rather than trying to patch the base HTML before it exists.
+  const oldQueueItems =
+    `function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...(((window.cache||cache||{}).workflowQueues||{})[cfg.key]||[])]:[]}`;
+
+  const newQueueItems = `function officeQueueItems(type){
+ const cfg=officeQueueConfig[type];if(!cfg)return[];
+ const data=window.cache||cache||{};
+ const queued=[...(((data.workflowQueues||{})[cfg.key])||[])];
+ if(type!=="parts"||queued.length)return queued;
+ // JOSHUA_PHASE28_24_GENERATED_PARTS_QUEUE_AUTHORITY
+ return [...(data.workOrders||[])].filter(x=>{
+  const state=String(x.joshuaStatus||x.state||"")
+   .trim().toLowerCase().replace(/[\\s-]+/g,"_");
+  const sc=[
+   x.serviceChannelPrimaryStatus,
+   x.serviceChannelExtendedStatus,
+   x.primaryStatus,
+   x.extendedStatus,
+   x.statusDescription
+  ].map(v=>String(v||"").toLowerCase()).join(" ");
+  return state==="parts_needed"||
+   /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc);
+ });
+}`;
+
+  if (panel.includes(oldQueueItems)) {
+    panel = panel.replace(oldQueueItems, newQueueItems);
+    changed = true;
+  }
+
+  const oldPartsChrome =
+    `set('navPartsCount',(q.partsNeeded||[]).length);`;
+
+  const newPartsChrome =
+    `set('navPartsCount',officeQueueItems('parts').length);`;
+
+  if (panel.includes(oldPartsChrome)) {
+    panel = panel.replace(oldPartsChrome, newPartsChrome);
+    changed = true;
+  }
+
+  /*
+   * Defense in depth: Office Suite's original chrome updater can run before
+   * the first async dashboard refresh finishes. The canonical status card
+   * already shows the correct "Parts needed" count, so keep the sidebar badge
+   * synchronized to it after load and after future renders.
+   */
+  if (
+    !panel.includes(
+      "JOSHUA_PHASE28_24_LIVE_BADGE_SYNC"
+    )
+  ) {
+    const liveSync = `
+<script>
+// JOSHUA_PHASE28_24_LIVE_BADGE_SYNC
+(function(){
+ function syncJoshuaOfficeBadges(){
+  const pairs=[
+   ["navPartsCount","partsNeeded"],
+   ["navBillingCount","readyToBill"],
+   ["navProposalCount","pendingProposal"]
+  ];
+  for(const [navId,metricId] of pairs){
+   const nav=document.getElementById(navId);
+   const metric=document.getElementById(metricId);
+   if(!nav||!metric)continue;
+   const value=String(metric.textContent||"0").trim();
+   if(nav.textContent!==value)nav.textContent=value||"0";
+  }
+ }
+ setTimeout(syncJoshuaOfficeBadges,400);
+ setInterval(syncJoshuaOfficeBadges,1000);
+ const observer=new MutationObserver(syncJoshuaOfficeBadges);
+ observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true});
+})();
+</script>
+`;
+
+    panel = panel.replace(
+      "</body>",
+      liveSync + "\n</body>"
+    );
+    changed = true;
+  }
+
+  if (changed) {
+    fs.writeFileSync(panelPath, panel);
+    console.log(
+      "Joshua Phase 28.24 patched the generated Office Suite panel after Phase 10 startup: Parts Queue authority + live sidebar badge synchronization."
+    );
+  } else {
+    console.log(
+      "Joshua Phase 28.24: generated Office Suite panel already patched or no matching legacy patterns remained."
+    );
+  }
+}
+
 function ensurePersistentControlData() {
   fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
 
@@ -1667,6 +1782,12 @@ await import(
   "./phase28-operational-truth-authority.mjs"
 );
 
+/*
+ * Phase 28.24 must run AFTER Phase 10 has generated the Office Suite HTML.
+ * Previous UI patches ran too early and were overwritten/never matched.
+ */
+phase2824PatchGeneratedOfficeSuitePanel();
+
 reconcilePersistentTruth();
 
 const timer = setInterval(() => {
@@ -1674,7 +1795,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.23 reconciliation failed:",
+      "Joshua Phase 28.24 reconciliation failed:",
       error.message
     );
   }
@@ -1683,5 +1804,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.23 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.24 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
