@@ -671,14 +671,83 @@ function taskCanonicalKey(task = {}) {
   ].join("|");
 }
 
-function taskIsStaleForRecoveredCompletion(
-  task = {}
+function phase2818IsServiceChannelWorkOrder(
+  workOrder = {}
 ) {
-  const tracking = text(
-    task.trackingNumber
-  );
+  const source = [
+    workOrder.source,
+    workOrder.sourceSystem,
+    workOrder.provider,
+    workOrder.platform,
+    workOrder.integration,
+    workOrder.intakeSource
+  ]
+    .map(lower)
+    .join(" ");
 
-  if (!RECOVERED_COMPLETIONS[tracking]) {
+  return Boolean(
+    workOrder.isServiceChannel === true ||
+    workOrder.serviceChannelSourceOfTruth === true ||
+    source.includes("servicechannel") ||
+    workOrder.serviceChannelTrackingNumber ||
+    workOrder.scTrackingNumber ||
+    workOrder.serviceChannelWorkOrderNumber ||
+    workOrder.scWorkOrderNumber
+  );
+}
+
+function phase2818IsCompletedServiceChannelState(
+  workOrder = {}
+) {
+  if (!phase2818IsServiceChannelWorkOrder(workOrder)) {
+    return false;
+  }
+
+  const states = [
+    workOrder.joshuaStatus,
+    workOrder.state,
+    workOrder.sheetStatus,
+    workOrder.status,
+    workOrder.serviceChannelPrimaryStatus,
+    workOrder.serviceChannelExtendedStatus,
+    workOrder.invoiceStatus,
+    workOrder.paymentStatus
+  ]
+    .map(value =>
+      lower(value).replace(/[\s-]+/g, "_")
+    )
+    .filter(Boolean);
+
+  const joined = states.join(" ");
+
+  return Boolean(
+    states.some(value =>
+      [
+        "pending_confirmation",
+        "ready_to_bill",
+        "completed",
+        "closed",
+        "paid",
+        "invoiced",
+        "ready_for_review",
+        "invoice_submitted",
+        "submitted"
+      ].includes(value)
+    ) ||
+    /completed.*pending.*confirmation/.test(joined) ||
+    /completed.*confirmed/.test(joined)
+  );
+}
+
+function taskIsStaleForCompletedServiceChannel(
+  task = {},
+  workOrder = {}
+) {
+  if (
+    !phase2818IsCompletedServiceChannelState(
+      workOrder
+    )
+  ) {
     return false;
   }
 
@@ -692,7 +761,7 @@ function taskIsStaleForRecoveredCompletion(
     .join(" ")
     .toLowerCase();
 
-  // Do NOT auto-close quote, parts, billing, or documentation work.
+  // Never auto-close real downstream work.
   if (
     /quote|proposal|parts|invoice|billing|documentation|photo/.test(
       body
@@ -701,7 +770,14 @@ function taskIsStaleForRecoveredCompletion(
     return false;
   }
 
+  /*
+   * Once ServiceChannel is Completed/Pending Confirmation or farther
+   * downstream, the generic "Update customer on current job status" task is
+   * stale. ServiceChannel itself is already the authoritative status source.
+   * This also clears obsolete onsite/check-in/check-out follow-ups.
+   */
   return Boolean(
+    /update customer on current job status/.test(body) ||
     /check.?in|check.?out|onsite|technician onsite|verify servicechannel|confirm servicechannel (?:check|completion)|servicechannel_ivr_verify|missed checkout/.test(
       body
     )
@@ -727,8 +803,18 @@ function cleanupOpenTasks(data) {
       return task;
     }
 
+    const taskTracking = text(
+      task.trackingNumber
+    );
+    const taskWorkOrder =
+      data.workOrders[taskTracking];
+
     if (
-      taskIsStaleForRecoveredCompletion(task)
+      taskWorkOrder &&
+      taskIsStaleForCompletedServiceChannel(
+        task,
+        taskWorkOrder
+      )
     ) {
       changed = true;
       return {
@@ -739,7 +825,7 @@ function cleanupOpenTasks(data) {
           task.completedAt || now,
         updatedAt: now,
         closedReason:
-          "ServiceChannel checkout was already confirmed; stale check-in/check-out task closed during persistence recovery.",
+          "ServiceChannel is already Completed/Pending Confirmation or farther downstream; stale current-status/check-in/check-out follow-up closed by Joshua Phase 28.18.",
         phase2818AutoClosed: true
       };
     }
@@ -898,5 +984,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.18 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.18 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned (including generic customer-status tasks after ServiceChannel completion), and #356413923 held to authoritative BILL/ready-to-bill status."
 );
