@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_10_ONSITE_LABEL_ONLY";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_11_EXCEPTION_TRUTH";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -2251,6 +2251,130 @@ function phase2810OnsiteLabel(item={}){
   }
 }
 
+
+function patchExceptionDashboardCurrentTruthOnly() {
+  const filePath = new URL(
+    "./phase23-5-clockshark-activity-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (source.includes("JOSHUA_PHASE28_11_EXCEPTION_TRUTH_ONLY")) {
+    return;
+  }
+
+  const callAnchor = `patchControlPanel(
+  new URL("./public/control-panel.html", import.meta.url)
+);
+patchControlPanel(
+  new URL("./control-panel.html", import.meta.url)
+);
+
+await import(`;
+
+  if (!source.includes(callAnchor)) {
+    throw new Error(
+      "Phase 28.11 could not locate the final Phase 23.5 control-panel hook."
+    );
+  }
+
+  const helper = String.raw`// JOSHUA_PHASE28_11_EXCEPTION_TRUTH_ONLY
+function phase2811PatchExceptionDashboard(panelPath) {
+  let html = fs.readFileSync(panelPath, "utf8");
+
+  if (html.includes("JOSHUA_PHASE28_11_EXCEPTION_TRUTH_PANEL")) {
+    return;
+  }
+
+  const allExceptionsOld = ` + "`" + String.raw`function allExceptions(){
+ const merged=[...(cache.failures||[]),...(cache.attentionWorkOrders||[])];
+ const seen=new Set();
+ return merged.filter(x=>{
+  const key=[x.trackingNumber||"",x.type||x.joshuaStatus||x.state||"",x.lastError||x.error||x.callStatus||""].join("|");
+  if(seen.has(key))return false;seen.add(key);return true;
+ }).sort((a,b)=>{` + "`" + String.raw`;
+
+  if (!html.includes(allExceptionsOld)) {
+    throw new Error(
+      "Phase 28.11 could not locate the Exception Dashboard merge in " +
+      panelPath.pathname
+    );
+  }
+
+  const allExceptionsNew = ` + "`" + String.raw`// JOSHUA_PHASE28_11_EXCEPTION_TRUTH_PANEL
+function phase2811Tracking(value){
+ return String(value||"").trim().replace(/^#\s*/,"").toLowerCase();
+}
+function phase2811CurrentOperationalTrackingSet(){
+ const values=[];
+ for(const item of (cache.serviceChannelOnsite||cache.active||[])){
+  values.push(item?.trackingNumber,item?.serviceChannelTrackingNumber,item?.workOrderNumber);
+ }
+ for(const item of (cache.checkoutNeeded||[])){
+  values.push(item?.trackingNumber,item?.serviceChannelTrackingNumber,item?.workOrderNumber);
+ }
+ for(const item of (cache.clockSharkClockedIn||[])){
+  values.push(item?.currentTrackingNumber,item?.clockSharkCurrentTrackingNumber,item?.trackingNumber);
+ }
+ return new Set(values.map(phase2811Tracking).filter(Boolean));
+}
+function phase2811ExceptionIsCurrent(x={}){
+ const text=[
+  x.joshuaStatus,x.state,x.type,x.lastError,x.error,x.callStatus,
+  x.actionableReason,x.liveOnsiteDuration,x.workflowReason,x.statusText
+ ].filter(Boolean).join(" ").toLowerCase();
+ const onsiteLike=/technician\s+onsite|onsite\s+too\s+long|onsite\s+over|missed\s+checkout|\bonsite\b/.test(text);
+ if(!onsiteLike)return true;
+ const tracking=phase2811Tracking(
+  x.trackingNumber||x.serviceChannelTrackingNumber||x.workOrderNumber
+ );
+ if(!tracking)return false;
+ return phase2811CurrentOperationalTrackingSet().has(tracking);
+}
+function allExceptions(){
+ const merged=[...(cache.failures||[]),...(cache.attentionWorkOrders||[])];
+ const seen=new Set();
+ return merged.filter(x=>{
+  if(!phase2811ExceptionIsCurrent(x))return false;
+  const key=[x.trackingNumber||"",x.type||x.joshuaStatus||x.state||"",x.lastError||x.error||x.callStatus||""].join("|");
+  if(seen.has(key))return false;seen.add(key);return true;
+ }).sort((a,b)=>{` + "`" + String.raw`;
+
+  html = html.replace(allExceptionsOld, allExceptionsNew);
+
+  const rawCount =
+    "active.textContent=d.activeCount;fails.textContent=d.failures.length+d.attentionWorkOrders.length;taskCount.textContent=d.openTasks.length;";
+  const truthCount =
+    "active.textContent=d.activeCount;fails.textContent=allExceptions().length;taskCount.textContent=d.openTasks.length;";
+
+  if (!html.includes(rawCount)) {
+    throw new Error(
+      "Phase 28.11 could not locate the Needs Attention counter in " +
+      panelPath.pathname
+    );
+  }
+
+  html = html.replace(rawCount, truthCount);
+  fs.writeFileSync(panelPath, html);
+}
+
+`;
+
+  source = source.replace(
+    callAnchor,
+    helper +
+      callAnchor.replace(
+        "\n\nawait import(",
+        `\nphase2811PatchExceptionDashboard(\n  new URL("./public/control-panel.html", import.meta.url)\n);\nphase2811PatchExceptionDashboard(\n  new URL("./control-panel.html", import.meta.url)\n);\n\nawait import(`
+      )
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.11 queued Exception Dashboard truth filtering after Phase 23.5 finishes its normal UI patching; no work-order state, history, routing, or integration data is changed."
+  );
+}
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -2384,11 +2508,12 @@ patchCityGatedClockSharkRouting();
 patchControlPanels();
 patchServiceChannelDisplayTruth();
 patchServiceChannelOnsiteLabelOnly();
+patchExceptionDashboardCurrentTruthOnly();
 
 console.log(
-  "Joshua Phase 28.10 no-resurrection authority with display-only onsite label cleanup installed: " +
+  "Joshua Phase 28.11 no-resurrection authority with display-only exception truth filtering installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels in the ServiceChannel onsite popup, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, Exception Dashboard filtering against current authoritative onsite lists, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
