@@ -40,7 +40,17 @@ function patchServerOpenTaskCount() {
 
   const oldLine =
     '  const openTasks = data.tasks.filter(item => item.status !== "closed");';
-  const newLine = `  // JOSHUA_PHASE28_30_OPEN_TASK_COUNT\n  // Closed AND completed tasks are historical, not open work.\n  const openTasks = data.tasks.filter(item => {\n    const status = String(item?.status || "open").trim().toLowerCase();\n    return !["closed", "completed"].includes(status);\n  });`;
+
+  // Keep the original Phase 15 anchor intact. Older startup patchers search
+  // for this exact statement, so Phase 28.30 filters completed tasks just
+  // after it instead of replacing the anchor.
+  const newLine = `  const openTasks = data.tasks.filter(item => item.status !== "closed");
+  // JOSHUA_PHASE28_30_OPEN_TASK_COUNT
+  // Closed AND completed tasks are historical, not open work.
+  for (let index = openTasks.length - 1; index >= 0; index -= 1) {
+    const status = String(openTasks[index]?.status || "open").trim().toLowerCase();
+    if (status === "completed") openTasks.splice(index, 1);
+  }`;
 
   if (!source.includes(oldLine)) {
     console.warn("Joshua Phase 28.30: server openTasks line was not found.");
@@ -64,15 +74,22 @@ function patchPhase2829AmbiguousAbbreviations() {
 
   let changed = false;
 
-  const ppOld = `      "pp",\n      "quote",`;
-  const ppNew = `      /* JOSHUA_PHASE28_30_NO_AMBIGUOUS_PP_AA\n       * Do not treat bare PP as proposal. It is an ambiguous legacy sheet\n       * shorthand and caused false proposal promotion.\n       */\n      "quote",`;
+  const ppOld = `      "pp",
+      "quote",`;
+  const ppNew = `      /* JOSHUA_PHASE28_30_NO_AMBIGUOUS_PP_AA
+       * Do not treat bare PP as proposal. It is an ambiguous legacy sheet
+       * shorthand and caused false proposal promotion.
+       */
+      "quote",`;
   if (source.includes(ppOld)) {
     source = source.replace(ppOld, ppNew);
     changed = true;
   }
 
-  const aaOld = `      "aa",\n      "awaiting_authorization",`;
-  const aaNew = `      /* Bare AA is intentionally not mapped here. */\n      "awaiting_authorization",`;
+  const aaOld = `      "aa",
+      "awaiting_authorization",`;
+  const aaNew = `      /* Bare AA is intentionally not mapped here. */
+      "awaiting_authorization",`;
   if (source.includes(aaOld)) {
     source = source.replace(aaOld, aaNew);
     changed = true;
