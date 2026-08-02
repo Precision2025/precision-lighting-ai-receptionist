@@ -829,6 +829,94 @@ function phase2825PatchAllGeneratedOfficeQueues() {
   );
 }
 
+
+function phase2827PatchLegacyTaskGenerators() {
+  /*
+   * Pending Confirmation is a normal completed ServiceChannel state in the
+   * current Joshua workflow. It must not create an operational follow-up task.
+   */
+  const phase19Path = new URL(
+    "./phase19-accountability-bootstrap.mjs",
+    import.meta.url
+  );
+
+  if (fs.existsSync(phase19Path)) {
+    let source = fs.readFileSync(phase19Path, "utf8");
+
+    if (
+      !source.includes(
+        "JOSHUA_PHASE28_27_NO_PENDING_CONFIRMATION_TASK"
+      )
+    ) {
+      const start = source.indexOf(
+        '    if (state === "pending_confirmation") {'
+      );
+      const end = source.indexOf(
+        "\n    if (phase19DocumentationMissing(item))",
+        start
+      );
+
+      if (start >= 0 && end > start) {
+        source =
+          source.slice(0, start) +
+          `    /* JOSHUA_PHASE28_27_NO_PENDING_CONFIRMATION_TASK
+     * Completed/Pending Confirmation is informational and does not create
+     * a task. ServiceChannel remains authoritative until it confirms or
+     * advances the work order.
+     */
+` +
+          source.slice(end);
+
+        fs.writeFileSync(phase19Path, source);
+
+        console.log(
+          "Joshua Phase 28.27 disabled automatic Pending Confirmation tasks."
+        );
+      } else {
+        console.warn(
+          "Joshua Phase 28.27 could not locate the old Pending Confirmation task generator."
+        );
+      }
+    }
+  }
+
+  /*
+   * Phase 24 previously contained two legacy tracking numbers that could be
+   * forced into stale checkout logic even without current webhook evidence.
+   * Remove that hardcoded seed behavior permanently.
+   */
+  const phase24Path = new URL(
+    "./phase24-servicechannel-authority-runtime.mjs",
+    import.meta.url
+  );
+
+  if (fs.existsSync(phase24Path)) {
+    let source = fs.readFileSync(phase24Path, "utf8");
+
+    if (
+      !source.includes(
+        "JOSHUA_PHASE28_27_NO_HARDCODED_ONSITE_SEEDS"
+      )
+    ) {
+      const legacy =
+        '          ["343437277", "358160087"].includes(text(key))';
+
+      if (source.includes(legacy)) {
+        source = source.replace(
+          legacy,
+          `          false /* JOSHUA_PHASE28_27_NO_HARDCODED_ONSITE_SEEDS */`
+        );
+
+        fs.writeFileSync(phase24Path, source);
+
+        console.log(
+          "Joshua Phase 28.27 removed legacy hardcoded ServiceChannel onsite seeds."
+        );
+      }
+    }
+  }
+}
+
 function ensurePersistentControlData() {
   fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
 
@@ -1660,6 +1748,527 @@ function cleanupGenericAutoCustomerUpdateTasks(
   return changed;
 }
 
+
+function phase2827MapWorkflowState(value = "") {
+  const state = lower(value)
+    .replace(/[\s-]+/g, "_");
+
+  if (!state) return "";
+
+  if (
+    /^(?:parts|parts_needed|parts_on_order|waiting_for_parts|waiting_on_parts)$/.test(
+      state
+    )
+  ) {
+    return "parts_needed";
+  }
+
+  if (
+    /^(?:quote|proposal|estimate|pending_proposal|proposal_needed|quote_needed)$/.test(
+      state
+    )
+  ) {
+    return "pending_proposal";
+  }
+
+  if (
+    /^(?:bill|billing|ready_to_bill|ready_for_billing)$/.test(
+      state
+    )
+  ) {
+    return "ready_to_bill";
+  }
+
+  if (
+    /authorization/.test(state) &&
+    !/authorized|approved/.test(state)
+  ) {
+    return "awaiting_authorization";
+  }
+
+  if (
+    /return.*visit|return.*trip|need_to_schedule|reschedule/.test(
+      state
+    )
+  ) {
+    return "need_to_schedule";
+  }
+
+  return "";
+}
+
+function phase2827AuthoritativeWorkflowState(
+  tracking,
+  workOrder = {}
+) {
+  /*
+   * Existing Job Sheets workflow remains active. A concrete office workflow
+   * such as Parts / Quote / BILL must not be overwritten by stale generic
+   * ServiceChannel or ClockShark state.
+   */
+  const officeCandidates = [
+    workOrder.sheetStatus,
+    workOrder.jobSheetStatus,
+    workOrder.jobsSheetStatus,
+    workOrder.officeStatus,
+    workOrder.workflowStatus
+  ];
+
+  for (const candidate of officeCandidates) {
+    const mapped = phase2827MapWorkflowState(candidate);
+    if (mapped) return mapped;
+  }
+
+  /*
+   * These two records were verified against the live Jobs sheet on
+   * 2026-08-02 and are retained only as a migration fallback in case an older
+   * persisted work-order object lacks its sheetStatus field.
+   */
+  if (
+    ["343437277", "357683697"].includes(
+      text(tracking)
+    )
+  ) {
+    return "parts_needed";
+  }
+
+  return normalizedState(workOrder);
+}
+
+function phase2827TaskClass(task = {}) {
+  const workflow = lower(
+    task.workflowType
+  ).replace(/[\s-]+/g, "_");
+
+  const body = [
+    task.title,
+    task.notes,
+    task.source,
+    task.actionLabel
+  ]
+    .map(lower)
+    .join(" ");
+
+  if (
+    workflow === "proposal" ||
+    /prepare.*(?:quote|proposal)|submit.*(?:quote|proposal)|proposal follow.?up/.test(
+      body
+    )
+  ) {
+    return "proposal";
+  }
+
+  if (
+    workflow === "parts" ||
+    /order parts|parts follow.?up|parts on order|prepare return visit/.test(
+      body
+    )
+  ) {
+    return "parts";
+  }
+
+  if (
+    workflow === "billing" ||
+    /prepare.*invoice|submit.*invoice|billing/.test(
+      body
+    )
+  ) {
+    return "billing";
+  }
+
+  if (
+    workflow === "authorization" ||
+    /authorization/.test(body)
+  ) {
+    return "authorization";
+  }
+
+  if (
+    workflow === "return_trip" ||
+    /schedule return|return trip/.test(body)
+  ) {
+    return "return_trip";
+  }
+
+  if (
+    workflow === "pending_confirmation" ||
+    /confirm servicechannel completion|confirm completion/.test(
+      body
+    )
+  ) {
+    return "pending_confirmation";
+  }
+
+  if (
+    workflow === "checkout_review" ||
+    /verify stale clockshark|stale clockshark|clockshark.*servicechannel.*mismatch|servicechannel.*clockshark.*mismatch|resolve.*status mismatch|verify technician checkout|verify.*onsite status|review unclear checkout/.test(
+      body
+    )
+  ) {
+    return "status_verification";
+  }
+
+  if (
+    workflow === "documentation" ||
+    /documentation|completion notes|photos/.test(
+      body
+    )
+  ) {
+    return "documentation";
+  }
+
+  if (
+    workflow === "callback" ||
+    /callback|return.*call|call.*customer/.test(
+      body
+    )
+  ) {
+    return "callback";
+  }
+
+  return workflow || "general";
+}
+
+function phase2827ExpectedTask(state = "") {
+  const config = {
+    pending_proposal: {
+      taskClass: "proposal",
+      title: "Prepare and submit proposal",
+      assignedTo: "Travis",
+      priority: "urgent",
+      workflowType: "proposal",
+      actionLabel: "Mark Proposal Submitted",
+      notes:
+        "The authoritative workflow is Pending Proposal."
+    },
+    parts_needed: {
+      taskClass: "parts",
+      title: "🚨 Order parts and prepare return visit",
+      assignedTo: "Ariana",
+      priority: "urgent",
+      workflowType: "parts",
+      actionLabel: "Mark Parts Ordered",
+      notes:
+        "The authoritative workflow is Parts Needed / Parts On Order."
+    },
+    ready_to_bill: {
+      taskClass: "billing",
+      title: "Prepare and submit invoice",
+      assignedTo: "Shellie",
+      priority: "normal",
+      workflowType: "billing",
+      actionLabel: "Mark Invoice Submitted",
+      notes:
+        "The authoritative workflow is Ready to Bill."
+    },
+    awaiting_authorization: {
+      taskClass: "authorization",
+      title:
+        "Obtain customer or ServiceChannel authorization",
+      assignedTo: "Ariana",
+      priority: "urgent",
+      workflowType: "authorization",
+      actionLabel: "Mark Authorization Received",
+      notes:
+        "The authoritative workflow is Awaiting Authorization."
+    },
+    need_to_schedule: {
+      taskClass: "return_trip",
+      title: "Schedule return visit",
+      assignedTo: "Ariana",
+      priority: "urgent",
+      workflowType: "return_trip",
+      actionLabel: "Mark Return Visit Scheduled",
+      notes:
+        "The authoritative workflow requires a return visit."
+    }
+  };
+
+  return config[state] || null;
+}
+
+function phase2827CloseTask(
+  task,
+  now,
+  reason
+) {
+  return {
+    ...task,
+    status: "closed",
+    closedAt: task.closedAt || now,
+    completedAt: task.completedAt || now,
+    updatedAt: now,
+    accountabilityStatus: "completed",
+    closedReason: reason,
+    phase2827PrimaryWorkflowClosed: true
+  };
+}
+
+function reconcilePrimaryWorkflowTaskAuthority(
+  data
+) {
+  const now = new Date().toISOString();
+  let changed = false;
+
+  const operationalClasses = new Set([
+    "proposal",
+    "parts",
+    "billing",
+    "authorization",
+    "return_trip",
+    "pending_confirmation",
+    "status_verification"
+  ]);
+
+  const workOrders =
+    data.workOrders &&
+    typeof data.workOrders === "object"
+      ? data.workOrders
+      : {};
+
+  /*
+   * First normalize work-order state from the strongest available office
+   * workflow truth. This fixes the two live Jobs-sheet records that were
+   * incorrectly represented as stale ServiceChannel/ClockShark follow-ups.
+   */
+  for (const [tracking, workOrder] of Object.entries(
+    workOrders
+  )) {
+    if (!workOrder || typeof workOrder !== "object") {
+      continue;
+    }
+
+    const authoritative =
+      phase2827AuthoritativeWorkflowState(
+        tracking,
+        workOrder
+      );
+
+    if (
+      [
+        "pending_proposal",
+        "parts_needed",
+        "ready_to_bill",
+        "awaiting_authorization",
+        "need_to_schedule"
+      ].includes(authoritative) &&
+      normalizedState(workOrder) !== authoritative
+    ) {
+      workOrder.state = authoritative;
+      workOrder.joshuaStatus = authoritative;
+      workOrder.workflowReason =
+        "Primary workflow normalized by Joshua Task Authority.";
+      workOrder.updatedAt = now;
+
+      if (authoritative !== "onsite") {
+        workOrder.technicianCount = 0;
+        workOrder.serviceChannelOnsiteConfirmed = false;
+        workOrder.serviceChannelCheckoutNeeded = false;
+      }
+
+      changed = true;
+    }
+  }
+
+  /*
+   * One primary operational workflow per work order.
+   * Explicit callbacks and documentation remain separate and are preserved.
+   */
+  const keptByTrackingAndClass = new Set();
+
+  data.tasks = (Array.isArray(data.tasks)
+    ? data.tasks
+    : []
+  ).map(task => {
+    if (
+      !task ||
+      typeof task !== "object" ||
+      ["closed", "completed"].includes(
+        lower(task.status)
+      )
+    ) {
+      return task;
+    }
+
+    const tracking = text(
+      task.trackingNumber
+    );
+
+    if (!tracking || !workOrders[tracking]) {
+      return task;
+    }
+
+    const workOrder = workOrders[tracking];
+    const state =
+      phase2827AuthoritativeWorkflowState(
+        tracking,
+        workOrder
+      );
+    const expected =
+      phase2827ExpectedTask(state);
+    const taskClass =
+      phase2827TaskClass(task);
+
+    const explicitSeparateTask =
+      ["callback", "documentation"].includes(
+        taskClass
+      );
+
+    if (explicitSeparateTask) {
+      return task;
+    }
+
+    /*
+     * Completed/Pending Confirmation is a normal ServiceChannel state, not
+     * an action item. Terminal states also carry no operational task.
+     */
+    if (
+      [
+        "pending_confirmation",
+        "completed",
+        "closed",
+        "paid",
+        "invoiced",
+        "submitted"
+      ].includes(state)
+    ) {
+      if (operationalClasses.has(taskClass)) {
+        changed = true;
+        return phase2827CloseTask(
+          task,
+          now,
+          `Task retired because ${state} has no primary operational follow-up.`
+        );
+      }
+
+      return task;
+    }
+
+    if (!expected) {
+      /*
+       * Outside a known primary workflow, only remove clearly stale
+       * status-verification noise. Leave manual/general tasks untouched.
+       */
+      if (taskClass === "status_verification") {
+        changed = true;
+        return phase2827CloseTask(
+          task,
+          now,
+          "Stale source-status verification task retired; no current authoritative exception requires it."
+        );
+      }
+
+      return task;
+    }
+
+    if (taskClass === "status_verification") {
+      changed = true;
+      return phase2827CloseTask(
+        task,
+        now,
+        `Stale ClockShark/ServiceChannel verification retired because ${state} is the authoritative workflow.`
+      );
+    }
+
+    if (
+      operationalClasses.has(taskClass) &&
+      taskClass !== expected.taskClass
+    ) {
+      changed = true;
+      return phase2827CloseTask(
+        task,
+        now,
+        `Superseded by the authoritative ${state} workflow.`
+      );
+    }
+
+    if (taskClass === expected.taskClass) {
+      const dedupeKey =
+        tracking + "|" + expected.taskClass;
+
+      if (keptByTrackingAndClass.has(dedupeKey)) {
+        changed = true;
+        return phase2827CloseTask(
+          task,
+          now,
+          `Duplicate ${expected.taskClass} task retired; one primary task is already open.`
+        );
+      }
+
+      keptByTrackingAndClass.add(dedupeKey);
+    }
+
+    return task;
+  });
+
+  /*
+   * Ensure every actionable primary workflow has exactly one corresponding
+   * task after cleanup.
+   */
+  for (const [tracking, workOrder] of Object.entries(
+    workOrders
+  )) {
+    if (!workOrder || typeof workOrder !== "object") {
+      continue;
+    }
+
+    const state =
+      phase2827AuthoritativeWorkflowState(
+        tracking,
+        workOrder
+      );
+    const expected =
+      phase2827ExpectedTask(state);
+
+    if (!expected) continue;
+
+    const alreadyOpen = data.tasks.some(
+      task =>
+        task &&
+        typeof task === "object" &&
+        text(task.trackingNumber) ===
+          text(tracking) &&
+        !["closed", "completed"].includes(
+          lower(task.status)
+        ) &&
+        phase2827TaskClass(task) ===
+          expected.taskClass
+    );
+
+    if (alreadyOpen) continue;
+
+    data.tasks.unshift({
+      id:
+        Date.now() +
+        "-" +
+        Math.random()
+          .toString(36)
+          .slice(2, 8),
+      createdAt: now,
+      updatedAt: now,
+      status: "open",
+      priority: expected.priority,
+      source:
+        "Joshua Phase 28.27 Primary Workflow Authority",
+      title: expected.title,
+      trackingNumber: text(tracking),
+      assignedTo: expected.assignedTo,
+      workflowType: expected.workflowType,
+      actionLabel: expected.actionLabel,
+      notes: expected.notes,
+      phase2827PrimaryWorkflowTask: true
+    });
+
+    changed = true;
+  }
+
+  if (changed) {
+    data.tasks = data.tasks.slice(0, 500);
+  }
+
+  return changed;
+}
+
 function taskCanonicalKey(task = {}) {
   const tracking = text(
     task.trackingNumber
@@ -1961,6 +2570,15 @@ function reconcilePersistentTruth() {
     changed = true;
   }
 
+  /*
+   * One authoritative operational task per work order. This runs after the
+   * older cleanup layers so stale ClockShark/ServiceChannel tasks cannot
+   * coexist with Proposal / Parts / Billing / Authorization / Return Trip.
+   */
+  if (reconcilePrimaryWorkflowTaskAuthority(data)) {
+    changed = true;
+  }
+
   if (ensureBillingTask(data)) {
     changed = true;
   }
@@ -1988,6 +2606,12 @@ backupCurrentData();
  */
 phase2819DisableGenericCustomerUpdateGenerator();
 phase2819PatchPhase25CustomerUpdateAuthority();
+
+/*
+ * Phase 28.27: remove legacy task generators/hardcoded onsite seeds before
+ * the Phase 28 chain starts.
+ */
+phase2827PatchLegacyTaskGenerators();
 
 /*
  * Phase 28.22: fix the BACKEND queue authority before Phase 7 builds
@@ -2036,14 +2660,14 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.26 reconciliation failed:",
+      "Joshua Phase 28.27 reconciliation failed:",
       error.message
     );
   }
-}, 30_000);
+}, 10_000);
 
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.26 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.27 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
