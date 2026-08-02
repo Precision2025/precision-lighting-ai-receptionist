@@ -231,6 +231,162 @@ function phase2819PatchPhase25CustomerUpdateAuthority() {
   );
 }
 
+
+function phase2821PatchPartsQueueView() {
+  const panelPaths = [
+    new URL("./public/control-panel.html", import.meta.url),
+    new URL("./control-panel.html", import.meta.url)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let html = fs.readFileSync(panelPath, "utf8");
+    let changed = false;
+
+    if (
+      !html.includes(
+        "JOSHUA_PHASE28_21_PARTS_QUEUE_VIEW_AUTHORITY"
+      )
+    ) {
+      const oldQueueItems =
+        `function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...(((window.cache||cache||{}).workflowQueues||{})[cfg.key]||[])]:[]}`;
+
+      const newQueueItems = `function officeQueueItems(type){
+ const cfg=officeQueueConfig[type];if(!cfg)return[];
+ const data=window.cache||cache||{};
+ const queued=[...(((data.workflowQueues||{})[cfg.key])||[])];
+ if(type!=="parts"||queued.length)return queued;
+ // JOSHUA_PHASE28_21_PARTS_QUEUE_VIEW_AUTHORITY
+ // Defense in depth: the main dashboard may already know Parts Needed even
+ // when the older workflowQueues snapshot has not been rebuilt yet.
+ return [...(data.workOrders||[])].filter(x=>{
+  const state=String(x.joshuaStatus||x.state||"")
+   .trim().toLowerCase().replace(/[\\s-]+/g,"_");
+  const sc=[
+   x.serviceChannelPrimaryStatus,
+   x.serviceChannelExtendedStatus,
+   x.primaryStatus,
+   x.extendedStatus,
+   x.statusDescription
+  ].map(v=>String(v||"").toLowerCase()).join(" ");
+  return state==="parts_needed"||
+   /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc);
+ });
+}`;
+
+      if (html.includes(oldQueueItems)) {
+        html = html.replace(
+          oldQueueItems,
+          newQueueItems
+        );
+        changed = true;
+      }
+
+      const oldNavParts =
+        `set('navPartsCount',(q.partsNeeded||[]).length);`;
+
+      const newNavParts =
+        `set('navPartsCount',officeQueueItems('parts').length);`;
+
+      if (html.includes(oldNavParts)) {
+        html = html.replace(
+          oldNavParts,
+          newNavParts
+        );
+        changed = true;
+      }
+
+      const oldTotal =
+        `const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+(q.partsNeeded||[]).length+(q.readyToBill||[]).length;`;
+
+      const newTotal =
+        `const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+officeQueueItems('parts').length+(q.readyToBill||[]).length;`;
+
+      if (html.includes(oldTotal)) {
+        html = html.replace(
+          oldTotal,
+          newTotal
+        );
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(panelPath, html);
+      console.log(
+        "Joshua Phase 28.21 corrected Parts Queue view in " +
+        panelPath.pathname
+      );
+    }
+  }
+}
+
+
+function phase2822PatchPhase7WorkflowQueueAuthority() {
+  const phase7Path = new URL(
+    "./phase7-bootstrap.mjs",
+    import.meta.url
+  );
+
+  if (!fs.existsSync(phase7Path)) {
+    console.warn(
+      "Joshua Phase 28.22: phase7-bootstrap.mjs not found."
+    );
+    return;
+  }
+
+  let source = fs.readFileSync(phase7Path, "utf8");
+
+  if (
+    source.includes(
+      "JOSHUA_PHASE28_22_PARTS_WORKFLOW_QUEUE_AUTHORITY"
+    )
+  ) {
+    return;
+  }
+
+  const oldLine =
+    `      partsNeeded: workOrders.filter(item => item.joshuaStatus === "parts_needed"),`;
+
+  const newLine = `      // JOSHUA_PHASE28_22_PARTS_WORKFLOW_QUEUE_AUTHORITY
+      partsNeeded: workOrders.filter(item => {
+        const state = String(item.joshuaStatus || item.state || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\\\\s-]+/g, "_");
+        const serviceChannelStatus = [
+          item.serviceChannelPrimaryStatus,
+          item.serviceChannelExtendedStatus,
+          item.primaryStatus,
+          item.extendedStatus,
+          item.statusDescription
+        ]
+          .map(value => String(value || "").toLowerCase())
+          .join(" ");
+        return (
+          state === "parts_needed" ||
+          /parts?\\\\s*(?:on\\\\s*order|ordered|needed|required)|waiting\\\\s*(?:on|for)\\\\s*parts?/.test(
+            serviceChannelStatus
+          )
+        );
+      }),`;
+
+  if (!source.includes(oldLine)) {
+    console.warn(
+      "Joshua Phase 28.22: Phase 7 partsNeeded queue line was not found."
+    );
+    return;
+  }
+
+  source = source.replace(oldLine, newLine);
+  fs.writeFileSync(phase7Path, source);
+
+  console.log(
+    "Joshua Phase 28.22 patched Phase 7 workflowQueues.partsNeeded to use ServiceChannel Parts On Order / Parts Needed as authority."
+  );
+}
+
 function ensurePersistentControlData() {
   fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
 
@@ -1392,6 +1548,19 @@ phase2819DisableGenericCustomerUpdateGenerator();
 phase2819PatchPhase25CustomerUpdateAuthority();
 
 /*
+ * Phase 28.22: fix the BACKEND queue authority before Phase 7 builds
+ * server.js. This makes workflowQueues.partsNeeded itself authoritative,
+ * so every consumer (sidebar badge, Parts Queue modal, Office Suite brief)
+ * receives the same 3 ServiceChannel parts jobs.
+ */
+phase2822PatchPhase7WorkflowQueueAuthority();
+
+/*
+ * Keep the Phase 28.21 view fallback as defense in depth.
+ */
+phase2821PatchPartsQueueView();
+
+/*
  * Set CONTROL_DATA_FILE BEFORE loading 28.15. Every downstream runtime
  * therefore reads/writes /var/data instead of /tmp.
  */
@@ -1406,7 +1575,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.20 reconciliation failed:",
+      "Joshua Phase 28.22 reconciliation failed:",
       error.message
     );
   }
@@ -1415,5 +1584,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.20 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.22 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
