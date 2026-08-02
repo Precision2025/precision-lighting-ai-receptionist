@@ -109,6 +109,128 @@ function businessDateKey(value = new Date()) {
   );
 }
 
+
+function phase2819DisableGenericCustomerUpdateGenerator() {
+  const phase19Path = new URL(
+    "./phase19-accountability-bootstrap.mjs",
+    import.meta.url
+  );
+
+  if (!fs.existsSync(phase19Path)) {
+    console.warn(
+      "Joshua Phase 28.19: phase19-accountability-bootstrap.mjs not found."
+    );
+    return;
+  }
+
+  let source = fs.readFileSync(phase19Path, "utf8");
+
+  if (
+    source.includes(
+      "JOSHUA_PHASE28_19_NO_GENERIC_CUSTOMER_UPDATE_GENERATOR"
+    )
+  ) {
+    return;
+  }
+
+  const oldBlock = `      phase19CreateTaskInData(data, settings, {
+        title: "Update customer on current job status",
+        trackingNumber,
+        assignedTo: "Ariana",
+        priority: "normal",
+        workflowType: "customer_update",
+        actionLabel: "Mark Customer Updated",
+        notes:
+          "Joshua has no confirmation that the customer received the latest status."
+      });`;
+
+  if (!source.includes(oldBlock)) {
+    console.warn(
+      "Joshua Phase 28.19: generic Phase 19 customer-update generator block was not found."
+    );
+    return;
+  }
+
+  const replacement = `      /* JOSHUA_PHASE28_19_NO_GENERIC_CUSTOMER_UPDATE_GENERATOR
+       * Generic status reminders are disabled.
+       * Specific workflow tasks (parts, proposal, authorization, billing,
+       * callback, return trip, documentation) are authoritative instead.
+       */
+      void 0;`;
+
+  source = source.replace(oldBlock, replacement);
+  fs.writeFileSync(phase19Path, source);
+
+  console.log(
+    "Joshua Phase 28.19 disabled automatic generic customer-status task creation at the Phase 19 source."
+  );
+}
+
+function phase2819PatchPhase25CustomerUpdateAuthority() {
+  const phase25Path = new URL(
+    "./phase25-source-status-authority.mjs",
+    import.meta.url
+  );
+
+  if (!fs.existsSync(phase25Path)) {
+    console.warn(
+      "Joshua Phase 28.19: phase25-source-status-authority.mjs not found."
+    );
+    return;
+  }
+
+  let source = fs.readFileSync(phase25Path, "utf8");
+
+  if (
+    source.includes(
+      "JOSHUA_PHASE28_19_CUSTOMER_UPDATE_AUTHORITY"
+    )
+  ) {
+    return;
+  }
+
+  const oldBlock = `  if (workflow === "customer_update") {
+    return [
+      "pending_confirmation",
+      "awaiting_authorization",
+      "parts_needed",
+      "need_to_schedule"
+    ].includes(state) && item.customerUpdated !== true;
+  }`;
+
+  if (!source.includes(oldBlock)) {
+    console.warn(
+      "Joshua Phase 28.19: Phase 25 customer-update applicability block was not found."
+    );
+    return;
+  }
+
+  const replacement = `  if (workflow === "customer_update") {
+    // JOSHUA_PHASE28_19_CUSTOMER_UPDATE_AUTHORITY
+    // A generic status update is not an operational workflow by itself.
+    // Keep it only when the task contains explicit customer-contact evidence.
+    const customerUpdateEvidence = [
+      task.title,
+      task.notes,
+      task.source
+    ].map(value => String(value || "").toLowerCase()).join(" ");
+
+    return Boolean(
+      /customer requested|callback requested|customer callback|explicit customer contact|manual customer follow.?up/.test(
+        customerUpdateEvidence
+      ) &&
+      item.customerUpdated !== true
+    );
+  }`;
+
+  source = source.replace(oldBlock, replacement);
+  fs.writeFileSync(phase25Path, source);
+
+  console.log(
+    "Joshua Phase 28.19 made Phase 25 reject generic auto customer-status tasks unless explicit customer-contact evidence exists."
+  );
+}
+
 function ensurePersistentControlData() {
   fs.mkdirSync(PERSISTENT_DIR, { recursive: true });
 
@@ -828,6 +950,93 @@ function reconcilePartsWorkflowTasks(data) {
   return changed;
 }
 
+
+function phase2819ExplicitCustomerContactEvidence(
+  task = {}
+) {
+  const body = [
+    task.title,
+    task.notes,
+    task.source,
+    task.workflowType
+  ]
+    .map(lower)
+    .join(" ");
+
+  return /customer requested|callback requested|customer callback|explicit customer contact|manual customer follow.?up/.test(
+    body
+  );
+}
+
+function cleanupGenericAutoCustomerUpdateTasks(
+  data
+) {
+  const now = new Date().toISOString();
+  let changed = false;
+
+  data.tasks = (Array.isArray(data.tasks)
+    ? data.tasks
+    : []
+  ).map(task => {
+    if (
+      !task ||
+      typeof task !== "object" ||
+      ["closed", "completed"].includes(
+        lower(task.status)
+      )
+    ) {
+      return task;
+    }
+
+    const workflow =
+      lower(task.workflowType);
+    const title = lower(task.title);
+    const source = lower(task.source);
+
+    const genericCustomerUpdate = Boolean(
+      workflow === "customer_update" ||
+      title ===
+        "update customer on current job status"
+    );
+
+    const automaticallyManaged = Boolean(
+      source === "phase 19 accountability" ||
+      task.serviceChannelManaged === true ||
+      source.includes(
+        "servicechannel reconciler"
+      )
+    );
+
+    if (
+      !genericCustomerUpdate ||
+      !automaticallyManaged ||
+      phase2819ExplicitCustomerContactEvidence(
+        task
+      )
+    ) {
+      return task;
+    }
+
+    changed = true;
+
+    return {
+      ...task,
+      status: "closed",
+      closedAt: task.closedAt || now,
+      completedAt:
+        task.completedAt || now,
+      updatedAt: now,
+      accountabilityStatus: "completed",
+      closedReason:
+        "Generic automatic customer-status reminders were retired. Joshua now uses the specific active workflow task (parts, proposal, authorization, return trip, billing, documentation, or an explicit callback).",
+      phase2819GenericCustomerUpdateClosed:
+        true
+    };
+  });
+
+  return changed;
+}
+
 function taskCanonicalKey(task = {}) {
   const tracking = text(
     task.trackingNumber
@@ -1121,6 +1330,10 @@ function reconcilePersistentTruth() {
     changed = true;
   }
 
+  if (cleanupGenericAutoCustomerUpdateTasks(data)) {
+    changed = true;
+  }
+
   if (reconcilePartsWorkflowTasks(data)) {
     changed = true;
   }
@@ -1147,6 +1360,13 @@ ensurePersistentControlData();
 backupCurrentData();
 
 /*
+ * Patch the original generators BEFORE loading the Phase 28 chain.
+ * This prevents the generic tasks from being recreated on every deploy/sweep.
+ */
+phase2819DisableGenericCustomerUpdateGenerator();
+phase2819PatchPhase25CustomerUpdateAuthority();
+
+/*
  * Set CONTROL_DATA_FILE BEFORE loading 28.15. Every downstream runtime
  * therefore reads/writes /var/data instead of /tmp.
  */
@@ -1161,7 +1381,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.18 reconciliation failed:",
+      "Joshua Phase 28.19 reconciliation failed:",
       error.message
     );
   }
@@ -1170,5 +1390,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.18 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs reduced to one authoritative parts/return-visit task, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.19 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs reduced to one authoritative parts/return-visit task, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
