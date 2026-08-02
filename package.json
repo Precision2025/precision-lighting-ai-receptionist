@@ -1,10 +1,10 @@
 {
   "name": "precision-lighting-joshua",
-  "version": "3.0.20",
+  "version": "3.0.21",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase28-31-legacy-task-cleanup.mjs",
+    "start": "node phase28-32-canonical-open-task-authority.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
