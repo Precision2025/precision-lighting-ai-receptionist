@@ -1,10 +1,10 @@
 {
   "name": "precision-lighting-joshua",
-  "version": "3.0.24",
+  "version": "3.0.25",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase28-35-canonical-brief-count.mjs",
+    "start": "node phase28-36-canonical-proposal-authority.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
