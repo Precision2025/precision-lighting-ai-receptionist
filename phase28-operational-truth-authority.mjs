@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_12_ONSITE_ATTENTION_LIFECYCLE";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_14_COMPLETED_ONSITE_DURATION";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -2858,6 +2858,541 @@ patchFinalServer();`
 }
 
 
+function patchCompletedTodayServiceChannelTruth() {
+  const runtimePath = new URL(
+    "./phase24-servicechannel-authority-runtime.mjs",
+    ROOT
+  );
+  let runtime = fs.readFileSync(runtimePath, "utf8");
+
+  if (
+    !runtime.includes(
+      "JOSHUA_PHASE28_13_COMPLETED_TODAY_TRUTH"
+    )
+  ) {
+    const finalWriteAnchor =
+      '  fs.writeFileSync(serverPath, server);';
+
+    if (!runtime.includes(finalWriteAnchor)) {
+      throw new Error(
+        "Phase 28.13 could not locate the Phase 24 final server write."
+      );
+    }
+
+    const serverPatch = String.raw`
+  // JOSHUA_PHASE28_13_COMPLETED_TODAY_TRUTH
+  const phase2813CompletedNeedle = String.raw` + "`" + String.raw`  const today = new Date().toISOString().slice(0, 10);
+  const completedToday = workOrders.filter(item =>
+    item.checkOutAt && String(item.checkOutAt).startsWith(today)
+  );` + "`" + String.raw`;
+
+  const phase2813CompletedReplacement = String.raw` + "`" + String.raw`  const phase2813BusinessTimeZone =
+    process.env.BUSINESS_TIME_ZONE ||
+    "America/Chicago";
+
+  function phase2813BusinessDateKey(value) {
+    const parsed = new Date(value || 0);
+    if (!Number.isFinite(parsed.getTime())) return "";
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: phase2813BusinessTimeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(parsed);
+
+    const values = Object.fromEntries(
+      parts.map(part => [part.type, part.value])
+    );
+
+    return values.year + "-" + values.month + "-" + values.day;
+  }
+
+  function phase2813TrackingKey(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const digits = raw.match(/\b(\d{7,14})\b/);
+    return digits ? digits[1] : raw.toLowerCase();
+  }
+
+  function phase2813EventTime(event = {}) {
+    return (
+      event.completedAt ||
+      event.eventDate ||
+      event.serviceChannelEventAt ||
+      event.createdAt ||
+      event.updatedAt ||
+      ""
+    );
+  }
+
+  function phase2813IsServiceChannelCheckoutEvent(event = {}) {
+    const type = String(event.type || "").trim().toLowerCase();
+    if (
+      [
+        "checkout_confirmed",
+        "checkout_confirmed_recovered",
+        "checkout_completed"
+      ].includes(type)
+    ) {
+      return true;
+    }
+
+    return (
+      type === "workordercheckout" &&
+      /service\s*channel/i.test(
+        String(event.requestedBy || "") + " " +
+        String(event.source || "") + " " +
+        String(event.provider || "")
+      )
+    );
+  }
+
+  function phase2813IsServiceChannelCheckInEvent(event = {}) {
+    const type = String(event.type || "").trim().toLowerCase();
+    if (
+      [
+        "checkin_confirmed",
+        "checkin_confirmed_recovered",
+        "checkin_completed"
+      ].includes(type)
+    ) {
+      return true;
+    }
+
+    return (
+      type === "workordercheckin" &&
+      /service\s*channel/i.test(
+        String(event.requestedBy || "") + " " +
+        String(event.source || "") + " " +
+        String(event.provider || "")
+      )
+    );
+  }
+
+  const today = phase2813BusinessDateKey(new Date());
+  const phase2813CheckoutByTracking = new Map();
+  const phase2813CheckInTracking = new Set();
+
+  for (const event of (Array.isArray(data.events) ? data.events : [])) {
+    const eventDateKey = phase2813BusinessDateKey(
+      phase2813EventTime(event)
+    );
+    if (eventDateKey !== today) continue;
+
+    const tracking = phase2813TrackingKey(
+      event.trackingNumber ||
+      event.serviceChannelTrackingNumber ||
+      event.workOrderNumber
+    );
+    if (!tracking) continue;
+
+    if (phase2813IsServiceChannelCheckInEvent(event)) {
+      phase2813CheckInTracking.add(tracking);
+    }
+
+    if (!phase2813IsServiceChannelCheckoutEvent(event)) {
+      continue;
+    }
+
+    const eventTime = phase2813EventTime(event);
+    const existingEvent = phase2813CheckoutByTracking.get(tracking);
+    const existingTime = new Date(
+      phase2813EventTime(existingEvent || {}) || 0
+    ).getTime();
+    const currentTime = new Date(eventTime || 0).getTime();
+
+    if (
+      !existingEvent ||
+      !Number.isFinite(existingTime) ||
+      currentTime >= existingTime
+    ) {
+      phase2813CheckoutByTracking.set(tracking, event);
+    }
+  }
+
+  const completedToday = workOrders
+    .filter(item => {
+      const tracking = phase2813TrackingKey(
+        item.serviceChannelTrackingNumber ||
+        item.trackingNumber ||
+        item.workOrderNumber
+      );
+      return Boolean(
+        tracking &&
+        phase2813CheckoutByTracking.has(tracking)
+      );
+    })
+    .map(item => {
+      const tracking = phase2813TrackingKey(
+        item.serviceChannelTrackingNumber ||
+        item.trackingNumber ||
+        item.workOrderNumber
+      );
+      const event = phase2813CheckoutByTracking.get(tracking) || {};
+      const completedTodayAt = phase2813EventTime(event) || item.checkOutAt || "";
+      return {
+        ...item,
+        completedTodayAt,
+        completedTodayEventType: String(event.type || "")
+      };
+    })
+    .sort((left, right) =>
+      new Date(right.completedTodayAt || 0).getTime() -
+      new Date(left.completedTodayAt || 0).getTime()
+    );` + "`" + String.raw`;
+
+  if (!server.includes(phase2813CompletedNeedle)) {
+    throw new Error(
+      "Phase 28.13 could not locate the legacy UTC Completed Today calculation."
+    );
+  }
+  server = server.replace(
+    phase2813CompletedNeedle,
+    phase2813CompletedReplacement
+  );
+
+  const phase2813SummaryNeedle = String.raw` + "`" + String.raw`    settings: data.settings,
+    insights: getJoshuaInsights(workOrders, technicians, data.settings),
+    metrics: {` + "`" + String.raw`;
+  const phase2813SummaryReplacement = String.raw` + "`" + String.raw`    settings: data.settings,
+    insights: getJoshuaInsights(workOrders, technicians, data.settings),
+    businessTimeZone: phase2813BusinessTimeZone,
+    completedTodayDateKey: today,
+    completedTodayWorkOrders: completedToday,
+    metrics: {` + "`" + String.raw`;
+
+  if (!server.includes(phase2813SummaryNeedle)) {
+    throw new Error(
+      "Phase 28.13 could not locate the dashboard summary field insertion point."
+    );
+  }
+  server = server.replace(
+    phase2813SummaryNeedle,
+    phase2813SummaryReplacement
+  );
+
+  const phase2813CounterNeedle = String.raw` + "`" + String.raw`    todayCheckIns: data.events.filter(item =>
+      item.type === "checkin_completed" && item.createdAt.startsWith(today)
+    ).length,
+    todayCheckOuts: data.events.filter(item =>
+      item.type === "checkout_completed" && item.createdAt.startsWith(today)
+    ).length,` + "`" + String.raw`;
+  const phase2813CounterReplacement = String.raw` + "`" + String.raw`    todayCheckIns: phase2813CheckInTracking.size,
+    todayCheckOuts: phase2813CheckoutByTracking.size,` + "`" + String.raw`;
+
+  if (!server.includes(phase2813CounterNeedle)) {
+    throw new Error(
+      "Phase 28.13 could not locate the legacy check-in/check-out counters."
+    );
+  }
+  server = server.replace(
+    phase2813CounterNeedle,
+    phase2813CounterReplacement
+  );
+`;
+
+    runtime = runtime.replace(
+      finalWriteAnchor,
+      serverPatch + "\n" + finalWriteAnchor
+    );
+
+    fs.writeFileSync(runtimePath, runtime);
+  }
+
+  const searchPath = new URL(
+    "./search-sync-runtime.mjs",
+    ROOT
+  );
+  let search = fs.readFileSync(searchPath, "utf8");
+
+  if (
+    !search.includes(
+      "JOSHUA_PHASE28_13_COMPLETED_TODAY_UI_TRUTH"
+    )
+  ) {
+    const uiNeedle = `function workOrderCheckoutDateKey(value){return value?String(value).slice(0,10):""}
+function workOrderTodayDateKey(){return new Date().toISOString().slice(0,10)}
+function workOrdersCompletedToday(){
+ const today=workOrderTodayDateKey();
+ return (cache.workOrders||[])
+  .filter(x=>workOrderCheckoutDateKey(x.checkOutAt)===today)
+  .sort((a,b)=>new Date(b.checkOutAt||0)-new Date(a.checkOutAt||0));
+}`;
+
+    const uiReplacement = `// JOSHUA_PHASE28_13_COMPLETED_TODAY_UI_TRUTH
+function workOrderTodayDateKey(){
+ if(cache&&cache.completedTodayDateKey)return String(cache.completedTodayDateKey);
+ try{
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:"America/Chicago",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date());
+  const values=Object.fromEntries(parts.map(part=>[part.type,part.value]));
+  return values.year+"-"+values.month+"-"+values.day;
+ }catch(error){
+  const d=new Date();
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+ }
+}
+function workOrdersCompletedToday(){
+ const rows=Array.isArray(cache.completedTodayWorkOrders)?cache.completedTodayWorkOrders:[];
+ return [...rows].sort((a,b)=>new Date(b.completedTodayAt||b.checkOutAt||0)-new Date(a.completedTodayAt||a.checkOutAt||0));
+}`;
+
+    if (!search.includes(uiNeedle)) {
+      throw new Error(
+        "Phase 28.13 could not locate the Completed Today browser filter."
+      );
+    }
+    search = search.replace(uiNeedle, uiReplacement);
+
+    search = search.replace(
+      "with today's checkout date.",
+      "from today's confirmed ServiceChannel checkouts."
+    );
+    search = search.replace(
+      "Showing only work orders with a checkout date of ",
+      "Showing confirmed ServiceChannel checkouts for "
+    );
+
+    fs.writeFileSync(searchPath, search);
+  }
+
+  console.log(
+    "Joshua Phase 28.13 installed business-day ServiceChannel Completed Today truth."
+  );
+}
+
+
+function patchCompletedServiceChannelOnsiteDurationTruth() {
+  const runtimePath = new URL(
+    "./phase24-servicechannel-authority-runtime.mjs",
+    ROOT
+  );
+  let runtime = fs.readFileSync(runtimePath, "utf8");
+
+  if (
+    runtime.includes(
+      "JOSHUA_PHASE28_14_CONFIRMED_ONSITE_DURATION"
+    )
+  ) {
+    return;
+  }
+
+  const finalWriteAnchor =
+    '  fs.writeFileSync(serverPath, server);';
+
+  if (!runtime.includes(finalWriteAnchor)) {
+    throw new Error(
+      "Phase 28.14 could not locate the Phase 24 final server write."
+    );
+  }
+
+  const serverPatch = String.raw`
+  // JOSHUA_PHASE28_14_CONFIRMED_ONSITE_DURATION
+  const phase2814SummaryAnchor = "function controlSummary() {";
+  const phase2814SummaryIndex = server.lastIndexOf(
+    phase2814SummaryAnchor
+  );
+
+  if (phase2814SummaryIndex < 0) {
+    throw new Error(
+      "Phase 28.14 could not locate Joshua controlSummary."
+    );
+  }
+
+  const phase2814Helpers = String.raw` + "`" + String.raw`
+function phase2814TrackingKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const digits = raw.match(/\b(\d{7,14})\b/);
+  return digits ? digits[1] : raw.toLowerCase();
+}
+
+function phase2814EventTime(event = {}) {
+  const raw =
+    event.completedAt ||
+    event.eventDate ||
+    event.serviceChannelEventAt ||
+    event.createdAt ||
+    event.updatedAt ||
+    "";
+  const parsed = new Date(raw).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function phase2814EventTracking(event = {}) {
+  return phase2814TrackingKey(
+    event.trackingNumber ||
+    event.serviceChannelTrackingNumber ||
+    event.workOrderNumber
+  );
+}
+
+function phase2814IsConfirmedCheckIn(event = {}) {
+  const type = String(event.type || "").trim().toLowerCase();
+  if (
+    [
+      "checkin_confirmed",
+      "checkin_confirmed_recovered",
+      "checkin_completed"
+    ].includes(type)
+  ) {
+    return true;
+  }
+  return (
+    type === "workordercheckin" &&
+    /service\s*channel/i.test(
+      String(event.requestedBy || "") + " " +
+      String(event.source || "") + " " +
+      String(event.provider || "")
+    )
+  );
+}
+
+function phase2814IsConfirmedCheckOut(event = {}) {
+  const type = String(event.type || "").trim().toLowerCase();
+  if (
+    [
+      "checkout_confirmed",
+      "checkout_confirmed_recovered",
+      "checkout_completed"
+    ].includes(type)
+  ) {
+    return true;
+  }
+  return (
+    type === "workordercheckout" &&
+    /service\s*channel/i.test(
+      String(event.requestedBy || "") + " " +
+      String(event.source || "") + " " +
+      String(event.provider || "")
+    )
+  );
+}
+
+function phase2814ConfirmedServiceChannelOnsiteMilliseconds(
+  data = {},
+  item = {}
+) {
+  const tracking = phase2814TrackingKey(
+    item.serviceChannelTrackingNumber ||
+    item.trackingNumber ||
+    item.workOrderNumber
+  );
+  if (!tracking) return null;
+
+  const events = (Array.isArray(data.events) ? data.events : [])
+    .filter(event =>
+      phase2814EventTracking(event) === tracking
+    );
+
+  const checkouts = events
+    .filter(phase2814IsConfirmedCheckOut)
+    .map(event => ({ event, time: phase2814EventTime(event) }))
+    .filter(entry => entry.time > 0)
+    .sort((a, b) => b.time - a.time);
+
+  const latestCheckout = checkouts[0];
+  if (latestCheckout) {
+    const checkins = events
+      .filter(phase2814IsConfirmedCheckIn)
+      .map(event => ({ event, time: phase2814EventTime(event) }))
+      .filter(entry =>
+        entry.time > 0 &&
+        entry.time <= latestCheckout.time
+      )
+      .sort((a, b) => b.time - a.time);
+
+    const latestCheckIn = checkins[0];
+    if (
+      latestCheckIn &&
+      latestCheckout.time >= latestCheckIn.time
+    ) {
+      return latestCheckout.time - latestCheckIn.time;
+    }
+  }
+
+  const checkInTime = new Date(
+    item.serviceChannelCheckInEventAt ||
+    item.checkInAt ||
+    0
+  ).getTime();
+  const checkOutTime = new Date(
+    item.serviceChannelCheckOutEventAt ||
+    item.checkOutAt ||
+    0
+  ).getTime();
+  const hasConfirmedCheckoutEvidence = Boolean(
+    item.serviceChannelCheckOutEventAt ||
+    item.checkoutConfirmationNumber ||
+    (
+      item.ivrConfirmed === true &&
+      item.checkOutAt
+    )
+  );
+
+  if (
+    hasConfirmedCheckoutEvidence &&
+    Number.isFinite(checkInTime) &&
+    Number.isFinite(checkOutTime) &&
+    checkInTime > 0 &&
+    checkOutTime >= checkInTime
+  ) {
+    return checkOutTime - checkInTime;
+  }
+
+  return null;
+}
+
+` + "`" + String.raw`;
+
+  server =
+    server.slice(0, phase2814SummaryIndex) +
+    phase2814Helpers +
+    server.slice(phase2814SummaryIndex);
+
+  const phase2814DurationNeedle = String.raw` + "`" + String.raw`    const onsiteMilliseconds =
+      phase232IsOnsite(item) && item.checkInAt
+        ? Math.max(0, Date.now() - new Date(item.checkInAt).getTime())
+        : Number(item.onsiteMilliseconds || 0);` + "`" + String.raw`;
+
+  const phase2814DurationReplacement = String.raw` + "`" + String.raw`    const phase2814ConfirmedDuration =
+      phase2814ConfirmedServiceChannelOnsiteMilliseconds(
+        data,
+        item
+      );
+    const onsiteMilliseconds =
+      phase232IsOnsite(item) && item.checkInAt
+        ? Math.max(0, Date.now() - new Date(item.checkInAt).getTime())
+        : (
+            phase2814ConfirmedDuration !== null
+              ? phase2814ConfirmedDuration
+              : Number(item.onsiteMilliseconds || 0)
+          );` + "`" + String.raw`;
+
+  if (!server.includes(phase2814DurationNeedle)) {
+    throw new Error(
+      "Phase 28.14 could not locate the completed onsite-duration calculation."
+    );
+  }
+
+  server = server.replace(
+    phase2814DurationNeedle,
+    phase2814DurationReplacement
+  );
+`;
+
+  runtime = runtime.replace(
+    finalWriteAnchor,
+    serverPatch + "\n" + finalWriteAnchor
+  );
+
+  fs.writeFileSync(runtimePath, runtime);
+  console.log(
+    "Joshua Phase 28.14 queued confirmed ServiceChannel onsite-duration calculation."
+  );
+}
+
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -2993,11 +3528,13 @@ patchServiceChannelDisplayTruth();
 patchServiceChannelOnsiteLabelOnly();
 patchExceptionDashboardCurrentTruthOnly();
 patchOnsiteAttentionLifecycle();
+patchCompletedTodayServiceChannelTruth();
+patchCompletedServiceChannelOnsiteDurationTruth();
 
 console.log(
-  "Joshua Phase 28.12 server-side onsite attention lifecycle authority installed: " +
+  "Joshua Phase 28.14 ServiceChannel completion and onsite-duration authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, server-side clearing of stale onsite attention after checkout, preservation of ServiceChannel onsite state during long-onsite alerts, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, server-side clearing of stale onsite attention after checkout, preservation of ServiceChannel onsite state during long-onsite alerts, Completed Today and Today's check-outs driven by confirmed ServiceChannel checkout events in America/Chicago instead of UTC or synthetic cleanup timestamps, completed ServiceChannel onsite time calculated from the matching confirmed check-in to confirmed checkout, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
