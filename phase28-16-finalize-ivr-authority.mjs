@@ -871,8 +871,33 @@ function reconcilePartsWorkflowTasks(data) {
     }
 
     /*
-     * Parts status is the authoritative workflow. Remove only the generic
-     * auto-created customer-status task; preserve explicit callbacks.
+     * Parts status is the authoritative workflow.
+     *
+     * IMPORTANT: Phase 7's Parts Queue is work-order based and counts only
+     * work orders whose joshuaStatus is exactly "parts_needed". ServiceChannel
+     * may instead be carrying the same truth in Extended Status
+     * ("PARTS ON ORDER" / "PARTS NEEDED"). Normalize the work order here so
+     * the queue, dashboard badge, and task engine all agree.
+     */
+    const currentState = normalizedState(workOrder);
+
+    if (
+      currentState !== "parts_needed" &&
+      !isLaterThanReadyToBill(workOrder)
+    ) {
+      workOrder.state = "parts_needed";
+      workOrder.joshuaStatus = "parts_needed";
+      workOrder.workflowReason =
+        "ServiceChannel Parts On Order / Parts Needed is authoritative.";
+      workOrder.serviceChannelSourceOfTruth = true;
+      workOrder.isServiceChannel = true;
+      workOrder.updatedAt = now;
+      changed = true;
+    }
+
+    /*
+     * Remove only the generic auto-created customer-status task; preserve
+     * explicit callbacks and the specific parts/return-visit task.
      */
     data.tasks = data.tasks.map(task => {
       if (
@@ -1381,7 +1406,7 @@ const timer = setInterval(() => {
     reconcilePersistentTruth();
   } catch (error) {
     console.error(
-      "Joshua Phase 28.19 reconciliation failed:",
+      "Joshua Phase 28.20 reconciliation failed:",
       error.message
     );
   }
@@ -1390,5 +1415,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.19 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs reduced to one authoritative parts/return-visit task, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.20 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
