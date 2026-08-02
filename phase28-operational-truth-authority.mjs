@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_11_EXCEPTION_TRUTH";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_12_ONSITE_ATTENTION_LIFECYCLE";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -2303,7 +2303,7 @@ function phase2811PatchExceptionDashboard(panelPath) {
 
   const allExceptionsNew = ` + "`" + String.raw`// JOSHUA_PHASE28_11_EXCEPTION_TRUTH_PANEL
 function phase2811Tracking(value){
- return String(value||"").trim().replace(/^#\s*/,"").toLowerCase();
+ return String(value||"").trim().replace(/^#\\s*/,"").toLowerCase();
 }
 function phase2811CurrentOperationalTrackingSet(){
  const values=[];
@@ -2323,7 +2323,7 @@ function phase2811ExceptionIsCurrent(x={}){
   x.joshuaStatus,x.state,x.type,x.lastError,x.error,x.callStatus,
   x.actionableReason,x.liveOnsiteDuration,x.workflowReason,x.statusText
  ].filter(Boolean).join(" ").toLowerCase();
- const onsiteLike=/technician\s+onsite|onsite\s+too\s+long|onsite\s+over|missed\s+checkout|\bonsite\b/.test(text);
+ const onsiteLike=/technician\\s+onsite|onsite\\s+too\\s+long|onsite\\s+over|missed\\s+checkout|\\bonsite\\b/.test(text);
  if(!onsiteLike)return true;
  const tracking=phase2811Tracking(
   x.trackingNumber||x.serviceChannelTrackingNumber||x.workOrderNumber
@@ -2374,6 +2374,489 @@ function allExceptions(){
     "Joshua Phase 28.11 queued Exception Dashboard truth filtering after Phase 23.5 finishes its normal UI patching; no work-order state, history, routing, or integration data is changed."
   );
 }
+
+
+function patchOnsiteAttentionLifecycle() {
+  const filePath = new URL(
+    "./phase24-servicechannel-authority-runtime.mjs",
+    ROOT
+  );
+  let source = fs.readFileSync(filePath, "utf8");
+
+  if (
+    source.includes(
+      "JOSHUA_PHASE28_12_ONSITE_ATTENTION_LIFECYCLE"
+    )
+  ) {
+    return;
+  }
+
+  const finalServerAnchor = "function patchFinalServer() {";
+  if (!source.includes(finalServerAnchor)) {
+    throw new Error(
+      "Phase 28.12 could not locate the final ServiceChannel server patch."
+    );
+  }
+
+  const persistedCleanup = String.raw`// JOSHUA_PHASE28_12_ONSITE_ATTENTION_LIFECYCLE
+function phase2812StaleOnsiteAttentionText(value = "") {
+  return /technician\s+(?:still\s+)?onsite|technician\s+may\s+have\s+missed\s+checkout|missed\s+checkout|onsite\s+too\s+long|onsite\s+over/i.test(
+    text(value)
+  );
+}
+
+function phase2812CurrentServiceChannelOnsiteTruth(
+  data = {},
+  tracking = "",
+  workOrder = {}
+) {
+  const state = text(
+    workOrder.joshuaStatus || workOrder.state
+  ).toLowerCase();
+
+  if (
+    state === "checkout_needed" ||
+    workOrder.serviceChannelCheckoutNeeded === true
+  ) {
+    return true;
+  }
+
+  const latest = latestServiceChannelEvent(
+    data,
+    tracking
+  );
+  const latestType = text(latest?.type).toLowerCase();
+  const latestState = text(
+    latest?.resultingState
+  ).toLowerCase();
+
+  if (
+    latest &&
+    (
+      latestType === "workordercheckout" ||
+      (
+        latestState &&
+        latestState !== "onsite"
+      )
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    latest &&
+    (
+      latestType === "workordercheckin" ||
+      latestState === "onsite"
+    )
+  ) {
+    return true;
+  }
+
+  const checkInAt = Math.max(
+    time(workOrder.serviceChannelCheckInEventAt),
+    time(workOrder.checkInAt)
+  );
+  const checkOutAt = Math.max(
+    time(workOrder.serviceChannelCheckOutEventAt),
+    time(workOrder.checkOutAt)
+  );
+
+  if (
+    checkOutAt &&
+    (!checkInAt || checkOutAt >= checkInAt)
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    state === "onsite" ||
+    workOrder.serviceChannelOnsiteConfirmed === true
+  );
+}
+
+function phase2812ClearPersistedStaleOnsiteAttention() {
+  const dataFile =
+    process.env.CONTROL_DATA_FILE ||
+    path.join("/tmp", "joshua-control-data.json");
+
+  if (!fs.existsSync(dataFile)) return;
+
+  try {
+    const data = JSON.parse(
+      fs.readFileSync(dataFile, "utf8")
+    );
+
+    data.workOrders =
+      data.workOrders &&
+      typeof data.workOrders === "object"
+        ? data.workOrders
+        : {};
+    data.events = Array.isArray(data.events)
+      ? data.events
+      : [];
+    data.tasks = Array.isArray(data.tasks)
+      ? data.tasks
+      : [];
+
+    const now = new Date().toISOString();
+    let clearedWorkOrders = 0;
+    let resolvedEvents = 0;
+    let closedTasks = 0;
+
+    for (const [tracking, workOrder] of Object.entries(
+      data.workOrders
+    )) {
+      if (
+        !workOrder ||
+        typeof workOrder !== "object" ||
+        !isServiceChannel(workOrder, tracking, data)
+      ) {
+        continue;
+      }
+
+      if (
+        phase2812CurrentServiceChannelOnsiteTruth(
+          data,
+          tracking,
+          workOrder
+        )
+      ) {
+        continue;
+      }
+
+      let changed = false;
+
+      if (
+        phase2812StaleOnsiteAttentionText(
+          workOrder.lastError
+        )
+      ) {
+        workOrder.lastError = "";
+        changed = true;
+      }
+
+      if (
+        phase2812StaleOnsiteAttentionText(
+          workOrder.syncError
+        )
+      ) {
+        workOrder.syncError = "";
+        changed = true;
+      }
+
+      if (workOrder.onsiteAttention === true) {
+        workOrder.onsiteAttention = false;
+        changed = true;
+      }
+
+      if (changed) {
+        workOrder.updatedAt = now;
+        data.workOrders[tracking] = workOrder;
+        clearedWorkOrders += 1;
+      }
+    }
+
+    data.events = data.events.map(event => {
+      if (!event || typeof event !== "object") {
+        return event;
+      }
+
+      const tracking = text(event.trackingNumber);
+      const workOrder = data.workOrders[tracking];
+
+      if (
+        !workOrder ||
+        !isServiceChannel(workOrder, tracking, data) ||
+        phase2812CurrentServiceChannelOnsiteTruth(
+          data,
+          tracking,
+          workOrder
+        )
+      ) {
+        return event;
+      }
+
+      const eventText = [
+        event.type,
+        event.title,
+        event.message,
+        event.error,
+        event.note,
+        event.detail,
+        event.reason
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (
+        text(event.level).toLowerCase() === "error" &&
+        phase2812StaleOnsiteAttentionText(eventText)
+      ) {
+        resolvedEvents += 1;
+        return {
+          ...event,
+          level: "resolved",
+          resolvedAt: now,
+          resolvedReason:
+            "ServiceChannel no longer shows this work order onsite."
+        };
+      }
+
+      return event;
+    });
+
+    data.tasks = data.tasks.map(task => {
+      if (!task || typeof task !== "object") {
+        return task;
+      }
+
+      const status = text(task.status).toLowerCase();
+      if (["closed", "completed"].includes(status)) {
+        return task;
+      }
+
+      const tracking = text(task.trackingNumber);
+      const workOrder = data.workOrders[tracking];
+
+      if (
+        !workOrder ||
+        !isServiceChannel(workOrder, tracking, data) ||
+        phase2812CurrentServiceChannelOnsiteTruth(
+          data,
+          tracking,
+          workOrder
+        )
+      ) {
+        return task;
+      }
+
+      const taskText = [
+        task.title,
+        task.notes,
+        task.workflowType
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (
+        phase2812StaleOnsiteAttentionText(taskText)
+      ) {
+        closedTasks += 1;
+        return {
+          ...task,
+          status: "closed",
+          completedAt: now,
+          closedAt: now,
+          updatedAt: now,
+          closedReason:
+            "ServiceChannel no longer shows this work order onsite."
+        };
+      }
+
+      return task;
+    });
+
+    if (
+      clearedWorkOrders ||
+      resolvedEvents ||
+      closedTasks
+    ) {
+      data.events.unshift({
+        id:
+          Date.now() +
+          "-" +
+          Math.random().toString(36).slice(2, 8),
+        createdAt: now,
+        type:
+          "phase28_12_stale_onsite_attention_cleared",
+        level: "success",
+        requestedBy: "Joshua Phase 28.12",
+        clearedWorkOrders,
+        resolvedEvents,
+        closedTasks
+      });
+      data.events = data.events.slice(0, 500);
+      data.updatedAt = now;
+
+      fs.writeFileSync(
+        dataFile,
+        JSON.stringify(data, null, 2)
+      );
+
+      console.log(
+        "Joshua Phase 28.12 cleared persisted stale onsite attention:",
+        {
+          clearedWorkOrders,
+          resolvedEvents,
+          closedTasks
+        }
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Joshua Phase 28.12 could not clear stale onsite attention:",
+      error.message
+    );
+  }
+}
+
+`;
+
+  source = source.replace(
+    finalServerAnchor,
+    persistedCleanup + finalServerAnchor
+  );
+
+  const serverReadAnchor =
+    '  let server = fs.readFileSync(serverPath, "utf8");\n  if (server.includes(RUNTIME_MARKER)) return;';
+
+  if (!source.includes(serverReadAnchor)) {
+    throw new Error(
+      "Phase 28.12 could not locate the Phase 24 final server read."
+    );
+  }
+
+  const finalServerPatch = String.raw`
+  // JOSHUA_PHASE28_12_SERVER_ONSITE_ATTENTION_LIFECYCLE
+  const normalizedUpdateNeedle = String.raw` + "`" + String.raw`  data.workOrders[key] = {
+    ...current,
+    ...phase232NormalizeWorkOrderUpdate(
+      key,
+      updates,
+      current
+    ),
+    trackingNumber: key,
+    updatedAt: new Date().toISOString()
+  };` + "`" + String.raw`;
+
+  const normalizedUpdateReplacement = String.raw` + "`" + String.raw`  const phase2812NormalizedUpdates =
+    phase232NormalizeWorkOrderUpdate(
+      key,
+      updates,
+      current
+    );
+
+  data.workOrders[key] = {
+    ...current,
+    ...phase2812NormalizedUpdates,
+    trackingNumber: key,
+    updatedAt: new Date().toISOString()
+  };
+
+  const phase2812IncomingState = String(
+    phase2812NormalizedUpdates.joshuaStatus ??
+    phase2812NormalizedUpdates.state ??
+    updates.joshuaStatus ??
+    updates.state ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const phase2812ExplicitOffsiteProof = Boolean(
+    phase2812NormalizedUpdates.checkOutAt ||
+    updates.checkOutAt ||
+    phase2812NormalizedUpdates.serviceChannelCheckOutEventAt ||
+    updates.serviceChannelCheckOutEventAt ||
+    phase2812NormalizedUpdates.serviceChannelOnsiteConfirmed === false ||
+    updates.serviceChannelOnsiteConfirmed === false ||
+    (
+      phase2812IncomingState &&
+      ![
+        "onsite",
+        "attention",
+        "checkout_needed",
+        "checkin_calling",
+        "awaiting_ivr_confirmation"
+      ].includes(phase2812IncomingState)
+    )
+  );
+
+  if (phase2812ExplicitOffsiteProof) {
+    const phase2812StaleOnsiteAttention =
+      /technician\s+(?:still\s+)?onsite|technician\s+may\s+have\s+missed\s+checkout|missed\s+checkout|onsite\s+too\s+long|onsite\s+over/i;
+
+    if (
+      phase2812StaleOnsiteAttention.test(
+        String(data.workOrders[key].lastError || "")
+      )
+    ) {
+      data.workOrders[key].lastError = "";
+    }
+
+    if (
+      phase2812StaleOnsiteAttention.test(
+        String(data.workOrders[key].syncError || "")
+      )
+    ) {
+      data.workOrders[key].syncError = "";
+    }
+
+    if (data.workOrders[key].onsiteAttention === true) {
+      data.workOrders[key].onsiteAttention = false;
+    }
+  }` + "`" + String.raw`;
+
+  if (!server.includes(normalizedUpdateNeedle)) {
+    throw new Error(
+      "Phase 28.12 could not locate the canonical work-order update assignment."
+    );
+  }
+
+  server = server.replace(
+    normalizedUpdateNeedle,
+    normalizedUpdateReplacement
+  );
+
+  const sweepStateNeedle =
+    '    updateControlWorkOrder(item.trackingNumber, {\n' +
+    '      state: "attention",\n' +
+    '      lastError:';
+
+  const sweepStateReplacement =
+    '    updateControlWorkOrder(item.trackingNumber, {\n' +
+    '      lastError:';
+
+  if (!server.includes(sweepStateNeedle)) {
+    throw new Error(
+      "Phase 28.12 could not locate the onsite automation sweep state mutation."
+    );
+  }
+
+  server = server.replace(
+    sweepStateNeedle,
+    sweepStateReplacement
+  );
+`;
+
+  source = source.replace(
+    serverReadAnchor,
+    serverReadAnchor + "\n" + finalServerPatch
+  );
+
+  const callAnchor =
+    "reconcilePersistedServiceChannelState();\npatchFinalServer();";
+
+  if (!source.includes(callAnchor)) {
+    throw new Error(
+      "Phase 28.12 could not locate the final runtime startup calls."
+    );
+  }
+
+  source = source.replace(
+    callAnchor,
+    `reconcilePersistedServiceChannelState();
+phase2812ClearPersistedStaleOnsiteAttention();
+patchFinalServer();`
+  );
+
+  fs.writeFileSync(filePath, source);
+  console.log(
+    "Joshua Phase 28.12 installed server-side onsite attention lifecycle cleanup."
+  );
+}
+
 
 function patchControlPanels() {
   const panelPaths = [
@@ -2509,11 +2992,12 @@ patchControlPanels();
 patchServiceChannelDisplayTruth();
 patchServiceChannelOnsiteLabelOnly();
 patchExceptionDashboardCurrentTruthOnly();
+patchOnsiteAttentionLifecycle();
 
 console.log(
-  "Joshua Phase 28.11 no-resurrection authority with display-only exception truth filtering installed: " +
+  "Joshua Phase 28.12 server-side onsite attention lifecycle authority installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, Exception Dashboard filtering against current authoritative onsite lists, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels, server-side clearing of stale onsite attention after checkout, preservation of ServiceChannel onsite state during long-onsite alerts, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
