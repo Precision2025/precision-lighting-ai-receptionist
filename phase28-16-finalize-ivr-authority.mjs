@@ -646,6 +646,188 @@ function recoverCompletedWorkOrders(data) {
   return changed;
 }
 
+
+function phase2818IsPartsWorkflowState(
+  workOrder = {}
+) {
+  if (!phase2818IsServiceChannelWorkOrder(workOrder)) {
+    return false;
+  }
+
+  const states = [
+    workOrder.joshuaStatus,
+    workOrder.state,
+    workOrder.sheetStatus,
+    workOrder.status
+  ]
+    .map(value =>
+      lower(value).replace(/[\s-]+/g, "_")
+    )
+    .filter(Boolean);
+
+  const serviceChannelText = [
+    workOrder.serviceChannelPrimaryStatus,
+    workOrder.serviceChannelExtendedStatus,
+    workOrder.primaryStatus,
+    workOrder.extendedStatus,
+    workOrder.statusDescription
+  ]
+    .map(lower)
+    .join(" ");
+
+  return Boolean(
+    states.includes("parts_needed") ||
+    /parts?\s*(?:on\s*order|ordered|needed|required)|waiting\s*(?:on|for)\s*parts?/i.test(
+      serviceChannelText
+    )
+  );
+}
+
+function phase2818TaskIsGenericCustomerUpdate(
+  task = {}
+) {
+  const title = lower(task.title);
+
+  if (
+    !/update customer on current job status/.test(
+      title
+    )
+  ) {
+    return false;
+  }
+
+  const body = [
+    task.notes,
+    task.source,
+    task.workflowType
+  ]
+    .map(lower)
+    .join(" ");
+
+  /*
+   * Preserve an explicitly requested callback/contact task.
+   * Generic auto-created status-update tasks have no such evidence.
+   */
+  return !/customer requested|callback requested|customer callback|explicit customer contact|manual customer follow.?up/.test(
+    body
+  );
+}
+
+function phase2818TaskIsPartsTask(
+  task = {}
+) {
+  const body = [
+    task.title,
+    task.notes,
+    task.workflowType,
+    task.source
+  ]
+    .map(lower)
+    .join(" ");
+
+  return Boolean(
+    lower(task.workflowType) === "parts" ||
+    /order parts|parts on order|parts needed|prepare return visit|return visit.*parts/.test(
+      body
+    )
+  );
+}
+
+function reconcilePartsWorkflowTasks(data) {
+  const now = new Date().toISOString();
+  let changed = false;
+
+  for (const [tracking, workOrder] of Object.entries(
+    data.workOrders || {}
+  )) {
+    if (
+      !workOrder ||
+      typeof workOrder !== "object" ||
+      !phase2818IsPartsWorkflowState(workOrder)
+    ) {
+      continue;
+    }
+
+    /*
+     * Parts status is the authoritative workflow. Remove only the generic
+     * auto-created customer-status task; preserve explicit callbacks.
+     */
+    data.tasks = data.tasks.map(task => {
+      if (
+        !task ||
+        typeof task !== "object" ||
+        text(task.trackingNumber) !== text(tracking) ||
+        ["closed", "completed"].includes(
+          lower(task.status)
+        ) ||
+        !phase2818TaskIsGenericCustomerUpdate(
+          task
+        )
+      ) {
+        return task;
+      }
+
+      changed = true;
+
+      return {
+        ...task,
+        status: "closed",
+        closedAt: task.closedAt || now,
+        completedAt: task.completedAt || now,
+        updatedAt: now,
+        closedReason:
+          "ServiceChannel is in a Parts On Order / Parts Needed workflow. The specific parts/return-visit task replaces the generic customer-status task.",
+        phase2818PartsAuthorityClosed: true
+      };
+    });
+
+    const hasOpenPartsTask = data.tasks.some(
+      task =>
+        task &&
+        typeof task === "object" &&
+        text(task.trackingNumber) ===
+          text(tracking) &&
+        !["closed", "completed"].includes(
+          lower(task.status)
+        ) &&
+        phase2818TaskIsPartsTask(task)
+    );
+
+    if (!hasOpenPartsTask) {
+      data.tasks.unshift({
+        id:
+          Date.now() +
+          "-" +
+          Math.random()
+            .toString(36)
+            .slice(2, 8),
+        createdAt: now,
+        updatedAt: now,
+        status: "open",
+        priority: "urgent",
+        source:
+          "ServiceChannel Parts Authority",
+        title:
+          "🚨 Order parts and prepare return visit",
+        trackingNumber: text(tracking),
+        assignedTo: "Ariana",
+        workflowType: "parts",
+        actionLabel: "Mark Parts Ordered",
+        notes:
+          "ServiceChannel status is Parts On Order / Parts Needed. Order or confirm the required parts and prepare the return visit."
+      });
+
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    data.tasks = data.tasks.slice(0, 500);
+  }
+
+  return changed;
+}
+
 function taskCanonicalKey(task = {}) {
   const tracking = text(
     task.trackingNumber
@@ -939,6 +1121,10 @@ function reconcilePersistentTruth() {
     changed = true;
   }
 
+  if (reconcilePartsWorkflowTasks(data)) {
+    changed = true;
+  }
+
   if (ensureBillingTask(data)) {
     changed = true;
   }
@@ -984,5 +1170,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.18 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned (including generic customer-status tasks after ServiceChannel completion), and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.18 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs reduced to one authoritative parts/return-visit task, and #356413923 held to authoritative BILL/ready-to-bill status."
 );
