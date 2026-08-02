@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_9_NO_RESURRECTION";
+const MARKER = "JOSHUA_PHASE28_OPERATIONAL_TRUTH_AUTHORITY_V1_10_ONSITE_LABEL_ONLY";
 
 function replaceFunction(source, startToken, endToken, replacement, label) {
   const start = source.indexOf(startToken);
@@ -2176,6 +2176,81 @@ function phase287DisplayCustomer(item={}){
   }
 }
 
+
+function patchServiceChannelOnsiteLabelOnly() {
+  const panelPaths = [
+    new URL("./control-panel.html", ROOT),
+    new URL("./public/control-panel.html", ROOT)
+  ];
+
+  for (const panelPath of panelPaths) {
+    if (!fs.existsSync(panelPath)) continue;
+
+    let html = fs.readFileSync(panelPath, "utf8");
+    if (html.includes("JOSHUA_PHASE28_10_ONSITE_LABEL_ONLY")) {
+      continue;
+    }
+
+    const helperAnchor = "function renderInsights(){";
+    if (!html.includes(helperAnchor)) {
+      throw new Error(
+        `Phase 28.10 could not locate the control-panel helper insertion point in ${panelPath.pathname}.`
+      );
+    }
+
+    const helper = `// JOSHUA_PHASE28_10_ONSITE_LABEL_ONLY
+function phase2810OnsiteLabel(item={}){
+ const values=[
+  item.customer,
+  item.customerName,
+  item.locationName,
+  item.location,
+  item.jobName
+ ];
+ for(const value of values){
+  const text=String(value||"").trim();
+  if(!text)continue;
+  if(/^clock\\s*shark(?:\\s+job)?$/i.test(text))continue;
+  if(/^service\\s*channel(?:\\s+job)?$/i.test(text))continue;
+  return text;
+ }
+ return "ServiceChannel Job";
+}
+`;
+
+    html = html.replace(
+      helperAnchor,
+      helper + "\n" + helperAnchor
+    );
+
+    const popupOld =
+      '<strong>#${esc(phase287DisplayTracking(x))} — ${esc(phase287DisplayCustomer(x))}</strong>';
+    const popupNew =
+      '<strong>#${esc(phase287DisplayTracking(x))} — ${esc(phase2810OnsiteLabel(x))}</strong>';
+
+    if (!html.includes(popupOld)) {
+      throw new Error(
+        `Phase 28.10 could not locate the Current Onsite popup label in ${panelPath.pathname}.`
+      );
+    }
+    html = html.replace(popupOld, popupNew);
+
+    const cardOld =
+      '<div class="muted">${esc(x.customer||x.locationName||"Work order")}</div>';
+    const cardNew =
+      '<div class="muted">${esc(phase2810OnsiteLabel(x))}</div>';
+    if (html.includes(cardOld)) {
+      html = html.replace(cardOld, cardNew);
+    }
+
+    fs.writeFileSync(panelPath, html);
+    console.log(
+      "Joshua Phase 28.10 changed only the ServiceChannel onsite display label; no job state, history, routing, or counts were modified in " +
+      panelPath.pathname
+    );
+  }
+}
+
 function patchControlPanels() {
   const panelPaths = [
     new URL("./control-panel.html", ROOT),
@@ -2308,11 +2383,12 @@ patchClockSharkCannotClaimServiceChannel();
 patchCityGatedClockSharkRouting();
 patchControlPanels();
 patchServiceChannelDisplayTruth();
+patchServiceChannelOnsiteLabelOnly();
 
 console.log(
-  "Joshua Phase 28.9 no-resurrection ServiceChannel authority installed: " +
+  "Joshua Phase 28.10 no-resurrection authority with display-only onsite label cleanup installed: " +
   "ClockShark exact-job clock-ins, one-time ServiceChannel IVR verification, " +
-  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, correct ServiceChannel display labels, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
+  "Pending Confirmation normal-state handling, Completed/Confirmed billing, stale onsite alert cleanup, accountability SMS noise control, ServiceChannel identity repair, ClockShark-to-ServiceChannel contamination prevention, real ServiceChannel tracking recovery, historical check-in resurrection prevention, display-only cleanup of generic ClockShark labels in the ServiceChannel onsite popup, and LOCAL_JOB_CITIES enforcement for ClockShark creation."
 );
 
 await import("./phase26-canonical-workorder-authority.mjs");
