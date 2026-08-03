@@ -34,41 +34,164 @@ if (fs.existsSync(panelPath)) {
   return getTasks().filter(task=>task&&typeof task==="object"&&isOpen(task)&&norm(task.workflowType)==="proposal");
  }
 
+ const clean=value=>String(value??"").trim().replace(/\\s+/g," ");
+ const first=(...values)=>values.map(clean).find(Boolean)||"";
+
  function trackingFrom(task={}){
-  return String(
-   task.trackingNumber||task.tracking||task.serviceChannelTrackingNumber||
-   task.workOrderNumber||task.workOrderId||task.referenceNumber||task.reference||""
-  ).trim();
+  return first(
+   task.trackingNumber,task.tracking,task.serviceChannelTrackingNumber,
+   task.scTrackingNumber,task.nestTrackingNumber,task.workOrderNumber,
+   task.serviceChannelWorkOrderNumber,task.scWorkOrderNumber,
+   task.nestWorkOrderNumber,task.workOrderId,task.referenceNumber,
+   task.reference,task.displayReference
+  );
+ }
+
+ function identifierValues(item={}){
+  return [
+   item.trackingNumber,item.tracking,item.serviceChannelTrackingNumber,
+   item.scTrackingNumber,item.nestTrackingNumber,item.workOrderNumber,
+   item.serviceChannelWorkOrderNumber,item.scWorkOrderNumber,
+   item.nestWorkOrderNumber,item.workOrderId,item.referenceNumber,
+   item.reference,item.displayReference,item.jobNumber,item.jobName
+  ].map(clean).filter(Boolean);
+ }
+
+ function aliasValues(item={}){
+  return [
+   ...identifierValues(item),
+   item.customer,item.customerName,item.subscriber,item.subscriberName,
+   item.locationName,item.location,item.storeName,item.siteName,
+   item.storeNumber,item.siteNumber,item.address,item.streetAddress
+  ].map(clean).filter(Boolean);
+ }
+
+ function digitTokens(values=[]){
+  const out=new Set();
+  values.forEach(value=>{
+   const matches=clean(value).match(/\\d{5,12}/g)||[];
+   matches.forEach(token=>out.add(token.replace(/^0+(?=\\d)/,"")));
+  });
+  return [...out].filter(Boolean);
  }
 
  function orderFor(task={}){
-  const tracking=trackingFrom(task);
-  if(!tracking)return null;
-  const key=norm(tracking);
-  return getOrders().find(item=>[
-   item?.trackingNumber,item?.tracking,item?.serviceChannelTrackingNumber,
-   item?.workOrderNumber,item?.workOrderId
-  ].some(value=>norm(value)===key))||null;
+  const orders=getOrders();
+  const taskIds=identifierValues(task);
+  if(!taskIds.length)return null;
+
+  // 1) Exact external identifier match has absolute priority.
+  const idKeys=new Set(taskIds.map(norm).filter(Boolean));
+  const direct=orders.filter(order=>
+   identifierValues(order).some(value=>idKeys.has(norm(value)))
+  );
+  if(direct.length===1)return direct[0];
+  if(direct.length>1){
+   const exactTracking=direct.find(order=>
+    [order?.serviceChannelTrackingNumber,order?.scTrackingNumber,
+     order?.nestTrackingNumber,order?.trackingNumber]
+     .some(value=>idKeys.has(norm(value)))
+   );
+   if(exactTracking)return exactTracking;
+  }
+
+  // 2) Some older Joshua tasks accidentally stored the customer/location
+  // label in trackingNumber. Match that label only when it identifies one
+  // canonical work order.
+  const aliasMatches=orders.filter(order=>{
+   const keys=new Set(aliasValues(order).map(norm).filter(Boolean));
+   return taskIds.some(value=>keys.has(norm(value)));
+  });
+  if(aliasMatches.length===1)return aliasMatches[0];
+
+  // 3) Last high-confidence fallback: a unique 5-12 digit token such as
+  // a ServiceChannel tracking number or store/location code.
+  const taskDigits=digitTokens(taskIds);
+  if(taskDigits.length){
+   const numericMatches=orders.filter(order=>{
+    const orderDigits=new Set(digitTokens(aliasValues(order)));
+    return taskDigits.some(token=>orderDigits.has(token));
+   });
+   if(numericMatches.length===1)return numericMatches[0];
+  }
+
+  return direct[0]||null;
+ }
+
+ function canonicalTracking(order={},task={}){
+  return first(
+   order.serviceChannelTrackingNumber,order.scTrackingNumber,
+   order.nestTrackingNumber,order.trackingNumber,order.tracking,
+   order.workOrderNumber,trackingFrom(task),task.id
+  );
+ }
+
+ function canonicalCustomer(order={},task={}){
+  const location=first(
+   order.locationName,order.location,order.storeName,order.siteName,
+   order.displayReference,order.jobName,task.locationName,task.location,
+   task.store,task.siteName
+  );
+  return first(
+   order.customer,order.customerName,order.subscriber,order.subscriberName,
+   order.client,order.clientName,task.customer,task.customerName,location
+  );
+ }
+
+ function canonicalLocation(order={},task={}){
+  return first(
+   order.locationName,order.location,order.storeName,order.siteName,
+   order.displayReference,order.jobName,task.locationName,task.location,
+   task.store,task.siteName
+  );
+ }
+
+ function canonicalTechnician(order={},task={}){
+  return first(
+   order.assignedTechnician,order.technician,order.technicianName,
+   order.serviceChannelTechnician,order.serviceChannelTechnicianName,
+   order.clockSharkTechnicianName,task.assignedTechnician,task.technician,
+   task.technicianName,task.assignee
+  );
+ }
+
+ function canonicalAddress(order={},task={}){
+  const street=first(order.address,order.streetAddress,order.street1,task.address);
+  const street2=clean(order.street2);
+  return street2&&street&&!street.includes(street2)?street+" "+street2:first(street,street2);
  }
 
  function rows(){
   return proposalTasks().map(task=>{
    const order=orderFor(task)||{};
-   const tracking=String(order.trackingNumber||trackingFrom(task)||task.id||"").trim();
+   const tracking=canonicalTracking(order,task);
+   const customer=canonicalCustomer(order,task);
+   const locationName=canonicalLocation(order,task);
+   const assignedTechnician=canonicalTechnician(order,task);
    return {
     ...order,
     trackingNumber:tracking,
-    workOrderNumber:order.workOrderNumber||task.workOrderNumber||"",
-    customer:order.customer||task.customer||task.customerName||task.locationName||"Unknown customer",
-    locationName:order.locationName||task.locationName||task.store||task.location||"",
-    address:order.address||task.address||"",
-    assignedTechnician:order.assignedTechnician||task.assignedTechnician||task.technician||task.assignee||"Unassigned",
+    workOrderNumber:first(
+     order.workOrderNumber,order.serviceChannelWorkOrderNumber,
+     order.scWorkOrderNumber,order.nestWorkOrderNumber,
+     task.workOrderNumber
+    ),
+    customer:customer||locationName||"Unknown customer",
+    locationName:locationName||customer||"",
+    address:canonicalAddress(order,task),
+    city:first(order.city,task.city),
+    stateProvince:first(order.stateProvince,order.stateCode,task.stateProvince,task.stateCode),
+    postalCode:first(order.postalCode,order.zip,task.postalCode,task.zip),
+    nte:first(order.nte,task.nte),
+    assignedTechnician:assignedTechnician||"Unassigned",
+    technician:assignedTechnician||order.technician||task.technician||"",
     joshuaStatus:"pending_proposal",
     workflowStatus:"pending_proposal",
     workflowType:"proposal",
     updatedAt:task.updatedAt||order.updatedAt||task.createdAt||order.createdAt||new Date().toISOString(),
     createdAt:task.createdAt||order.createdAt||task.updatedAt||order.updatedAt||new Date().toISOString(),
-    phase2836ProposalTaskId:task.id||""
+    phase2836ProposalTaskId:task.id||"",
+    phase2836MatchedCanonicalWorkOrder:Boolean(order&&Object.keys(order).length)
    };
   });
  }
@@ -243,4 +366,4 @@ if (fs.existsSync(panelPath)) {
   }
 }
 
-console.log("Joshua Phase 28.36 active: Proposal badge, metric, and modal now use canonical open proposal tasks.");
+console.log("Joshua Phase 28.36 active: Proposal queue now uses canonical tasks plus canonical job identity/details.");
