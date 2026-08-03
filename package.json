@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase28-39-safe-proposal-badge-authority.mjs",
+    "start": "node phase28-37-browser-open-task-authority.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
