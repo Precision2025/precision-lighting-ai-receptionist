@@ -126,23 +126,55 @@ if (fs.existsSync(panelPath)) {
   );
  }
 
+ function usableIdentity(value=""){
+  const v=clean(value);
+  if(!v)return "";
+  const n=norm(v);
+  if([
+   "clockshark_job","unknown_customer","unknown_location","unassigned",
+   "service_job","job","unknown"
+  ].includes(n))return "";
+  return v;
+ }
+
+ function firstIdentity(...values){
+  return values.map(usableIdentity).find(Boolean)||"";
+ }
+
  function canonicalCustomer(order={},task={}){
-  const location=first(
+  /*
+   * A ServiceChannel-originated job may now be operated in ClockShark.
+   * Keep the originating customer/location identity while allowing
+   * ClockShark to supply technician/time activity.
+   *
+   * Never let the generic Phase 22 placeholder "ClockShark Job"
+   * outrank a real ServiceChannel/ClockShark job name.
+   */
+  const location=firstIdentity(
+   order.serviceChannelLocationName,order.serviceChannelLocation,
+   order.serviceChannelStoreName,order.serviceChannelSiteName,
    order.locationName,order.location,order.storeName,order.siteName,
-   order.displayReference,order.jobName,task.locationName,task.location,
-   task.store,task.siteName
+   order.displayReference,order.jobName,order.clockSharkJobName,
+   task.serviceChannelLocationName,task.locationName,task.location,
+   task.store,task.siteName,task.jobName,task.clockSharkJobName
   );
-  return first(
+  return firstIdentity(
+   order.serviceChannelCustomer,order.serviceChannelCustomerName,
    order.customer,order.customerName,order.subscriber,order.subscriberName,
-   order.client,order.clientName,task.customer,task.customerName,location
+   order.client,order.clientName,task.serviceChannelCustomer,
+   task.serviceChannelCustomerName,task.customer,task.customerName,
+   location
   );
  }
 
  function canonicalLocation(order={},task={}){
-  return first(
+  return firstIdentity(
+   order.serviceChannelLocationName,order.serviceChannelLocation,
+   order.serviceChannelStoreName,order.serviceChannelSiteName,
    order.locationName,order.location,order.storeName,order.siteName,
-   order.displayReference,order.jobName,task.locationName,task.location,
-   task.store,task.siteName
+   order.displayReference,order.jobName,order.clockSharkJobName,
+   task.serviceChannelLocationName,task.locationName,task.location,
+   task.store,task.siteName,task.jobName,task.clockSharkJobName
   );
  }
 
@@ -366,4 +398,4 @@ if (fs.existsSync(panelPath)) {
   }
 }
 
-console.log("Joshua Phase 28.36 active: Proposal queue now uses canonical tasks plus canonical job identity/details.");
+console.log("Joshua Phase 28.36 active: ServiceChannel-origin identity preserved for ClockShark-operated proposal jobs.");
