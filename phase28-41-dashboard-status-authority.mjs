@@ -2,11 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 /*
- * Joshua Phase 28.41 Diagnostic Reset
+ * Joshua Phase 28.41 Compact Diagnostic Reset
  *
- * This intentionally removes the experimental counter patches and starts the
- * last stable Phase 28.40 chain. It prints a narrow, sanitized runtime snapshot
- * for the four records needed to repair source classification permanently.
+ * Restores the stable Phase 28.40 chain and prints one searchable log line per
+ * target work order, event, active ClockShark shift, and active technician.
  */
 
 const TARGET_IDS = [
@@ -18,6 +17,7 @@ const TARGET_IDS = [
 
 const text = value => String(value ?? "").trim();
 const lower = value => text(value).toLowerCase();
+const safeTag = value => text(value).replace(/[^A-Za-z0-9_-]+/g, "_");
 
 function dataFileCandidates() {
   return [
@@ -55,14 +55,11 @@ function recordValues(record = {}, key = "") {
   ].map(lower).filter(Boolean);
 }
 
-function containsTarget(record = {}, key = "") {
-  const values = recordValues(record, key);
-  return TARGET_IDS.some(target => {
-    const normalizedTarget = lower(target);
-    return values.some(value =>
-      value === normalizedTarget || value.includes(normalizedTarget)
-    );
-  });
+function matchesTarget(record = {}, key = "", target = "") {
+  const normalizedTarget = lower(target);
+  return recordValues(record, key).some(value =>
+    value === normalizedTarget || value.includes(normalizedTarget)
+  );
 }
 
 function selectFields(record = {}, fields = []) {
@@ -73,202 +70,163 @@ function selectFields(record = {}, fields = []) {
   );
 }
 
-function diagnosticSnapshot(data = {}, dataFile = "") {
+function emit(label, value) {
+  console.log(label + " " + JSON.stringify(value));
+}
+
+function printCompactDiagnostic() {
+  const dataFile = findDataFile();
+  console.log("JOSHUA_COMPACT_DIAGNOSTIC_BEGIN");
+
+  if (!dataFile) {
+    emit("JOSHUA_DIAG_ERROR", {
+      error: "Joshua control data file was not found.",
+      checkedPaths: dataFileCandidates()
+    });
+    console.log("JOSHUA_COMPACT_DIAGNOSTIC_END");
+    return;
+  }
+
+  let data = {};
+  try {
+    const raw = fs.readFileSync(dataFile, "utf8");
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch (error) {
+    emit("JOSHUA_DIAG_ERROR", {
+      error: error instanceof Error ? error.message : String(error),
+      dataFile
+    });
+    console.log("JOSHUA_COMPACT_DIAGNOSTIC_END");
+    return;
+  }
+
   const workOrderFields = [
-    "trackingNumber",
-    "workOrderNumber",
-    "jobNumber",
-    "customer",
-    "location",
-    "jobName",
-    "source",
-    "sourceSystem",
-    "provider",
-    "integrationSource",
-    "intakeSource",
-    "isInternalWorkOrder",
-    "isServiceChannel",
-    "serviceChannelSourceOfTruth",
-    "serviceChannelTrackingNumber",
-    "scTrackingNumber",
-    "serviceChannelWorkOrderNumber",
-    "scWorkOrderNumber",
-    "serviceChannelPrimaryStatus",
-    "serviceChannelExtendedStatus",
-    "serviceChannelOnsiteConfirmed",
-    "serviceChannelCheckoutNeeded",
-    "serviceChannelCheckInEventAt",
-    "serviceChannelCheckOutEventAt",
+    "trackingNumber", "workOrderNumber", "jobNumber", "customer",
+    "location", "jobName", "source", "sourceSystem", "provider",
+    "integrationSource", "intakeSource", "isInternalWorkOrder",
+    "isServiceChannel", "serviceChannelSourceOfTruth",
+    "serviceChannelTrackingNumber", "scTrackingNumber",
+    "serviceChannelWorkOrderNumber", "scWorkOrderNumber",
+    "serviceChannelPrimaryStatus", "serviceChannelExtendedStatus",
+    "serviceChannelOnsiteConfirmed", "serviceChannelCheckoutNeeded",
+    "serviceChannelCheckInEventAt", "serviceChannelCheckOutEventAt",
     "manualServiceChannelVerificationStatus",
-    "manualServiceChannelVerificationAt",
-    "ivrConfirmed",
-    "state",
-    "joshuaStatus",
-    "technician",
-    "technicianCount",
-    "checkInAt",
-    "checkOutAt",
-    "clockSharkJobId",
-    "clockSharkJobNumber",
-    "clockSharkJobName",
-    "clockSharkSourceJobId",
-    "clockSharkSourceJobNumber",
-    "clockSharkSourceJobName",
-    "clockSharkCurrentlyClockedIn",
-    "clockSharkOpenShiftCount",
-    "createdAt",
-    "updatedAt"
+    "manualServiceChannelVerificationAt", "ivrConfirmed", "state",
+    "joshuaStatus", "technician", "technicianCount", "checkInAt",
+    "checkOutAt", "clockSharkJobId", "clockSharkJobNumber",
+    "clockSharkJobName", "clockSharkSourceJobId",
+    "clockSharkSourceJobNumber", "clockSharkSourceJobName",
+    "clockSharkCurrentlyClockedIn", "clockSharkOpenShiftCount",
+    "createdAt", "updatedAt"
   ];
 
   const eventFields = [
-    "type",
-    "trackingNumber",
-    "workOrderNumber",
-    "jobNumber",
-    "source",
-    "sourceSystem",
-    "requestedBy",
-    "provider",
-    "integration",
-    "status",
-    "result",
-    "success",
-    "ok",
-    "level",
-    "primaryStatus",
-    "extendedStatus",
-    "verifiedStatus",
-    "createdAt",
-    "updatedAt",
-    "completedAt",
-    "eventDate",
-    "serviceChannelEventAt"
+    "type", "trackingNumber", "workOrderNumber", "jobNumber", "source",
+    "sourceSystem", "requestedBy", "provider", "integration", "status",
+    "result", "success", "ok", "level", "primaryStatus",
+    "extendedStatus", "verifiedStatus", "createdAt", "updatedAt",
+    "completedAt", "eventDate", "serviceChannelEventAt"
   ];
 
   const shiftFields = [
-    "id",
-    "shiftId",
-    "status",
-    "employeeName",
-    "jobId",
-    "jobNumber",
-    "jobName",
-    "trackingNumber",
-    "joshuaTrackingNumber",
-    "joshuaWorkOrderKey",
-    "clockSharkActivityType",
-    "activityType",
-    "activityName",
-    "taskName",
-    "isNonJobActivity",
-    "clockInAt",
-    "clockOutAt",
-    "createdAt",
-    "updatedAt",
-    "rawReceivedAt"
+    "id", "shiftId", "status", "employeeName", "jobId", "jobNumber",
+    "jobName", "trackingNumber", "joshuaTrackingNumber",
+    "joshuaWorkOrderKey", "clockSharkActivityType", "activityType",
+    "activityName", "taskName", "isNonJobActivity", "clockInAt",
+    "clockOutAt", "createdAt", "updatedAt", "rawReceivedAt"
   ];
 
   const technicianFields = [
-    "name",
-    "status",
-    "activityStatus",
-    "activitySource",
-    "clockSharkStatus",
-    "clockSharkClockedIn",
-    "clockSharkActivityType",
-    "clockSharkActivityLabel",
-    "clockSharkCurrentJob",
-    "clockSharkCurrentTrackingNumber",
-    "clockSharkDestinationJob",
-    "clockSharkDestinationTrackingNumber",
-    "currentTrackingNumber",
-    "activityStartedAt",
-    "updatedAt"
+    "name", "status", "activityStatus", "activitySource",
+    "clockSharkStatus", "clockSharkClockedIn", "clockSharkActivityType",
+    "clockSharkActivityLabel", "clockSharkCurrentJob",
+    "clockSharkCurrentTrackingNumber", "clockSharkDestinationJob",
+    "clockSharkDestinationTrackingNumber", "currentTrackingNumber",
+    "activityStartedAt", "updatedAt"
   ];
 
-  const workOrders = Object.fromEntries(
-    Object.entries(data.workOrders || {})
-      .filter(([key, record]) => record && containsTarget(record, key))
-      .map(([key, record]) => [key, selectFields(record, workOrderFields)])
-  );
+  emit("JOSHUA_DIAG_FILE", { dataFile, generatedAt: new Date().toISOString() });
 
-  const events = (Array.isArray(data.events) ? data.events : [])
-    .filter(event => event && containsTarget(event))
-    .map(event => selectFields(event, eventFields));
+  for (const target of TARGET_IDS) {
+    const tag = safeTag(target);
+    const workOrders = Object.entries(data.workOrders || {})
+      .filter(([key, record]) => record && matchesTarget(record, key, target));
+
+    if (!workOrders.length) {
+      emit(`JOSHUA_DIAG_WORKORDER_${tag}_MISSING`, { target });
+    } else {
+      workOrders.forEach(([key, record], index) => {
+        emit(`JOSHUA_DIAG_WORKORDER_${tag}_${index + 1}`, {
+          key,
+          ...selectFields(record, workOrderFields)
+        });
+      });
+    }
+
+    const events = (Array.isArray(data.events) ? data.events : [])
+      .filter(event => event && matchesTarget(event, "", target));
+
+    if (!events.length) {
+      emit(`JOSHUA_DIAG_EVENT_${tag}_MISSING`, { target });
+    } else {
+      events.forEach((event, index) => {
+        emit(`JOSHUA_DIAG_EVENT_${tag}_${index + 1}`,
+          selectFields(event, eventFields));
+      });
+    }
+  }
 
   const allShifts = Object.values(data.clockShark?.shifts || {})
     .filter(shift => shift && typeof shift === "object");
 
-  const relevantShifts = allShifts
-    .filter(shift => {
-      const status = lower(shift.status).replace(/[\s-]+/g, "_");
-      const active = !shift.clockOutAt && [
-        "",
-        "open",
-        "active",
-        "working",
-        "clocked_in",
-        "clockedin",
-        "onsite"
-      ].includes(status);
-      return active || containsTarget(shift);
-    })
-    .map(shift => selectFields(shift, shiftFields));
+  const activeShifts = allShifts.filter(shift => {
+    const status = lower(shift.status).replace(/[\s-]+/g, "_");
+    return !shift.clockOutAt && [
+      "", "open", "active", "working", "clocked_in", "clockedin", "onsite"
+    ].includes(status);
+  });
+
+  if (!activeShifts.length) {
+    emit("JOSHUA_DIAG_ACTIVE_SHIFT_NONE", {});
+  } else {
+    activeShifts.forEach((shift, index) => {
+      emit(`JOSHUA_DIAG_ACTIVE_SHIFT_${index + 1}`,
+        selectFields(shift, shiftFields));
+    });
+  }
 
   const activeTechnicians = Object.entries(data.technicians || {})
-    .filter(([key, technician]) => {
-      if (!technician || typeof technician !== "object") return false;
-      return technician.clockSharkClockedIn === true || containsTarget(technician, key);
-    })
-    .map(([key, technician]) => ({
-      key,
-      ...selectFields(technician, technicianFields)
-    }));
+    .filter(([, technician]) =>
+      technician && typeof technician === "object" &&
+      technician.clockSharkClockedIn === true
+    );
 
-  return {
-    generatedAt: new Date().toISOString(),
-    dataFile,
-    targetIds: TARGET_IDS,
-    workOrders,
-    events,
-    relevantClockSharkShifts: relevantShifts,
-    activeTechnicians
-  };
-}
-
-function printDiagnostic() {
-  const dataFile = findDataFile();
-
-  console.log("JOSHUA_COUNTER_DIAGNOSTIC_BEGIN");
-
-  if (!dataFile) {
-    console.log(JSON.stringify({
-      error: "Joshua control data file was not found.",
-      checkedPaths: dataFileCandidates()
-    }, null, 2));
-    console.log("JOSHUA_COUNTER_DIAGNOSTIC_END");
-    return;
+  if (!activeTechnicians.length) {
+    emit("JOSHUA_DIAG_ACTIVE_TECH_NONE", {});
+  } else {
+    activeTechnicians.forEach(([key, technician], index) => {
+      emit(`JOSHUA_DIAG_ACTIVE_TECH_${index + 1}`, {
+        key,
+        ...selectFields(technician, technicianFields)
+      });
+    });
   }
 
-  try {
-    const raw = fs.readFileSync(dataFile, "utf8");
-    const data = raw.trim() ? JSON.parse(raw) : {};
-    console.log(JSON.stringify(diagnosticSnapshot(data, dataFile), null, 2));
-  } catch (error) {
-    console.log(JSON.stringify({
-      error: error instanceof Error ? error.message : String(error),
-      dataFile
-    }, null, 2));
-  }
+  emit("JOSHUA_DIAG_SUMMARY", {
+    workOrderCount: Object.keys(data.workOrders || {}).length,
+    eventCount: Array.isArray(data.events) ? data.events.length : 0,
+    clockSharkShiftCount: allShifts.length,
+    activeShiftCount: activeShifts.length,
+    activeTechnicianCount: activeTechnicians.length
+  });
 
-  console.log("JOSHUA_COUNTER_DIAGNOSTIC_END");
+  console.log("JOSHUA_COMPACT_DIAGNOSTIC_END");
 }
 
-printDiagnostic();
+printCompactDiagnostic();
 
-// Start the last stable application chain without applying another counter patch.
 await import("./phase28-40-clockshark-clockout-authority.mjs");
 
 console.log(
-  "Joshua Phase 28.41 diagnostic reset active: Phase 28.40 restored and runtime counter evidence logged."
+  "Joshua Phase 28.41 compact diagnostic active: Phase 28.40 restored and one-line evidence logged."
 );
