@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /*
- * Joshua Phase 28.41 V2 — Canonical Live Counter Authority
+ * Joshua Phase 28.41 V3 — Canonical Live Counter Authority
  *
  * Narrow correction only: preserve the complete Phase 28.40 application and
  * every existing dashboard section. ServiceChannel and ClockShark cards are
@@ -16,7 +16,7 @@ const PHASE25_PATH = new URL(
   ROOT
 );
 const PATCH_MARKER =
-  "JOSHUA_PHASE28_41_V2_CANONICAL_LIVE_COUNTERS";
+  "JOSHUA_PHASE28_41_V3_CANONICAL_LIVE_COUNTERS";
 const PHASE28_CARD_SKIP_MARKER =
   "JOSHUA_PHASE28_STRICT_CLOCKSHARK_CARD";
 
@@ -95,16 +95,50 @@ function findMatchingBrace(source, openIndex) {
 function replaceNamedFunction(source, name, replacement) {
   const start = source.indexOf(`function ${name}(`);
   if (start < 0) {
-    throw new Error(`Phase 28.41 V2 could not locate ${name}.`);
+    throw new Error(`Phase 28.41 V3 could not locate ${name}.`);
   }
 
   const open = source.indexOf("{", start);
   const close = findMatchingBrace(source, open);
   if (open < 0 || close < 0) {
-    throw new Error(`Phase 28.41 V2 could not parse ${name}.`);
+    throw new Error(`Phase 28.41 V3 could not parse ${name}.`);
   }
 
   return source.slice(0, start) + replacement + source.slice(close + 1);
+}
+
+function ensurePhase25RuntimeImports(source) {
+  const imports = [];
+
+  if (!source.includes(
+    'from "node:child_process"'
+  )) {
+    imports.push(
+      'import { spawnSync } from "node:child_process";'
+    );
+  }
+
+  if (!source.includes(
+    'from "node:url"'
+  )) {
+    imports.push(
+      'import { fileURLToPath } from "node:url";'
+    );
+  }
+
+  if (!imports.length) return source;
+
+  const importAnchor = 'import path from "node:path";';
+  if (!source.includes(importAnchor)) {
+    throw new Error(
+      "Phase 28.41 V3 could not locate the Phase 25 import anchor."
+    );
+  }
+
+  return source.replace(
+    importAnchor,
+    importAnchor + "\n" + imports.join("\n")
+  );
 }
 
 function addServiceChannelFlags(source) {
@@ -131,7 +165,7 @@ function addServiceChannelFlags(source) {
     source = source.replace(strongEvidence, strongReplacement);
   } else if (!source.includes("item.serviceChannelCheckoutNeeded === true")) {
     throw new Error(
-      "Phase 28.41 V2 could not locate the ServiceChannel evidence block."
+      "Phase 28.41 V3 could not locate the ServiceChannel evidence block."
     );
   }
 
@@ -161,7 +195,7 @@ function addServiceChannelFlags(source) {
   return source;
 }
 
-const GENERATED_HELPERS = String.raw`// JOSHUA_PHASE28_41_V2_CANONICAL_LIVE_COUNTERS
+const GENERATED_HELPERS = String.raw`// JOSHUA_PHASE28_41_V3_CANONICAL_LIVE_COUNTERS
 function phase24CounterText(value = "") {
   return String(value ?? "").trim();
 }
@@ -629,7 +663,7 @@ function buildCanonicalCounterPatch() {
     ROOT
   );
   if (!fs.existsSync(filePath)) {
-    throw new Error("Phase 28.41 V2 could not locate Phase 24 authority.");
+    throw new Error("Phase 28.41 V3 could not locate Phase 24 authority.");
   }
 
   let source = fs.readFileSync(filePath, "utf8");
@@ -638,7 +672,7 @@ function buildCanonicalCounterPatch() {
   );
   const helperEnd = source.indexOf("\\n}\\n\\n\`;", helperStart);
   if (helperStart < 0 || helperEnd <= helperStart) {
-    throw new Error("Phase 28.41 V2 could not locate the Phase 24 counter helper.");
+    throw new Error("Phase 28.41 V3 could not locate the Phase 24 counter helper.");
   }
 
   const helperReplacement = ${helperLiteral};
@@ -650,7 +684,7 @@ function buildCanonicalCounterPatch() {
   const oldStatusBlock = ${oldStatusLiteral};
   const newStatusBlock = ${newStatusLiteral};
   if (!source.includes(oldStatusBlock)) {
-    throw new Error("Phase 28.41 V2 could not locate the Phase 24 summary counters.");
+    throw new Error("Phase 28.41 V3 could not locate the Phase 24 summary counters.");
   }
   source = source.replace(oldStatusBlock, newStatusBlock);
 
@@ -665,7 +699,7 @@ function buildCanonicalCounterPatch() {
   const newCounterUpdater =
     ' function updateCounts(){const d=getCache();const serviceChannel=Array.isArray(d.serviceChannelOnsite)?d.serviceChannelOnsite:[];const clockShark=Array.isArray(d.clockSharkClockedIn)?d.clockSharkClockedIn:[];const checkout=Array.isArray(d.checkoutNeeded)?d.checkoutNeeded:[];setCount("active",serviceChannel.length);setCount("clockSharkClockedInCount",clockShark.length);setCount("checkoutNeededCount",checkout.length)}';
   if (!source.includes(oldCounterUpdater)) {
-    throw new Error("Phase 28.41 V2 could not locate the dashboard count updater.");
+    throw new Error("Phase 28.41 V3 could not locate the dashboard count updater.");
   }
   source = source.replace(oldCounterUpdater, newCounterUpdater);
 
@@ -675,7 +709,7 @@ function buildCanonicalCounterPatch() {
     renderStart
   );
   if (renderStart < 0 || renderEnd <= renderStart) {
-    throw new Error("Phase 28.41 V2 could not locate the ClockShark dialog renderer.");
+    throw new Error("Phase 28.41 V3 could not locate the ClockShark dialog renderer.");
   }
   const renderReplacement = ${renderLiteral};
   source =
@@ -696,20 +730,36 @@ function buildCanonicalCounterPatch() {
   );
   if (syntax.status !== 0) {
     throw new Error(
-      "Phase 28.41 V2 generated invalid Phase 24 source:\\n" +
+      "Phase 28.41 V3 generated invalid Phase 24 source:\\n" +
       (syntax.stderr || syntax.stdout || "")
     );
   }
 
   console.log(
-    "Joshua Phase 28.41 V2 connected ServiceChannel and ClockShark cards to canonical checked-in jobs."
+    "Joshua Phase 28.41 V3 connected ServiceChannel and ClockShark cards to canonical checked-in jobs."
   );
 }`;
 }
 
 function patchPhase25Authority() {
   let source = fs.readFileSync(PHASE25_PATH, "utf8");
-  if (source.includes(PATCH_MARKER)) return;
+  const originalSource = source;
+
+  // The generated Phase 25 patch performs a syntax check at runtime. Keep
+  // those Node helpers inside Phase 25 itself—not only in this launcher.
+  source = ensurePhase25RuntimeImports(source);
+
+  if (
+    source.includes(PATCH_MARKER) ||
+    source.includes(
+      "JOSHUA_PHASE28_41_V2_CANONICAL_LIVE_COUNTERS"
+    )
+  ) {
+    if (source !== originalSource) {
+      fs.writeFileSync(PHASE25_PATH, source);
+    }
+    return;
+  }
 
   source = addServiceChannelFlags(source);
   source = replaceNamedFunction(
@@ -734,7 +784,7 @@ function patchPhase25Authority() {
   );
   if (syntax.status !== 0) {
     throw new Error(
-      "Phase 28.41 V2 generated invalid Phase 25 source:\n" +
+      "Phase 28.41 V3 generated invalid Phase 25 source:\n" +
       (syntax.stderr || syntax.stdout || "")
     );
   }
@@ -744,5 +794,5 @@ patchPhase25Authority();
 await import("./phase28-40-clockshark-clockout-authority.mjs");
 
 console.log(
-  "Joshua Phase 28.41 V2 active: canonical ServiceChannel and ClockShark job counters installed without changing dashboard sections."
+  "Joshua Phase 28.41 V3 active: canonical ServiceChannel and ClockShark job counters installed without changing dashboard sections."
 );
