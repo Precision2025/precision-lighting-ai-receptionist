@@ -1,26 +1,27 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.40 V2 — ClockShark Clock-Out Authority
+ * Joshua Phase 28.40 V3 — Safe ClockShark Authority
  *
- * IMPORTANT:
- * Phase 21 builds the ClockShark runtime into server.js BEFORE the server starts.
- * V1 tried to patch server.js after the Phase 28.37 chain had already loaded it.
- * V2 patches the Phase 21 source BEFORE importing the existing stable chain.
+ * V3 removes the unsafe V2 behavior that inferred clock-outs during
+ * reconciliation. A ClockShark shift may now close only from an actual
+ * clock_out event (or an exact shift/time-entry update).
  *
- * Repair:
- * - Clock-out matching is employee-first (email/id/full name).
- * - Job is a preference, not a hard requirement.
- * - Older surname-only duplicate records can match a later full-name event.
- * - Reconciliation closes ghost open records when later ClockShark evidence
- *   proves the employee clocked out or moved to a newer shift.
- * - Duration is recalculated from clock-in/out when Zapier sends no duration.
+ * V3 also performs one narrow, one-time recovery:
+ * - It reopens only the newest V2-repaired shift for an employee.
+ * - It will not reopen that shift when a genuine later clock-out exists.
+ * - It will not reopen it when a genuine open shift already exists.
+ * - It ignores old/malformed repairs outside the recovery window.
+ *
+ * Future clock-outs match by employee identity first:
+ * email -> employee ID -> full name. Job/tracking helps choose the best
+ * candidate but is never required to close the employee's open shift.
  */
 
 const PREPATCH_MARKER =
-  "JOSHUA_PHASE28_40_V2_CLOCKSHARK_PREBOOT_AUTHORITY";
+  "JOSHUA_PHASE28_40_V3_CLOCKSHARK_PREBOOT_AUTHORITY";
 const RUNTIME_MARKER =
-  "JOSHUA_PHASE28_40_V2_CLOCKSHARK_RUNTIME_AUTHORITY";
+  "JOSHUA_PHASE28_40_V3_CLOCKSHARK_RUNTIME_AUTHORITY";
 
 const phase21Path = new URL(
   "./phase21-clockshark-bootstrap.mjs",
@@ -120,21 +121,21 @@ function replaceFunction(source, name, replacement) {
 
   if (start < 0) {
     throw new Error(
-      `Phase 28.40 V2 could not locate ${name}.`
+      `Phase 28.40 V3 could not locate ${name}.`
     );
   }
 
   const open = source.indexOf("{", start);
   if (open < 0) {
     throw new Error(
-      `Phase 28.40 V2 could not locate ${name} body.`
+      `Phase 28.40 V3 could not locate ${name} body.`
     );
   }
 
   const close = findMatchingBrace(source, open);
   if (close < 0) {
     throw new Error(
-      `Phase 28.40 V2 could not parse ${name} body.`
+      `Phase 28.40 V3 could not parse ${name} body.`
     );
   }
 
@@ -151,14 +152,18 @@ function decodeHelpersLiteral(bootstrapSource) {
 
   if (anchorIndex < 0) {
     throw new Error(
-      "Phase 28.40 V2 could not locate Phase 21 helpers literal."
+      "Phase 28.40 V3 could not locate Phase 21 helpers literal."
     );
   }
 
-  const start = bootstrapSource.indexOf('"', anchorIndex + anchor.length);
+  const start = bootstrapSource.indexOf(
+    '"',
+    anchorIndex + anchor.length
+  );
+
   if (start < 0) {
     throw new Error(
-      "Phase 28.40 V2 could not locate Phase 21 helpers opening quote."
+      "Phase 28.40 V3 could not locate Phase 21 helpers opening quote."
     );
   }
 
@@ -186,18 +191,16 @@ function decodeHelpersLiteral(bootstrapSource) {
 
   if (end < 0) {
     throw new Error(
-      "Phase 28.40 V2 could not locate Phase 21 helpers closing quote."
+      "Phase 28.40 V3 could not locate Phase 21 helpers closing quote."
     );
   }
 
-  const literal = bootstrapSource.slice(start, end + 1);
-  const decoded = JSON.parse(literal);
-
   return {
-    anchorIndex,
     start,
     end,
-    decoded
+    decoded: JSON.parse(
+      bootstrapSource.slice(start, end + 1)
+    )
   };
 }
 
@@ -271,7 +274,7 @@ const replacementFindOpenShift = `function phase21ClockSharkFindOpenShift(
       return false;
     }
 
-    // Compatibility for older malformed records that stored only a surname.
+    // Compatibility only for legacy surname-only records.
     if (
       a.length === 1 &&
       b.length > 1 &&
@@ -362,8 +365,7 @@ const replacementFindOpenShift = `function phase21ClockSharkFindOpenShift(
       .map(norm)
       .filter(Boolean);
 
-    // Job/tracking helps choose among employee matches,
-    // but it is no longer required for a clock-out.
+    // Job/tracking is a preference, never a clock-out requirement.
     if (
       targetJobs.some(value =>
         itemJobs.includes(value)
@@ -411,22 +413,31 @@ const replacementFindOpenShift = `function phase21ClockSharkFindOpenShift(
   );
 }`;
 
-const repairHelper = `
+const recoveryHelper = `
 /* ${RUNTIME_MARKER} */
-function phase2840ClockSharkSameEmployee(
+const PHASE2840_V3_RECOVERY_HOURS = Math.max(
+  48,
+  Number(
+    process.env.CLOCKSHARK_V2_RECOVERY_HOURS ||
+    96
+  )
+);
+
+function phase2840V3Text(value = "") {
+  return phase21ClockSharkText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9@._+-]+/g, " ")
+    .trim();
+}
+
+function phase2840V3SameEmployee(
   a = {},
   b = {}
 ) {
-  const text = value =>
-    phase21ClockSharkText(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9@._+-]+/g, " ")
-      .trim();
-
   const aEmail =
-    text(a.employeeEmail);
+    phase2840V3Text(a.employeeEmail);
   const bEmail =
-    text(b.employeeEmail);
+    phase2840V3Text(b.employeeEmail);
 
   if (
     aEmail &&
@@ -437,9 +448,9 @@ function phase2840ClockSharkSameEmployee(
   }
 
   const aId =
-    text(a.employeeId);
+    phase2840V3Text(a.employeeId);
   const bId =
-    text(b.employeeId);
+    phase2840V3Text(b.employeeId);
 
   if (
     aId &&
@@ -450,9 +461,9 @@ function phase2840ClockSharkSameEmployee(
   }
 
   const aName =
-    text(a.employeeName);
+    phase2840V3Text(a.employeeName);
   const bName =
-    text(b.employeeName);
+    phase2840V3Text(b.employeeName);
 
   if (
     aName &&
@@ -490,253 +501,268 @@ function phase2840ClockSharkSameEmployee(
   return false;
 }
 
-function phase2840RepairClockSharkOpenTruth(
+function phase2840V3Time(value = "") {
+  const parsed =
+    new Date(value || 0).getTime();
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : 0;
+}
+
+function phase2840V3EmployeeKey(
+  shift = {}
+) {
+  const email =
+    phase2840V3Text(
+      shift.employeeEmail
+    );
+
+  if (email) {
+    return \`email:\${email}\`;
+  }
+
+  const id =
+    phase2840V3Text(
+      shift.employeeId
+    );
+
+  if (id) {
+    return \`id:\${id}\`;
+  }
+
+  const name =
+    phase2840V3Text(
+      shift.employeeName
+    );
+
+  return name
+    ? \`name:\${name}\`
+    : "";
+}
+
+function phase2840V3RecoverFalseClosures(
   data,
   state
 ) {
-  const entries =
-    Object.entries(state.shifts || {});
-
-  if (!entries.length) {
-    return 0;
-  }
-
-  const openEntries =
-    entries.filter(([, shift]) =>
-      shift?.status === "open"
-    );
-
-  const closedEntries =
-    entries.filter(([, shift]) =>
-      shift?.status === "closed"
-    );
-
-  const eventTime = value => {
-    const parsed =
-      new Date(value || 0).getTime();
-
-    return Number.isFinite(parsed)
-      ? parsed
-      : 0;
-  };
-
-  let repaired = 0;
-  const recalcTracking =
-    new Set();
-
-  for (
-    const [key, openShift]
-    of openEntries
-  ) {
-    const openAt =
-      eventTime(
-        openShift.clockInAt ||
-        openShift.createdAt
-      );
-
-    const laterClosed =
-      closedEntries
-        .filter(([, closedShift]) => {
-          if (
-            !phase2840ClockSharkSameEmployee(
-              openShift,
-              closedShift
-            )
-          ) {
-            return false;
-          }
-
-          const closedAt =
-            eventTime(
-              closedShift.clockOutAt ||
-              closedShift.updatedAt ||
-              closedShift.createdAt
-            );
-
-          if (!closedAt) {
-            return false;
-          }
-
-          return (
-            !openAt ||
-            closedAt >= openAt
-          );
-        })
-        .sort((a, b) =>
-          eventTime(
-            a[1].clockOutAt ||
-            a[1].updatedAt ||
-            a[1].createdAt
-          ) -
-          eventTime(
-            b[1].clockOutAt ||
-            b[1].updatedAt ||
-            b[1].createdAt
-          )
-        )[0];
-
-    const newerOpen =
-      openEntries
-        .filter(
-          ([otherKey, candidate]) => {
-            if (otherKey === key) {
-              return false;
-            }
-
-            if (
-              !phase2840ClockSharkSameEmployee(
-                openShift,
-                candidate
-              )
-            ) {
-              return false;
-            }
-
-            const candidateAt =
-              eventTime(
-                candidate.clockInAt ||
-                candidate.createdAt
-              );
-
-            if (!candidateAt) {
-              return false;
-            }
-
-            return (
-              !openAt ||
-              candidateAt > openAt
-            );
-          }
-        )
-        .sort((a, b) =>
-          eventTime(
-            a[1].clockInAt ||
-            a[1].createdAt
-          ) -
-          eventTime(
-            b[1].clockInAt ||
-            b[1].createdAt
-          )
-        )[0];
-
-    let closeAt = "";
-    let repairReason = "";
-
-    if (laterClosed) {
-      closeAt =
-        laterClosed[1].clockOutAt ||
-        laterClosed[1].updatedAt ||
-        laterClosed[1].createdAt;
-
-      repairReason =
-        "later_clockout_evidence";
-    } else if (newerOpen) {
-      closeAt =
-        newerOpen[1].clockInAt ||
-        newerOpen[1].createdAt;
-
-      repairReason =
-        "newer_open_shift_evidence";
-    }
-
-    // Old broken records sometimes have no clock-in timestamp and
-    // only a partial employee name. If a timed peer exists, do not
-    // let that malformed record count as another live clock-in.
-    if (
-      !closeAt &&
-      !openShift.clockInAt
-    ) {
-      const timedPeer =
-        openEntries
-          .filter(
-            ([otherKey, candidate]) =>
-              otherKey !== key &&
-              candidate.clockInAt &&
-              phase2840ClockSharkSameEmployee(
-                openShift,
-                candidate
-              )
-          )
-          .sort((a, b) =>
-            eventTime(b[1].clockInAt) -
-            eventTime(a[1].clockInAt)
-          )[0];
-
-      if (timedPeer) {
-        closeAt =
-          timedPeer[1].clockInAt;
-
-        repairReason =
-          "malformed_duplicate_repaired";
-      }
-    }
-
-    if (!closeAt) {
-      continue;
-    }
-
-    state.shifts[key] = {
-      ...openShift,
-      clockOutAt:
-        phase21ClockSharkDate(
-          closeAt
-        ) ||
-        phase21ClockSharkNow(),
-      status: "closed",
-      phase2840Repaired: true,
-      phase2840RepairReason:
-        repairReason,
-      phase2840RepairedAt:
-        phase21ClockSharkNow(),
-      updatedAt:
-        phase21ClockSharkNow()
-    };
-
-    repaired += 1;
-
-    if (openShift.trackingNumber) {
-      recalcTracking.add(
-        String(
-          openShift.trackingNumber
-        )
-      );
-    }
-  }
-
-  for (
-    const tracking
-    of recalcTracking
-  ) {
-    phase21ClockSharkRecalculateWorkOrder(
-      data,
-      state,
-      tracking
-    );
-  }
-
   state.sync =
     state.sync &&
     typeof state.sync === "object"
       ? state.sync
       : {};
 
-  if (repaired) {
-    state.sync.phase2840LastRepairAt =
-      phase21ClockSharkNow();
-
-    state.sync.phase2840LastRepairCount =
-      repaired;
-
-    state.sync.phase2840TotalRepaired =
-      Number(
-        state.sync.phase2840TotalRepaired ||
-        0
-      ) + repaired;
+  if (
+    Number(
+      state.sync.phase2840V3RecoveryVersion ||
+      0
+    ) >= 1
+  ) {
+    return 0;
   }
 
-  return repaired;
+  const now =
+    Date.now();
+
+  const cutoff =
+    now -
+    PHASE2840_V3_RECOVERY_HOURS *
+      60 *
+      60 *
+      1000;
+
+  const entries =
+    Object.entries(state.shifts || {});
+
+  const repaired =
+    entries
+      .filter(([, shift]) => {
+        if (
+          !shift ||
+          shift.status !== "closed" ||
+          shift.phase2840Repaired !== true ||
+          !shift.clockInAt
+        ) {
+          return false;
+        }
+
+        const clockIn =
+          phase2840V3Time(
+            shift.clockInAt
+          );
+
+        return (
+          clockIn &&
+          clockIn >= cutoff &&
+          clockIn <= now + 5 * 60 * 1000
+        );
+      })
+      .sort((a, b) =>
+        phase2840V3Time(
+          b[1].clockInAt
+        ) -
+        phase2840V3Time(
+          a[1].clockInAt
+        )
+      );
+
+  let recovered = 0;
+  const handledEmployees =
+    new Set();
+  const recalculations =
+    new Set();
+
+  for (
+    const [key, candidate]
+    of repaired
+  ) {
+    const employeeKey =
+      phase2840V3EmployeeKey(candidate);
+
+    if (
+      employeeKey &&
+      handledEmployees.has(employeeKey)
+    ) {
+      continue;
+    }
+
+    const sameEmployeeEntries =
+      entries.filter(
+        ([otherKey, shift]) =>
+          otherKey !== key &&
+          shift &&
+          phase2840V3SameEmployee(
+            candidate,
+            shift
+          )
+      );
+
+    const genuineOpen =
+      sameEmployeeEntries.some(
+        ([, shift]) =>
+          shift.status === "open" &&
+          shift.phase2840Repaired !== true
+      );
+
+    if (genuineOpen) {
+      if (employeeKey) {
+        handledEmployees.add(employeeKey);
+      }
+      continue;
+    }
+
+    const candidateClockIn =
+      phase2840V3Time(
+        candidate.clockInAt
+      );
+
+    // Only a real, non-V2 clock-out after this clock-in can keep it closed.
+    const genuineLaterClockOut =
+      sameEmployeeEntries.some(
+        ([, shift]) =>
+          shift.phase2840Repaired !== true &&
+          shift.status === "closed" &&
+          Boolean(shift.clockOutAt) &&
+          phase2840V3Time(
+            shift.clockOutAt
+          ) >= candidateClockIn
+      );
+
+    if (genuineLaterClockOut) {
+      if (employeeKey) {
+        handledEmployees.add(employeeKey);
+      }
+      continue;
+    }
+
+    const restored = {
+      ...candidate,
+      status: "open",
+      clockOutAt: "",
+      phase2840Repaired: false,
+      phase2840V3Recovered: true,
+      phase2840V3RecoveredAt:
+        phase21ClockSharkNow(),
+      phase2840V3OriginalRepairReason:
+        candidate.phase2840RepairReason ||
+        "",
+      updatedAt:
+        phase21ClockSharkNow()
+    };
+
+    delete restored.phase2840RepairReason;
+    delete restored.phase2840RepairedAt;
+
+    state.shifts[key] =
+      restored;
+
+    recovered += 1;
+
+    if (employeeKey) {
+      handledEmployees.add(employeeKey);
+    }
+
+    if (candidate.trackingNumber) {
+      recalculations.add(
+        String(
+          candidate.trackingNumber
+        )
+      );
+    }
+  }
+
+  for (
+    const trackingNumber
+    of recalculations
+  ) {
+    phase21ClockSharkRecalculateWorkOrder(
+      data,
+      state,
+      trackingNumber
+    );
+  }
+
+  state.sync.phase2840V3RecoveryVersion =
+    1;
+  state.sync.phase2840V3RecoveryAt =
+    phase21ClockSharkNow();
+  state.sync.phase2840V3RecoveredCount =
+    recovered;
+
+  return recovered;
 }
 `;
+
+function removeV2AutoClosures(source) {
+  let output = source;
+
+  const oldRuntimeMarker =
+    "/* JOSHUA_PHASE28_40_V2_CLOCKSHARK_RUNTIME_AUTHORITY */";
+
+  const oldHelperStart =
+    output.indexOf(oldRuntimeMarker);
+
+  if (oldHelperStart >= 0) {
+    const reconciliationStart =
+      output.indexOf(
+        "function phase21ClockSharkRunReconciliation(",
+        oldHelperStart
+      );
+
+    if (reconciliationStart >= 0) {
+      output =
+        output.slice(0, oldHelperStart) +
+        output.slice(reconciliationStart);
+    }
+  }
+
+  output =
+    output.replace(
+      /\s*phase2840RepairClockSharkOpenTruth\(\s*data\s*,\s*state\s*\);\s*/g,
+      "\n"
+    );
+
+  return output;
+}
 
 function patchClockSharkRuntime(source) {
   if (
@@ -751,15 +777,14 @@ function patchClockSharkRuntime(source) {
     };
   }
 
-  let output = source;
-  let changed = false;
+  let output =
+    removeV2AutoClosures(source);
 
   output = replaceFunction(
     output,
     "phase21ClockSharkFindOpenShift",
     replacementFindOpenShift
   );
-  changed = true;
 
   const oldRecompute =
 `    const recomputed =
@@ -769,12 +794,12 @@ function patchClockSharkRuntime(source) {
         shift.clockOutAt
       );`;
 
-  const newRecompute =
-`    const phase2840DurationSource = {
+  const safeRecompute =
+`    const phase2840V3DurationSource = {
       ...shift
     };
 
-    const phase2840IncomingHasDuration = [
+    const phase2840V3IncomingHasDuration = [
       "totalHours",
       "total_hours",
       "durationHours",
@@ -794,7 +819,7 @@ function patchClockSharkRuntime(source) {
     );
 
     if (
-      !phase2840IncomingHasDuration &&
+      !phase2840V3IncomingHasDuration &&
       shift.clockInAt &&
       shift.clockOutAt
     ) {
@@ -819,13 +844,13 @@ function patchClockSharkRuntime(source) {
           "overtime_hours"
         ]
       ) {
-        delete phase2840DurationSource[field];
+        delete phase2840V3DurationSource[field];
       }
     }
 
     const recomputed =
       phase21ClockSharkHours(
-        phase2840DurationSource,
+        phase2840V3DurationSource,
         shift.clockInAt,
         shift.clockOutAt
       );`;
@@ -834,40 +859,29 @@ function patchClockSharkRuntime(source) {
     output =
       output.replace(
         oldRecompute,
-        newRecompute
+        safeRecompute
       );
-    changed = true;
   }
 
   if (
     !output.includes(RUNTIME_MARKER)
   ) {
-    const reconciliationNeedle =
-      "function phase21ClockSharkRunReconciliation(";
-
-    const reconciliationIndex =
+    const reconciliationStart =
       output.indexOf(
-        reconciliationNeedle
+        "function phase21ClockSharkRunReconciliation("
       );
 
-    if (reconciliationIndex < 0) {
+    if (reconciliationStart < 0) {
       throw new Error(
-        "Phase 28.40 V2 could not locate ClockShark reconciliation."
+        "Phase 28.40 V3 could not locate ClockShark reconciliation."
       );
     }
 
     output =
-      output.slice(
-        0,
-        reconciliationIndex
-      ) +
-      repairHelper +
+      output.slice(0, reconciliationStart) +
+      recoveryHelper +
       "\n" +
-      output.slice(
-        reconciliationIndex
-      );
-
-    changed = true;
+      output.slice(reconciliationStart);
   }
 
   const reconciliationStart =
@@ -877,7 +891,7 @@ function patchClockSharkRuntime(source) {
 
   if (reconciliationStart < 0) {
     throw new Error(
-      "Phase 28.40 V2 could not locate reconciliation after helper install."
+      "Phase 28.40 V3 could not locate reconciliation after recovery install."
     );
   }
 
@@ -895,7 +909,7 @@ function patchClockSharkRuntime(source) {
 
   if (reconciliationClose < 0) {
     throw new Error(
-      "Phase 28.40 V2 could not parse reconciliation body."
+      "Phase 28.40 V3 could not parse reconciliation body."
     );
   }
 
@@ -905,22 +919,23 @@ function patchClockSharkRuntime(source) {
       reconciliationClose + 1
     );
 
+  reconciliation =
+    reconciliation.replace(
+      /\s*phase2840RepairClockSharkOpenTruth\(\s*data\s*,\s*state\s*\);\s*/g,
+      "\n"
+    );
+
   if (
     !reconciliation.includes(
-      "phase2840RepairClockSharkOpenTruth("
+      "phase2840V3RecoverFalseClosures("
     )
   ) {
     const stateRegex =
       /const state\s*=\s*phase21ClockSharkEnsureData\(\s*data\s*\);\s*/;
 
-    const stateMatch =
-      reconciliation.match(
-        stateRegex
-      );
-
-    if (!stateMatch) {
+    if (!stateRegex.test(reconciliation)) {
       throw new Error(
-        "Phase 28.40 V2 could not locate reconciliation state initialization."
+        "Phase 28.40 V3 could not locate reconciliation state initialization."
       );
     }
 
@@ -929,28 +944,21 @@ function patchClockSharkRuntime(source) {
         stateRegex,
         match =>
           match +
-          "\n  phase2840RepairClockSharkOpenTruth(\n" +
+          "\n  phase2840V3RecoverFalseClosures(\n" +
           "    data,\n" +
           "    state\n" +
           "  );\n"
       );
-
-    output =
-      output.slice(
-        0,
-        reconciliationStart
-      ) +
-      reconciliation +
-      output.slice(
-        reconciliationClose + 1
-      );
-
-    changed = true;
   }
+
+  output =
+    output.slice(0, reconciliationStart) +
+    reconciliation +
+    output.slice(reconciliationClose + 1);
 
   return {
     source: output,
-    changed,
+    changed: output !== source,
     found: true
   };
 }
@@ -958,7 +966,7 @@ function patchClockSharkRuntime(source) {
 function patchPhase21Bootstrap() {
   if (!fs.existsSync(phase21Path)) {
     throw new Error(
-      "Phase 28.40 V2 cannot find phase21-clockshark-bootstrap.mjs."
+      "Phase 28.40 V3 cannot find phase21-clockshark-bootstrap.mjs."
     );
   }
 
@@ -967,14 +975,6 @@ function patchPhase21Bootstrap() {
       phase21Path,
       "utf8"
     );
-
-  if (
-    bootstrap.includes(
-      PREPATCH_MARKER
-    )
-  ) {
-    return;
-  }
 
   const helpersInfo =
     decodeHelpersLiteral(
@@ -988,27 +988,25 @@ function patchPhase21Bootstrap() {
 
   if (!patched.found) {
     throw new Error(
-      "Phase 28.40 V2 could not find ClockShark runtime inside Phase 21 helpers."
+      "Phase 28.40 V3 could not find ClockShark runtime inside Phase 21 helpers."
     );
   }
 
-  const encoded =
-    JSON.stringify(
-      patched.source
-    );
+  bootstrap =
+    bootstrap.slice(0, helpersInfo.start) +
+    JSON.stringify(patched.source) +
+    bootstrap.slice(helpersInfo.end + 1);
 
   bootstrap =
-    bootstrap.slice(
-      0,
-      helpersInfo.start
-    ) +
-    encoded +
-    bootstrap.slice(
-      helpersInfo.end + 1
+    bootstrap.replace(
+      /\n\/\/ JOSHUA_PHASE28_40_V2_CLOCKSHARK_PREBOOT_AUTHORITY\s*/g,
+      "\n"
     );
 
-  bootstrap +=
-    `\n// ${PREPATCH_MARKER}\n`;
+  if (!bootstrap.includes(PREPATCH_MARKER)) {
+    bootstrap +=
+      `\n// ${PREPATCH_MARKER}\n`;
+  }
 
   fs.writeFileSync(
     phase21Path,
@@ -1021,7 +1019,7 @@ function patchWarmServerIfNeeded() {
     return;
   }
 
-  let server =
+  const server =
     fs.readFileSync(
       serverPath,
       "utf8"
@@ -1030,14 +1028,6 @@ function patchWarmServerIfNeeded() {
   if (
     !server.includes(
       "function phase21ClockSharkFindOpenShift("
-    )
-  ) {
-    return;
-  }
-
-  if (
-    server.includes(
-      RUNTIME_MARKER
     )
   ) {
     return;
@@ -1056,18 +1046,14 @@ function patchWarmServerIfNeeded() {
   }
 }
 
-// PREBOOT: patch Phase 21 before the normal stable chain loads it.
+// Install the safe matcher and V2 recovery before the existing stable chain.
 patchPhase21Bootstrap();
-
-// WARM RESTART SAFETY: if server.js was already generated in this filesystem,
-// patch the generated source before the normal chain imports server.js.
 patchWarmServerIfNeeded();
 
-// Keep the known stable startup chain.
 await import(
   "./phase28-37-browser-open-task-authority.mjs"
 );
 
 console.log(
-  "Joshua Phase 28.40 V2 active: ClockShark employee-first clock-out authority installed before server startup."
+  "Joshua Phase 28.40 V3 active: inferred clock-outs disabled; real clock-out authority and one-time V2 recovery installed."
 );
