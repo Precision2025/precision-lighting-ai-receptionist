@@ -130,10 +130,21 @@ if (fs.existsSync(panelPath)) {
   const v=clean(value);
   if(!v)return "";
   const n=norm(v);
+
+  // Reject generated placeholders; they are not customer/location identity.
   if([
    "clockshark_job","unknown_customer","unknown_location","unassigned",
    "service_job","job","unknown"
   ].includes(n))return "";
+
+  // Older ServiceChannel recovery layers can synthesize labels such as
+  // "ServiceChannel #357563770".  That is a source/tracking placeholder,
+  // not the actual customer or location name.  For SC-origin jobs now
+  // operated in ClockShark, allow the real ClockShark job name
+  // (for example "O'Reilly #2398 - Dallas") to win instead.
+  if(/^service\s*channel\s*[#:_-]*\s*\d+$/i.test(v))return "";
+  if(/^sc\s*[#:_-]*\s*\d+$/i.test(v))return "";
+
   return v;
  }
 
@@ -398,4 +409,4 @@ if (fs.existsSync(panelPath)) {
   }
 }
 
-console.log("Joshua Phase 28.36 active: ServiceChannel-origin identity preserved for ClockShark-operated proposal jobs.");
+console.log("Joshua Phase 28.36 active: real SC-origin customer/location identity preserved; generated ServiceChannel tracking labels rejected.");
