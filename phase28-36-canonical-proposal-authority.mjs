@@ -10,7 +10,8 @@ import fs from "node:fs";
 
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
 const LEGACY_MARKER = "JOSHUA_PHASE28_36_CANONICAL_PROPOSAL_AUTHORITY";
-const NAV_MARKER = "JOSHUA_LEFT_NAVIGATION_AUTHORITY_V1";
+const NAV_MARKER = "JOSHUA_LEFT_NAVIGATION_AUTHORITY_V2";
+const IDENTITY_MARKER = "JOSHUA_QUEUE_IDENTITY_AUTHORITY_V1";
 
 await import("./phase28-35-canonical-brief-count.mjs");
 
@@ -25,6 +26,20 @@ function removeLegacyRuntime(html = "", marker = "") {
   return html.slice(0, scriptStart) + html.slice(scriptEnd + 9);
 }
 
+function patchCanonicalIdentityRuntime(html = "") {
+  if (html.includes(IDENTITY_MARKER)) return html;
+
+  const oldIdentity = `function officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v)return'';const n=officeNorm(v);if(['unknown','unknown_customer','unknown_location','clockshark_job','service_job','unassigned'].includes(n))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}`;
+  const newIdentity = `// ${IDENTITY_MARKER}\nfunction officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v)return'';const n=officeNorm(v);if(['customer','customer_name','location','location_name','job_name','unknown','unknown_customer','unknown_location','clockshark_job','service_job','servicechannel_job','placeholder','unassigned'].includes(n))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}\nfunction officeFirstIdentity(...values){for(const value of values){const v=officeIdentity(value);if(v)return v}return''}\nfunction officeFirstBrand(...values){for(const value of values){const v=officeBrand(value);if(v)return v}return''}`;
+
+  const oldDisplay = `function officeDisplayItem(item){if(!item||typeof item!=='object')return null;const id=officeJobId(item);if(!id)return null;let customer=officeBrand(item.customer||item.customerName||item.subscriber||item.subscriberName||item.client||item.clientName);let location=officeIdentity(item.locationName||item.location||item.serviceChannelLocationName||item.storeName||item.siteName||item.jobName||item.clockSharkJobName||item.address);if(!customer&&location)customer=officeBrand(location);if(!customer)customer='Customer';if(location===customer)location='';return {...item,trackingNumber:id,customer,locationName:location}}`;
+  const newDisplay = `function officeDisplayItem(item){if(!item||typeof item!=='object')return null;const id=officeJobId(item);if(!id)return null;let customer=officeFirstBrand(item.customer,item.customerName,item.subscriber,item.subscriberName,item.serviceChannelCustomerName,item.serviceChannelSubscriberName,item.client,item.clientName,item.jobSheetCustomer,item.sheetCustomer,item.jobName,item.jobSheetJobName,item.sheetJobName,item.locationName);let location=officeFirstIdentity(item.locationName,item.location,item.serviceChannelLocationName,item.storeName,item.siteName,item.jobName,item.jobSheetJobName,item.sheetJobName,item.clockSharkJobName,item.address);if(!customer&&location&&!/^\d/.test(location))customer=officeBrand(location);if(!customer)customer=officeIsServiceChannel(item)?'ServiceChannel job':'Customer';if(location===customer)location='';return {...item,trackingNumber:id,customer,customerName:customer,locationName:location}}`;
+
+  if (html.includes(oldIdentity)) html = html.replace(oldIdentity, newIdentity);
+  if (html.includes(oldDisplay)) html = html.replace(oldDisplay, newDisplay);
+  return html;
+}
+
 const runtime = `
 <script>
 // ${NAV_MARKER}
@@ -36,6 +51,67 @@ const runtime = `
    if(typeof cache!=="undefined"&&cache)return cache;
   }catch(_){}
   return window.cache||{};
+ }
+
+ function identityText(value){
+  const raw=String(value??"").trim().replace(/\s+/g," ");
+  if(!raw)return "";
+  const norm=raw.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  if([
+   "customer","customer_name","location","location_name","job_name",
+   "unknown","unknown_customer","unknown_location","clockshark_job",
+   "service_job","servicechannel_job","placeholder","unassigned"
+  ].includes(norm))return "";
+  if(/^service\s*channel\s*[#:_-]*\s*[0-9]+$/i.test(raw))return "";
+  return raw;
+ }
+
+ function brandText(value){
+  const raw=identityText(value);
+  if(!raw)return "";
+  const match=raw.match(/^(.+?)\s*#\s*[a-z0-9-]+(?:\s|$)/i);
+  return match?match[1].trim():raw;
+ }
+
+ function firstIdentity(...values){
+  for(const value of values){const clean=identityText(value);if(clean)return clean;}
+  return "";
+ }
+
+ function firstBrand(...values){
+  for(const value of values){const clean=brandText(value);if(clean)return clean;}
+  return "";
+ }
+
+ function normalizeIdentity(item){
+  if(!item||typeof item!=="object")return item;
+  const customer=firstBrand(
+   item.customer,item.customerName,item.subscriber,item.subscriberName,
+   item.serviceChannelCustomerName,item.serviceChannelSubscriberName,
+   item.client,item.clientName,item.jobSheetCustomer,item.sheetCustomer,
+   item.jobName,item.jobSheetJobName,item.sheetJobName,item.locationName
+  );
+  const location=firstIdentity(
+   item.locationName,item.location,item.serviceChannelLocationName,item.storeName,
+   item.siteName,item.jobName,item.jobSheetJobName,item.sheetJobName,
+   item.clockSharkJobName,item.address
+  );
+  if(!identityText(item.customer)&&customer)item.customer=customer;
+  if(!identityText(item.customerName)&&customer)item.customerName=customer;
+  if(!identityText(item.locationName)&&location)item.locationName=location;
+  return item;
+ }
+
+ function normalizeCachedIdentities(){
+  const data=getData();
+  const rows=Array.isArray(data.workOrders)
+   ? data.workOrders
+   : (data.workOrders&&typeof data.workOrders==="object"?Object.values(data.workOrders):[]);
+  rows.forEach(normalizeIdentity);
+  for(const bucket of Object.values(data.workflowQueues||{})){
+   if(Array.isArray(bucket))bucket.forEach(normalizeIdentity);
+  }
+  if(Array.isArray(data.returnVisits))data.returnVisits.forEach(normalizeIdentity);
  }
 
  function closeDialog(dialog){
@@ -79,6 +155,7 @@ const runtime = `
  }
 
  function queueRows(type){
+  normalizeCachedIdentities();
   const canonical=window.joshuaCanonicalWorkflowRows||window.joshuaAtomicWorkflowRows;
   if(typeof canonical==="function"){
    try{return canonical(type)||[];}catch(_){}
@@ -150,8 +227,9 @@ const runtime = `
    list.innerHTML=items.length
     ? items.map(item=>{
        const tracking=escapeHtml(item.trackingNumber||item.workOrderNumber||"");
-       const customer=escapeHtml(item.customer||item.customerName||item.locationName||"Customer");
-       const location=escapeHtml(item.locationName||item.address||"");
+       normalizeIdentity(item);
+       const customer=escapeHtml(firstBrand(item.customer,item.customerName,item.jobName,item.locationName)||"ServiceChannel job");
+       const location=escapeHtml(firstIdentity(item.locationName,item.jobName,item.address));
        const technician=escapeHtml(item.assignedTechnician||item.technician||"Unassigned");
        return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location&&location!==customer?' · '+location:'')+'</div></div><div><span class="badge">'+config.status+'</span><div class="small muted" style="margin-top:5px">'+age(item)+' hours in workflow</div></div><div><strong>'+technician+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="'+config.action+'" data-tracking="'+tracking+'">'+config.label+'</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>';
       }).join("")
@@ -253,6 +331,8 @@ const runtime = `
   button.click();
  },true);
 
+ normalizeCachedIdentities();
+
  // Clear a stale queue backdrop left by an older runtime during navigation upgrades.
  setTimeout(()=>{
   const dialog=byId("officeQueueDialog");
@@ -269,6 +349,7 @@ const runtime = `
 if (fs.existsSync(panelPath)) {
   let html = fs.readFileSync(panelPath, "utf8");
   html = removeLegacyRuntime(html, LEGACY_MARKER);
+  html = patchCanonicalIdentityRuntime(html);
 
   if (!html.includes(NAV_MARKER)) {
     html = html.replace("</body>", runtime + "\n</body>");
@@ -278,5 +359,5 @@ if (fs.existsSync(panelPath)) {
 }
 
 console.log(
-  "Joshua Phase 28.36 active: window-capture left navigation and modal-close authority installed."
+  "Joshua Phase 28.36 active: left navigation + canonical customer/location identity authority installed."
 );
