@@ -16,9 +16,9 @@ import { fileURLToPath } from "node:url";
  */
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V2";
-const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V2";
-const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V2";
+const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V1";
+const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V1";
+const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V1";
 const PHASE24_SERVER_MARKER =
   "JOSHUA_PHASE24_SERVICECHANNEL_AUTHORITY_RUNTIME_V1";
 const PHASE24_PANEL_MARKER =
@@ -327,33 +327,16 @@ function phase2841ServiceChannelTruth(
     ? Math.max(0, Math.round((Date.now() - actionAt) / 60000))
     : 0;
   const state = phase2841Lower(item.joshuaStatus || item.state);
-
-  /*
-   * Time onsite is an alert threshold, never proof of a checkout.
-   * A technician remains onsite until Joshua has an actual checkout event
-   * or an explicit current checkout-needed flag with no later checkout.
-   */
-  const hasConfirmedCheckout = Boolean(
-    checkOutAt &&
-    (!checkInAt || checkOutAt >= checkInAt)
-  );
   const checkoutNeeded = Boolean(
-    !hasConfirmedCheckout &&
-    (
-      item.serviceChannelCheckoutNeeded === true ||
-      state === "checkout_needed"
-    )
-  );
-  const onsiteWarning = Boolean(
-    actionAt &&
-    elapsedMinutes > maxMinutes
+    item.serviceChannelCheckoutNeeded === true ||
+    state === "checkout_needed" ||
+    (actionAt && elapsedMinutes > maxMinutes)
   );
 
   return {
     isServiceChannel: true,
     onsite: !checkoutNeeded,
     checkoutNeeded,
-    onsiteWarning,
     checkInAt: actionAt ? new Date(actionAt).toISOString() : "",
     elapsedMinutes,
     action
@@ -469,7 +452,6 @@ function phase2841ClockSharkActivity(item = {}) {
 function phase2841EmployeeIdentity(item = {}, fallback = "") {
   return phase2841Lower(
     item.employeeEmail ||
-    item.email ||
     item.employeeId ||
     item.employeeName ||
     item.name ||
@@ -494,69 +476,38 @@ function phase2841ShiftIsOpen(shift = {}) {
   ].includes(status);
 }
 
-function phase2841ClockSharkShiftMoment(shift = {}) {
-  return Math.max(
-    phase2841Time(shift.clockOutAt),
-    phase2841Time(shift.clockInAt),
-    phase2841Time(shift.updatedAt),
-    phase2841Time(shift.createdAt),
-    phase2841Time(shift.rawReceivedAt)
-  );
-}
-
 function phase2841ClockSharkCurrent(data = {}) {
   const shifts = Object.values(data.clockShark?.shifts || {})
     .filter(shift => shift && typeof shift === "object");
-
-  /*
-   * Canonical current state is the newest ClockShark segment per employee.
-   * This is intentionally different from "newest OPEN row": if a real
-   * clock-out arrived later than a stale open row, the clock-out wins.
-   * If a technician switches from Travel to a job, the newer job clock-in
-   * becomes current while the closed travel segment stays in history.
-   */
-  const latestByEmployee = new Map();
-  const identitiesWithShiftHistory = new Set();
+  const latestOpen = new Map();
 
   for (const shift of shifts) {
-    const identity = phase2841EmployeeIdentity(
-      shift,
-      shift.id || shift.shiftId
-    );
+    if (!phase2841ShiftIsOpen(shift)) continue;
+    const identity = phase2841EmployeeIdentity(shift, shift.id || shift.shiftId);
     if (!identity) continue;
-    identitiesWithShiftHistory.add(identity);
 
-    const current = latestByEmployee.get(identity);
-    const shiftMoment = phase2841ClockSharkShiftMoment(shift);
-    const currentMoment = current
-      ? phase2841ClockSharkShiftMoment(current)
+    const current = latestOpen.get(identity);
+    const shiftWhen =
+      phase2841Time(shift.clockInAt) ||
+      phase2841Time(shift.updatedAt) ||
+      phase2841Time(shift.createdAt);
+    const currentWhen = current
+      ? (
+          phase2841Time(current.clockInAt) ||
+          phase2841Time(current.updatedAt) ||
+          phase2841Time(current.createdAt)
+        )
       : -1;
 
-    if (
-      !current ||
-      shiftMoment > currentMoment ||
-      (
-        shiftMoment === currentMoment &&
-        phase2841ShiftIsOpen(shift) &&
-        !phase2841ShiftIsOpen(current)
-      )
-    ) {
-      latestByEmployee.set(identity, shift);
+    if (!current || shiftWhen >= currentWhen) {
+      latestOpen.set(identity, shift);
     }
   }
 
   const rows = [];
   const seen = new Set();
-  const latestShiftMomentByIdentity = new Map();
 
-  for (const [identity, shift] of latestByEmployee) {
-    latestShiftMomentByIdentity.set(
-      identity,
-      phase2841ClockSharkShiftMoment(shift)
-    );
-
-    if (!phase2841ShiftIsOpen(shift)) continue;
-
+  for (const [identity, shift] of latestOpen) {
     seen.add(identity);
     const activityType = phase2841ClockSharkActivity(shift);
     const clockInAt = phase2841Text(shift.clockInAt);
@@ -594,33 +545,14 @@ function phase2841ClockSharkCurrent(data = {}) {
     });
   }
 
-  /*
-   * Technician state is only a fallback when it is newer than the employee's
-   * shift history. This prevents a stale cached "traveling" flag from
-   * resurrecting after a successful ClockShark clock-out.
-   */
   for (const [key, technician] of Object.entries(data.technicians || {})) {
     if (!technician || typeof technician !== "object") continue;
     if (technician.clockSharkClockedIn !== true) continue;
 
     const identity = phase2841EmployeeIdentity(technician, key);
     if (!identity || seen.has(identity)) continue;
-
-    const technicianMoment = Math.max(
-      phase2841Time(technician.updatedAt),
-      phase2841Time(technician.clockSharkActivityStartedAt),
-      phase2841Time(technician.activityStartedAt)
-    );
-    const latestShiftMoment = latestShiftMomentByIdentity.get(identity) || 0;
-
-    if (
-      identitiesWithShiftHistory.has(identity) &&
-      technicianMoment <= latestShiftMoment
-    ) {
-      continue;
-    }
-
     seen.add(identity);
+
     const activityType = phase2841ClockSharkActivity(technician);
     const clockInAt = phase2841Text(
       technician.clockSharkActivityStartedAt ||
@@ -686,7 +618,7 @@ function phase2841ClockSharkCurrent(data = {}) {
       lastSuccessAgeMinutes,
       lastPullResultCount: Number(sync.lastPullResultCount || 0),
       sourceShiftCount: shifts.length,
-      openShiftCount: rows.filter(item => item.source === "shift").length,
+      openShiftCount: latestOpen.size,
       mode: snapshotReliable ? "live_snapshot" : "event_only"
     }
   };
@@ -721,42 +653,36 @@ function phase2841BuildTimePayrollAudit(
   const shifts = Object.values(data.clockShark?.shifts || {})
     .filter(shift => shift && typeof shift === "object");
 
-  // Closed shifts remain historical payroll evidence. An open shift is current
-  // only when it is the newest ClockShark segment for that employee; a later
-  // clock-out must suppress any older stale open segment.
-  const latestByEmployee = new Map();
+  // Only the newest open shift per technician is current. Closed shifts remain
+  // historical payroll evidence.
+  const latestOpenByEmployee = new Map();
   const closed = [];
 
   for (const shift of shifts) {
-    const identity = phase2841EmployeeIdentity(shift, shift.id || shift.shiftId);
-    if (!identity) continue;
-
-    const current = latestByEmployee.get(identity);
-    const when = phase2841ClockSharkShiftMoment(shift);
-    const currentWhen = current
-      ? phase2841ClockSharkShiftMoment(current)
-      : -1;
-
-    if (
-      !current ||
-      when > currentWhen ||
-      (
-        when === currentWhen &&
-        phase2841ShiftIsOpen(shift) &&
-        !phase2841ShiftIsOpen(current)
-      )
-    ) {
-      latestByEmployee.set(identity, shift);
-    }
-
-    if (!phase2841ShiftIsOpen(shift)) {
+    if (phase2841ShiftIsOpen(shift)) {
+      const identity = phase2841EmployeeIdentity(shift, shift.id || shift.shiftId);
+      if (!identity) continue;
+      const current = latestOpenByEmployee.get(identity);
+      const when =
+        phase2841Time(shift.clockInAt) ||
+        phase2841Time(shift.updatedAt) ||
+        phase2841Time(shift.createdAt);
+      const currentWhen = current
+        ? (
+            phase2841Time(current.clockInAt) ||
+            phase2841Time(current.updatedAt) ||
+            phase2841Time(current.createdAt)
+          )
+        : -1;
+      if (!current || when >= currentWhen) {
+        latestOpenByEmployee.set(identity, shift);
+      }
+    } else {
       closed.push(shift);
     }
   }
 
-  const currentOpen = [...latestByEmployee.values()]
-    .filter(phase2841ShiftIsOpen);
-  const selected = [...closed, ...currentOpen];
+  const selected = [...closed, ...latestOpenByEmployee.values()];
   const rows = [];
 
   for (const shift of selected) {
@@ -1199,30 +1125,13 @@ function phase2841RepairSourceTruthData(data = {}, now = new Date().toISOString(
   const stale = data.workOrders["358376094"];
   if (stale) {
     const state = phase2841Lower(stale.joshuaStatus || stale.state);
-    const hasCheckout = Boolean(
-      stale.checkOutAt ||
-      stale.serviceChannelCheckOutEventAt
-    );
     if (
-      hasCheckout ||
+      stale.checkOutAt ||
+      stale.serviceChannelCheckOutEventAt ||
       !["onsite", "checkout_needed"].includes(state)
     ) {
-      const statusText = [
-        stale.serviceChannelPrimaryStatus,
-        stale.serviceChannelExtendedStatus
-      ].map(phase2841Lower).join(" ");
-      let repairedState = state;
-      if (hasCheckout && ["onsite", "checkout_needed"].includes(state)) {
-        if (/proposal|quote/.test(statusText)) repairedState = "pending_proposal";
-        else if (/parts/.test(statusText)) repairedState = "parts_needed";
-        else if (/return|incomplete|reschedule/.test(statusText)) repairedState = "need_to_schedule";
-        else if (/completed/.test(statusText)) repairedState = "pending_confirmation";
-        else repairedState = "open";
-      }
       const repaired = {
         ...stale,
-        state: repairedState,
-        joshuaStatus: repairedState,
         serviceChannelOnsiteConfirmed: false,
         serviceChannelCheckoutNeeded: false,
         checkoutNeededSince: "",
