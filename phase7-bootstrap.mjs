@@ -23,6 +23,90 @@ function workOrderAgeHours(item = {}) {
   return hoursSince(item.lastSheetSyncAt || item.updatedAt || item.createdAt);
 }
 
+// JOSHUA_CANONICAL_WORKFLOW_ID_V1
+// Queue membership requires BOTH the current canonical workflow state and a
+// canonical job identifier. Historical labels, store numbers and phone numbers
+// can remain in history but may never enter an operational Office queue.
+function phase7ServiceChannelRecord(item = {}) {
+  const source = [
+    item.source, item.sourceSystem, item.provider,
+    item.integrationSource, item.intakeSource
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  const identity = [
+    item.customer, item.customerName, item.locationName, item.location,
+    item.jobName, item.clockSharkJobName
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  return Boolean(
+    item.isServiceChannel === true ||
+    item.serviceChannelSourceOfTruth === true ||
+    item.serviceChannelTrackingNumber ||
+    item.scTrackingNumber ||
+    source.includes("servicechannel") ||
+    /o['’]?reilly/.test(identity)
+  );
+}
+
+function phase7PhoneLike(value = "") {
+  const raw = String(value || "").trim();
+  const digits = raw.replace(/[^0-9]/g, "");
+  const local = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits.length === 10
+      ? digits
+      : "";
+  return Boolean(local && /^[2-9][0-9]{2}[2-9][0-9]{6}$/.test(local));
+}
+
+function phase7ExactServiceChannelTracking(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw || phase7PhoneLike(raw)) return "";
+  const match = raw.match(/^#?[ ]*([0-9]{7,14})[ ]*$/);
+  return match && !phase7PhoneLike(match[1]) ? match[1] : "";
+}
+
+function phase7InternalJobId(value = "") {
+  let raw = String(value || "").trim().replace(/^#+[ ]*/, "");
+  if (!raw || phase7PhoneLike(raw)) return "";
+  if (raw.includes("#")) {
+    const tail = String(raw.split("#").pop() || "").trim();
+    if (/^[a-z0-9][a-z0-9._-]{2,}$/i.test(tail) && !phase7PhoneLike(tail)) {
+      return tail;
+    }
+  }
+  return /^[a-z0-9][a-z0-9._-]{2,}$/i.test(raw) ? raw : "";
+}
+
+function phase7CanonicalWorkflowId(item = {}) {
+  if (phase7ServiceChannelRecord(item)) {
+    for (const value of [
+      item.serviceChannelTrackingNumber,
+      item.scTrackingNumber,
+      item.trackingNumber
+    ]) {
+      const id = phase7ExactServiceChannelTracking(value);
+      if (id) return id;
+    }
+    return "";
+  }
+
+  for (const value of [
+    item.jobNumber, item.clockSharkJobNumber, item.workOrderNumber,
+    item.trackingNumber, item.nestTrackingNumber
+  ]) {
+    const id = phase7InternalJobId(value);
+    if (id) return id;
+  }
+  return "";
+}
+
+function phase7QueueEligible(item = {}, state = "") {
+  return Boolean(
+    item &&
+    item.joshuaStatus === state &&
+    phase7CanonicalWorkflowId(item)
+  );
+}
+
 function actionableReason(item = {}, settings = {}) {
   if (item.state === "onsite" && item.checkInAt) {
     const minutes = (Date.now() - new Date(item.checkInAt).getTime()) / 60000;
@@ -98,10 +182,10 @@ function buildWorkOrderTimeline(item = {}, events = []) {
     ),`;
 
   const returnReplacement = `    workflowQueues: {
-      awaitingAuthorization: workOrders.filter(item => item.joshuaStatus === "awaiting_authorization"),
-      pendingProposals: workOrders.filter(item => item.joshuaStatus === "pending_proposal"),
-      partsNeeded: workOrders.filter(item => item.joshuaStatus === "parts_needed"),
-      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill")
+      awaitingAuthorization: workOrders.filter(item => phase7QueueEligible(item, "awaiting_authorization")),
+      pendingProposals: workOrders.filter(item => phase7QueueEligible(item, "pending_proposal")),
+      partsNeeded: workOrders.filter(item => phase7QueueEligible(item, "parts_needed")),
+      readyToBill: workOrders.filter(item => phase7QueueEligible(item, "ready_to_bill"))
     },
     actionableItems: workOrders
       .map(item => ({

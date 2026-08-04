@@ -596,6 +596,34 @@ function firstValue(...values) {
   return "";
 }
 
+// JOSHUA_CANONICAL_SC_TRACKING_V2
+// A ServiceChannel tracking number is an external provider identity, not a
+// store number, PO number, phone number, customer label, or ClockShark job.
+// Reject plausible U.S./NANP phone numbers even when they arrive as bare digits.
+function canonicalPhoneLikeIdentity(value = "") {
+  const raw = String(value ?? "").trim();
+  const digits = raw.replace(/\D/g, "");
+  const local = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits.length === 10
+      ? digits
+      : "";
+  return Boolean(local && /^[2-9]\d{2}[2-9]\d{6}$/.test(local));
+}
+
+function canonicalServiceChannelTracking(...values) {
+  for (const value of values) {
+    const raw = String(value ?? "").trim();
+    if (!raw || canonicalPhoneLikeIdentity(raw)) continue;
+
+    const match = raw.match(
+      /^(?:tracking(?:\s*(?:number|no\.?|#))?\s*[:#-]?\s*)?#?\s*(\d{7,14})\s*$/i
+    );
+    if (match && !canonicalPhoneLikeIdentity(match[1])) return match[1];
+  }
+  return "";
+}
+
 function pruneServiceChannelEmailNotifications() {
   const cutoff = Date.now() - SERVICECHANNEL_EMAIL_DEDUPE_MS;
   for (const [key, timestamp] of recentServiceChannelEmailNotifications.entries()) {
@@ -615,7 +643,12 @@ function validateServiceChannelEmailWebhook(request) {
 }
 
 function buildServiceChannelEmailNotification(payload = {}) {
-  const tracking = firstValue(payload.tracking_number, payload.trackingNumber, payload.job_number, payload.jobNumber, payload.po_number, payload.poNumber, "Unknown");
+  const tracking = canonicalServiceChannelTracking(
+    payload.tracking_number,
+    payload.trackingNumber,
+    payload.servicechannel_tracking_number,
+    payload.serviceChannelTrackingNumber
+  );
   const customer = firstValue(payload.customer, payload.job_name, payload.jobName, "Unknown customer");
   const location = firstValue(payload.location_name, payload.locationName, payload.address, payload.job_address, payload.jobAddress, "Unknown location");
   const scheduledDate = firstValue(payload.scheduled_date, payload.scheduledDate);
@@ -682,12 +715,12 @@ function parseServiceChannelSms(body = "") {
   const text = String(body).trim().replace(/\s+/g, " ");
   if (/^(help|commands|menu)$/i.test(text)) return { type: "help" };
 
-  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci|in)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})$/i);
+  const checkIn = text.match(/^(?:joshua\s+)?(?:check\s*in|checkin|ci|in)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{7,14})$/i);
   if (checkIn) {
     return { type: "checkin", trackingNumber: checkIn[1] };
   }
 
-  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co|out)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{4,})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
+  const checkOut = text.match(/^(?:joshua\s+)?(?:check\s*out|checkout|co|out)\s+(?:o['’]?reilly\s+)?(?:tracking\s*(?:number|#)?\s*)?([0-9]{7,14})\s+(.+?)\s+([1-9][0-9]*)\s*(?:techs?|technicians?)?$/i);
   if (checkOut) {
     const statusText = checkOut[2].toLowerCase().trim();
     const status = SERVICECHANNEL_STATUS_MAP[statusText];
@@ -1581,6 +1614,40 @@ app.post("/servicechannel-email", async (request, reply) => {
     const payload = request.body || {};
     const notification = buildServiceChannelEmailNotification(payload);
     const emailId = firstValue(payload.email_id, payload.emailId, payload.message_id, payload.messageId);
+
+    // JOSHUA_CANONICAL_SC_TRACKING_V1
+    // Refuse to create a work order when the provider tracking number is absent
+    // or malformed.  Preserve the intake as an audit event so the office can
+    // review the parser without contaminating Parts / Proposal / Billing.
+    if (!notification.tracking) {
+      addControlEvent({
+        type: "servicechannel_email_needs_tracking_review",
+        level: "warning",
+        requestedBy: notification.requestedBy || "ServiceChannel Email",
+        customer: notification.customer || "",
+        locationName: notification.location || "",
+        rawTrackingNumber: firstValue(payload.tracking_number, payload.trackingNumber),
+        rawJobNumber: firstValue(payload.job_number, payload.jobNumber),
+        rawPoNumber: firstValue(payload.po_number, payload.poNumber),
+        emailId
+      });
+      app.log.warn(
+        {
+          emailId,
+          rawTrackingNumber: firstValue(payload.tracking_number, payload.trackingNumber),
+          rawJobNumber: firstValue(payload.job_number, payload.jobNumber),
+          rawPoNumber: firstValue(payload.po_number, payload.poNumber)
+        },
+        "ServiceChannel email ignored because no canonical tracking number was supplied"
+      );
+      return reply.send({
+        ok: true,
+        ignored: true,
+        needs_review: true,
+        reason: "No valid ServiceChannel tracking number was supplied."
+      });
+    }
+
     const dedupeKey = emailId || notification.tracking;
 
     pruneServiceChannelEmailNotifications();
@@ -1613,7 +1680,12 @@ app.post("/servicechannel-email", async (request, reply) => {
       nte: Number.isFinite(parsedNte) && parsedNte > 0 ? parsedNte : (existing.nte || ""),
       requester: notification.requestedBy || existing.requester || "",
       state: existing.state || "new",
-      source: "ServiceChannel Email"
+      source: "ServiceChannel",
+      sourceSystem: "servicechannel",
+      isServiceChannel: true,
+      serviceChannelSourceOfTruth: true,
+      serviceChannelTrackingNumber: notification.tracking,
+      scTrackingNumber: notification.tracking
     });
     addControlEvent({
       type: "servicechannel_work_order_received",
@@ -2071,7 +2143,7 @@ app.post("/api/control/ivr", async (request, reply) => {
     body.requestedByPhone || process.env.OWNER_SMS_NUMBER
   );
 
-  if (!["checkin", "checkout"].includes(action) || trackingNumber.length < 4) {
+  if (!["checkin", "checkout"].includes(action) || !/^\d{7,14}$/.test(trackingNumber)) {
     return reply.code(400).send({
       ok: false,
       error: "Enter a valid action and tracking number."

@@ -8,14 +8,14 @@ import path from "node:path";
  *
  * This bootstrap:
  * 1) keeps Joshua on Render's persistent /var/data disk;
- * 2) preserves the final IVR cleanup for #356413923;
+ * 2) preserves historical IVR data without one-off status overrides;
  * 3) recovers the two confirmed ServiceChannel completions that were visible
  *    before the first persistent-disk deploy but whose transient event history
  *    was lost with /tmp;
  * 4) restores their known onsite durations WITHOUT inventing check-in/out times;
  * 5) conservatively closes exact duplicate open tasks and stale check-in/out
  *    tasks for those two already-completed ServiceChannel work orders;
- * 6) makes authoritative Jobs status BILL for #356413923 stay ready_to_bill;
+ * 6) keeps current canonical workflow state authoritative for every job;
  * 7) writes startup snapshots to /var/data/backups for rollback.
  */
 
@@ -243,6 +243,7 @@ function phase2821PatchPartsQueueView() {
 
     let html = fs.readFileSync(panelPath, "utf8");
     let changed = false;
+    if (html.includes("JOSHUA_CANONICAL_OFFICE_QUEUE_V1")) continue;
 
     if (
       !html.includes(
@@ -270,8 +271,8 @@ function phase2821PatchPartsQueueView() {
    x.extendedStatus,
    x.statusDescription
   ].map(v=>String(v||"").toLowerCase()).join(" ");
-  return state==="parts_needed"||
-   /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc);
+  // Current work-order workflow is authoritative; stale provider text cannot resurrect Parts.
+  return state==="parts_needed";
  });
 }`;
 
@@ -338,6 +339,9 @@ function phase2822PatchPhase7WorkflowQueueAuthority() {
 
   let source = fs.readFileSync(phase7Path, "utf8");
 
+  // The consolidated Phase 7 queue helper supersedes the old Parts-only patch.
+  if (source.includes("JOSHUA_CANONICAL_WORKFLOW_ID_V1")) return;
+
   if (
     source.includes(
       "JOSHUA_PHASE28_22_PARTS_WORKFLOW_QUEUE_AUTHORITY"
@@ -350,27 +354,8 @@ function phase2822PatchPhase7WorkflowQueueAuthority() {
     `      partsNeeded: workOrders.filter(item => item.joshuaStatus === "parts_needed"),`;
 
   const newLine = `      // JOSHUA_PHASE28_22_PARTS_WORKFLOW_QUEUE_AUTHORITY
-      partsNeeded: workOrders.filter(item => {
-        const state = String(item.joshuaStatus || item.state || "")
-          .trim()
-          .toLowerCase()
-          .replace(/[\\\\s-]+/g, "_");
-        const serviceChannelStatus = [
-          item.serviceChannelPrimaryStatus,
-          item.serviceChannelExtendedStatus,
-          item.primaryStatus,
-          item.extendedStatus,
-          item.statusDescription
-        ]
-          .map(value => String(value || "").toLowerCase())
-          .join(" ");
-        return (
-          state === "parts_needed" ||
-          /parts?\\\\s*(?:on\\\\s*order|ordered|needed|required)|waiting\\\\s*(?:on|for)\\\\s*parts?/.test(
-            serviceChannelStatus
-          )
-        );
-      }),`;
+      // Current Joshua workflow state is the only queue authority.
+      partsNeeded: workOrders.filter(item => item.joshuaStatus === "parts_needed"),`;
 
   if (!source.includes(oldLine)) {
     console.warn(
@@ -404,6 +389,10 @@ function phase2823PatchPhase10PartsQueueGenerator() {
   let source = fs.readFileSync(phase10Path, "utf8");
   let changed = false;
 
+  // Consolidated Phase 10 owns all Office queues; do not reinstall the old
+  // Parts-only generator on top of it.
+  if (source.includes("JOSHUA_CANONICAL_OFFICE_QUEUE_V1")) return;
+
   if (
     source.includes(
       "JOSHUA_PHASE28_23_PARTS_QUEUE_GENERATOR_AUTHORITY"
@@ -433,8 +422,8 @@ function phase2823PatchPhase10PartsQueueGenerator() {
    x.extendedStatus,
    x.statusDescription
   ].map(v=>String(v||"").toLowerCase()).join(" ");
-  return state==="parts_needed"||
-   /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc);
+  // Current work-order workflow is authoritative; stale provider text cannot resurrect Parts.
+  return state==="parts_needed";
  });
 }`;
 
@@ -495,6 +484,8 @@ function phase2824PatchGeneratedOfficeSuitePanel() {
   }
 
   let panel = fs.readFileSync(panelPath, "utf8");
+
+  if (panel.includes("JOSHUA_CANONICAL_OFFICE_QUEUE_V1")) return;
   let changed = false;
 
   // Phase 10 has now generated the Office Suite. Patch the ACTUAL generated
@@ -518,8 +509,8 @@ function phase2824PatchGeneratedOfficeSuitePanel() {
    x.extendedStatus,
    x.statusDescription
   ].map(v=>String(v||"").toLowerCase()).join(" ");
-  return state==="parts_needed"||
-   /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc);
+  // Current work-order workflow is authoritative; stale provider text cannot resurrect Parts.
+  return state==="parts_needed";
  });
 }`;
 
@@ -611,208 +602,58 @@ function phase2825PatchAllGeneratedOfficeQueues() {
 
   let panel = fs.readFileSync(panelPath, "utf8");
 
+  if (panel.includes("JOSHUA_CANONICAL_OFFICE_QUEUE_V1")) return;
+
   if (
     panel.includes(
-      "JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY"
+      "JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY_V2"
     )
   ) {
     return;
   }
 
   /*
-   * The sidebar badges and the main dashboard are now correct, but the
-   * Office Suite modal can still read an empty/stale workflowQueues snapshot.
-   * Install a late, runtime-level authority for ALL four Office queues.
-   *
-   * This deliberately derives the modal rows from canonical workOrders
-   * (plus any existing workflow queue rows) so Proposal, Parts, Billing, and
-   * Authorization cannot display "0 work orders" while their dashboard count
-   * is non-zero.
+   * V2: workflow queues are views of CURRENT joshuaStatus only.
+   * Historical workflowQueues, sheetStatus, invoiceStatus, old tasks and
+   * ServiceChannel extended-status text may never resurrect a cleared job.
    */
   const script = `
 <script>
-// JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY
+// JOSHUA_PHASE28_25_CANONICAL_QUEUE_MODAL_AUTHORITY_V2
 (function(){
-  function joshuaQueueData(){
-    try{
-      if(typeof cache!=="undefined" && cache) return cache;
-    }catch(_){}
-    return window.cache||{};
+  const norm=value=>String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  function data(){try{if(typeof cache!=="undefined"&&cache)return cache}catch(_){}return window.cache||{}}
+  function orders(){const src=data().workOrders;return Array.isArray(src)?src:(src&&typeof src==="object"?Object.values(src):[])}
+  function state(item){const base=norm(item?.joshuaStatus||item?.state||"");if(!isSC(item))return base;const sc=[item?.serviceChannelPrimaryStatus,item?.serviceChannelExtendedStatus].map(v=>String(v||"").toLowerCase()).join(" ");if(/pending[ ]+confirmation/.test(sc))return "pending_confirmation";if(/waiting[ ]+for[ ]+approval/.test(sc))return "awaiting_authorization";if(/parts?[ ]*(?:on[ ]*order|needed|required)|waiting[ ]*(?:on|for)[ ]*parts?/.test(sc))return "parts_needed";if(/waiting[ ]+for[ ]+quote|proposal[ ]+(?:required|needed)/.test(sc))return "pending_proposal";if(/return[ ]*(?:trip|visit).*needed|need.*return[ ]*(?:trip|visit)/.test(sc))return "need_to_schedule";if(/on[ ]*site|onsite/.test(sc))return "onsite";if(/invoiced|closed|cancelled|canceled/.test(sc))return "closed";if(/completed(?:[ ]*[/][ ]*|[ ]+)confirmed/.test(sc))return "ready_to_bill";if(/proposal[ ]+approved|quote[ ]+approved|authorization[ ]+approved/.test(sc))return "open";return base}
+  function isSC(item){const source=[item?.source,item?.sourceSystem,item?.provider,item?.integrationSource,item?.intakeSource].map(v=>String(v||"").toLowerCase()).join(" ");const identity=[item?.customer,item?.customerName,item?.locationName,item?.location,item?.jobName,item?.clockSharkJobName].map(v=>String(v||"").toLowerCase()).join(" ");return item?.isServiceChannel===true||item?.serviceChannelSourceOfTruth===true||Boolean(item?.serviceChannelTrackingNumber||item?.scTrackingNumber)||source.includes("servicechannel")||/o['’]?reilly/.test(identity)}
+  function scId(value){const raw=String(value||"").trim();const m=raw.match(/^#?[ ]*([0-9]{7,14})[ ]*$/);return m?m[1]:""}
+  function phoneLike(value){const raw=String(value||"").trim(),digits=raw.replace(/[^0-9]/g,"");return (digits.length===10||digits.length===11)&&/[(). -]/.test(raw)}
+  function internalId(value){let raw=String(value||"").trim().replace(/^#+[ ]*/,"");if(!raw||phoneLike(raw))return"";if(raw.includes("#")){const tail=raw.split("#").pop().trim();if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(tail)&&!phoneLike(tail))return tail}if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(raw))return raw;return""}
+  function jobId(item){if(isSC(item)){for(const v of [item?.serviceChannelTrackingNumber,item?.scTrackingNumber,item?.trackingNumber]){const id=scId(v);if(id)return id}return""}for(const v of [item?.jobNumber,item?.clockSharkJobNumber,item?.workOrderNumber,item?.trackingNumber,item?.nestTrackingNumber]){const id=internalId(v);if(id)return id}return""}
+  function identity(value){const v=String(value||"").trim().replace(/\\s+/g," ");if(!v)return"";if(["unknown","unknown_customer","unknown_location","clockshark_job","service_job","unassigned"].includes(norm(v)))return"";if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return"";return v}
+  function brand(value){const v=identity(value);if(!v)return"";const m=v.match(/^(.+?)[ ]*#[ ]*[a-z0-9-]+(?:[ ]|$)/i);return m?m[1].trim():v}
+  function display(item){const id=jobId(item);if(!id)return null;let customer=brand(item.customer||item.customerName||item.subscriber||item.subscriberName||item.client||item.clientName);let location=identity(item.locationName||item.location||item.serviceChannelLocationName||item.storeName||item.siteName||item.jobName||item.clockSharkJobName||item.address);if(!customer&&location)customer=brand(location);if(!customer)customer="Customer";if(location===customer)location="";return {...item,trackingNumber:id,customer,locationName:location}}
+  const wanted={authorization:"awaiting_authorization",proposal:"pending_proposal",parts:"parts_needed",billing:"ready_to_bill"};
+  function rows(type){const target=wanted[type];if(!target)return[];return orders().filter(item=>state(item)===target).map(display).filter(Boolean)}
+
+  window.officeQueueItems=rows;
+  try{officeQueueItems=rows}catch(_){}
+
+  function sync(){
+    const q={authorization:rows("authorization"),proposal:rows("proposal"),parts:rows("parts"),billing:rows("billing")};
+    try{const d=data();d.workflowQueues=d.workflowQueues||{};d.workflowQueues.awaitingAuthorization=q.authorization;d.workflowQueues.pendingProposals=q.proposal;d.workflowQueues.partsNeeded=q.parts;d.workflowQueues.readyToBill=q.billing}catch(_){}
+    const pairs=[["navProposalCount",q.proposal.length],["navPartsCount",q.parts.length],["navBillingCount",q.billing.length],["pendingProposal",q.proposal.length],["partsNeeded",q.parts.length],["readyToBill",q.billing.length],["awaitingAuthorization",q.authorization.length]];
+    for(const [id,value] of pairs){const el=document.getElementById(id);if(el&&el.textContent!==String(value))el.textContent=String(value)}
   }
 
-  function joshuaQueueWorkOrders(data){
-    const source=data&&data.workOrders;
-    if(Array.isArray(source)) return source;
-    if(source&&typeof source==="object") return Object.values(source);
-    return [];
-  }
-
-  function joshuaNorm(value){
-    return String(value||"")
-      .trim()
-      .toLowerCase()
-      .replace(/[\\\\s-]+/g,"_");
-  }
-
-  function joshuaQueueState(item){
-    return joshuaNorm(
-      item.joshuaStatus||
-      item.state||
-      item.sheetStatus||
-      item.status
-    );
-  }
-
-  function joshuaSCStatus(item){
-    return [
-      item.serviceChannelPrimaryStatus,
-      item.serviceChannelExtendedStatus,
-      item.primaryStatus,
-      item.extendedStatus,
-      item.statusDescription
-    ].map(v=>String(v||"").toLowerCase()).join(" ");
-  }
-
-  function joshuaCanonicalQueueMatch(type,item){
-    const state=joshuaQueueState(item);
-    const sc=joshuaSCStatus(item);
-    const invoice=joshuaNorm(item.invoiceStatus);
-    const sheet=joshuaNorm(item.sheetStatus);
-
-    if(type==="authorization"){
-      return state==="awaiting_authorization";
-    }
-
-    if(type==="proposal"){
-      return (
-        state==="pending_proposal" ||
-        state==="proposal_needed" ||
-        /proposal\\s*(?:required|needed|pending)/.test(sc)
-      );
-    }
-
-    if(type==="parts"){
-      return (
-        state==="parts_needed" ||
-        /parts?\\s*(?:on\\s*order|ordered|needed|required)|waiting\\s*(?:on|for)\\s*parts?/.test(sc)
-      );
-    }
-
-    if(type==="billing"){
-      // JOSHUA_PHASE28_26_STRICT_BILLING_AUTHORITY
-      // Billing Queue must contain ONLY the canonical ready_to_bill workflow.
-      // Historical/imported rows can carry invoiceStatus=ready_for_review or
-      // sheetStatus=BILL without actually being an active Joshua billing item.
-      return state==="ready_to_bill";
-    }
-
-    return false;
-  }
-
-  function joshuaExistingQueueItems(type,data){
-    const cfg=(window.officeQueueConfig||{
-      authorization:{key:"awaitingAuthorization"},
-      proposal:{key:"pendingProposals"},
-      parts:{key:"partsNeeded"},
-      billing:{key:"readyToBill"}
-    })[type];
-
-    if(!cfg) return [];
-    const rows=(((data||{}).workflowQueues||{})[cfg.key])||[];
-    return Array.isArray(rows)?rows:[];
-  }
-
-  function joshuaCanonicalOfficeQueueItems(type){
-    const data=joshuaQueueData();
-    const all=[
-      ...joshuaExistingQueueItems(type,data),
-      ...joshuaQueueWorkOrders(data).filter(item=>
-        joshuaCanonicalQueueMatch(type,item||{})
-      )
-    ];
-
-    const byTracking=new Map();
-    for(const item of all){
-      if(!item||typeof item!=="object") continue;
-      const key=String(
-        item.trackingNumber||
-        item.workOrderNumber||
-        item.serviceChannelTrackingNumber||
-        ""
-      ).trim();
-      if(!key) continue;
-      if(!byTracking.has(key)) byTracking.set(key,item);
-      else byTracking.set(key,{...byTracking.get(key),...item});
-    }
-    return [...byTracking.values()];
-  }
-
-  // Replace the global function used by the existing Office Suite renderer.
-  window.officeQueueItems=joshuaCanonicalOfficeQueueItems;
-
-  // Make sure the global lexical call resolves to the same late authority.
-  try{
-    officeQueueItems=joshuaCanonicalOfficeQueueItems;
-  }catch(_){}
-
-  function rerenderOpenQueue(){
-    try{
-      if(
-        document.getElementById("officeQueueDialog")?.open &&
-        typeof window.officeRenderQueue==="function"
-      ){
-        window.officeRenderQueue();
-      }else if(
-        document.getElementById("officeQueueDialog")?.open &&
-        typeof officeRenderQueue==="function"
-      ){
-        officeRenderQueue();
-      }
-    }catch(error){
-      console.warn("Joshua queue rerender warning",error);
-    }
-  }
-
-  // Original click handlers open the dialog first; rerender immediately after.
-  document.addEventListener("click",event=>{
-    const target=event.target.closest(
-      "[data-office-queue],[data-queue]"
-    );
-    if(!target)return;
-    setTimeout(rerenderOpenQueue,40);
-    setTimeout(rerenderOpenQueue,180);
-  },true);
-
-  // Search/sort should always render from the canonical list too.
-  document.addEventListener("input",event=>{
-    if(event.target?.id==="officeQueueSearch"){
-      setTimeout(rerenderOpenQueue,0);
-    }
-  },true);
-
-  document.addEventListener("change",event=>{
-    if(event.target?.id==="officeQueueSort"){
-      setTimeout(rerenderOpenQueue,0);
-    }
-  },true);
-
-  // Keep the four sidebar counts tied to the same queue authority.
-  function syncQueueBadges(){
-    const pairs=[
-      ["navProposalCount","proposal"],
-      ["navBillingCount","billing"],
-      ["navPartsCount","parts"]
-    ];
-    for(const [id,type] of pairs){
-      const el=document.getElementById(id);
-      if(el) el.textContent=String(
-        joshuaCanonicalOfficeQueueItems(type).length
-      );
-    }
-  }
-
-  setTimeout(syncQueueBadges,250);
-  setInterval(syncQueueBadges,1000);
+  function rerender(){try{sync();const dialog=document.getElementById("officeQueueDialog");if(dialog?.open&&typeof window.officeRenderQueue==="function")window.officeRenderQueue();else if(dialog?.open&&typeof officeRenderQueue==="function")officeRenderQueue()}catch(error){console.warn("Joshua canonical queue render warning",error)}}
+  document.addEventListener("click",event=>{if(event.target.closest?.("[data-office-queue],[data-queue]")){setTimeout(rerender,0);setTimeout(rerender,120)}},true);
+  document.addEventListener("input",event=>{if(event.target?.id==="officeQueueSearch")setTimeout(rerender,0)},true);
+  document.addEventListener("change",event=>{if(event.target?.id==="officeQueueSort")setTimeout(rerender,0)},true);
+  sync();setTimeout(sync,250);setInterval(sync,1000);
+  window.joshuaCanonicalWorkflowRows=rows;
+  window.joshuaCanonicalJobId=jobId;
+  window.joshuaCanonicalDisplayItem=display;
 })();
 </script>
 `;
@@ -825,7 +666,7 @@ function phase2825PatchAllGeneratedOfficeQueues() {
   fs.writeFileSync(panelPath, panel);
 
   console.log(
-    "Joshua Phase 28.25 installed canonical modal authority for Proposal, Parts, Billing, and Authorization queues."
+    "Joshua Phase 28.25 V2 installed current-status-only queue authority and canonical job display formatting."
   );
 }
 
@@ -1062,10 +903,11 @@ function backupCurrentData() {
 }
 
 function normalizedState(workOrder = {}) {
+  // Current operational state only. Job Sheet fields are historical/audit data
+  // and may not repopulate an active queue.
   return lower(
     workOrder.joshuaStatus ||
     workOrder.state ||
-    workOrder.sheetStatus ||
     workOrder.status
   ).replace(/[\s-]+/g, "_");
 }
@@ -1074,7 +916,6 @@ function isLaterThanReadyToBill(workOrder = {}) {
   const values = [
     workOrder.joshuaStatus,
     workOrder.state,
-    workOrder.sheetStatus,
     workOrder.status,
     workOrder.invoiceStatus,
     workOrder.paymentStatus
@@ -1455,40 +1296,27 @@ function recoverCompletedWorkOrders(data) {
 }
 
 
-function phase2818IsPartsWorkflowState(
-  workOrder = {}
-) {
-  if (!phase2818IsServiceChannelWorkOrder(workOrder)) {
-    return false;
-  }
+function phase2818IsPartsWorkflowState(workOrder = {}) {
+  if (!phase2818IsServiceChannelWorkOrder(workOrder)) return false;
 
-  const states = [
-    workOrder.joshuaStatus,
-    workOrder.state,
-    workOrder.sheetStatus,
-    workOrder.status
-  ]
-    .map(value =>
-      lower(value).replace(/[\s-]+/g, "_")
-    )
-    .filter(Boolean);
-
-  const serviceChannelText = [
+  const current = normalizedState(workOrder);
+  const sc = [
     workOrder.serviceChannelPrimaryStatus,
-    workOrder.serviceChannelExtendedStatus,
-    workOrder.primaryStatus,
-    workOrder.extendedStatus,
-    workOrder.statusDescription
-  ]
-    .map(lower)
-    .join(" ");
+    workOrder.serviceChannelExtendedStatus
+  ].map(lower).join(" ");
 
-  return Boolean(
-    states.includes("parts_needed") ||
-    /parts?\s*(?:on\s*order|ordered|needed|required)|waiting\s*(?:on|for)\s*parts?/i.test(
-      serviceChannelText
-    )
-  );
+  if (/pending\s+confirmation/.test(sc)) return false;
+  if (/waiting\s+for\s+approval/.test(sc)) return false;
+  if (/waiting\s+for\s+quote|proposal\s+(?:required|needed|approved)/.test(sc)) return false;
+  if (/return\s*(?:trip|visit).*needed|need.*return\s*(?:trip|visit)/.test(sc)) return false;
+  if (/on\s*site|onsite/.test(sc)) return false;
+  if (/completed(?:\s*\/\s*|\s+)confirmed/.test(sc)) return false;
+  if (/invoiced|closed|cancelled|canceled/.test(sc)) return false;
+
+  if (/parts?\s*(?:on\s*order|needed|required)|waiting\s*(?:on|for)\s*parts?/.test(sc)) {
+    return true;
+  }
+  return current === "parts_needed";
 }
 
 function phase2818TaskIsGenericCustomerUpdate(
@@ -1801,38 +1629,35 @@ function phase2827AuthoritativeWorkflowState(
   tracking,
   workOrder = {}
 ) {
-  /*
-   * Existing Job Sheets workflow remains active. A concrete office workflow
-   * such as Parts / Quote / BILL must not be overwritten by stale generic
-   * ServiceChannel or ClockShark state.
-   */
-  const officeCandidates = [
-    workOrder.sheetStatus,
-    workOrder.jobSheetStatus,
-    workOrder.jobsSheetStatus,
-    workOrder.officeStatus,
-    workOrder.workflowStatus
-  ];
+  // Current workflow/provider state is authoritative. Historical Job Sheets
+  // fields and one-off tracking-number exceptions are intentionally excluded.
+  const currentRaw =
+    workOrder.joshuaStatus ||
+    workOrder.state ||
+    workOrder.status ||
+    "";
+  const current =
+    phase2827MapWorkflowState(currentRaw) ||
+    normalizedState(workOrder);
 
-  for (const candidate of officeCandidates) {
-    const mapped = phase2827MapWorkflowState(candidate);
-    if (mapped) return mapped;
-  }
+  if (!phase2818IsServiceChannelWorkOrder(workOrder)) return current;
 
-  /*
-   * These two records were verified against the live Jobs sheet on
-   * 2026-08-02 and are retained only as a migration fallback in case an older
-   * persisted work-order object lacks its sheetStatus field.
-   */
-  if (
-    ["343437277", "357683697"].includes(
-      text(tracking)
-    )
-  ) {
-    return "parts_needed";
-  }
+  const sc = [
+    workOrder.serviceChannelPrimaryStatus,
+    workOrder.serviceChannelExtendedStatus
+  ].map(lower).join(" ");
 
-  return normalizedState(workOrder);
+  if (/pending\s+confirmation/.test(sc)) return "pending_confirmation";
+  if (/waiting\s+for\s+approval/.test(sc)) return "awaiting_authorization";
+  if (/parts?\s*(?:on\s*order|needed|required)|waiting\s*(?:on|for)\s*parts?/.test(sc)) return "parts_needed";
+  if (/waiting\s+for\s+quote|proposal\s+(?:required|needed)/.test(sc)) return "pending_proposal";
+  if (/return\s*(?:trip|visit).*needed|need.*return\s*(?:trip|visit)/.test(sc)) return "need_to_schedule";
+  if (/on\s*site|onsite/.test(sc)) return "onsite";
+  if (/completed(?:\s*\/\s*|\s+)confirmed/.test(sc)) return "ready_to_bill";
+  if (/invoiced|closed|cancelled|canceled/.test(sc)) return "closed";
+  if (/proposal\s+approved|quote\s+approved|authorization\s+approved/.test(sc)) return "open";
+
+  return current;
 }
 
 function phase2827TaskClass(task = {}) {
@@ -2550,9 +2375,8 @@ function reconcilePersistentTruth() {
 
   let changed = false;
 
-  if (recoverLegacyIvrBilling(data)) {
-    changed = true;
-  }
+  // Legacy one-off #356413923 billing recovery is retired. Current workflow
+  // authority must apply to every work order without hardcoded exceptions.
 
   if (recoverCompletedWorkOrders(data)) {
     changed = true;
@@ -2579,9 +2403,8 @@ function reconcilePersistentTruth() {
     changed = true;
   }
 
-  if (ensureBillingTask(data)) {
-    changed = true;
-  }
+  // Billing tasks are now created by the canonical current-workflow authority;
+  // do not recreate a historical one-off billing task here.
 
   if (!changed) return false;
 
@@ -2669,5 +2492,5 @@ const timer = setInterval(() => {
 timer.unref();
 
 console.log(
-  "Joshua Phase 28.27 active: persistent data protected, pre-persistence ServiceChannel completion history recovered without fabricated timestamps, exact duplicate/stale operational tasks cleaned, ServiceChannel Parts On Order/Parts Needed jobs normalized to joshuaStatus=parts_needed so the Parts Queue and parts tasks share one authority, and #356413923 held to authoritative BILL/ready-to-bill status."
+  "Joshua Phase 28.27 active: persistent data protected, completion history preserved, stale/duplicate operational tasks cleaned, and current canonical workflow state remains authoritative without hardcoded work-order exceptions."
 );

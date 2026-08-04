@@ -16,8 +16,8 @@ const PANEL_MARKER = "JOSHUA_PHASE28_33_RETURN_VISIT_QUEUE_PANEL";
 /* Patch the server BEFORE the existing bootstrap chain starts it. */
 let server = fs.readFileSync(serverPath, "utf8");
 if (!server.includes(SERVER_MARKER)) {
-  const queueNeedle = `      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill")`;
-  const queueReplacement = `      readyToBill: workOrders.filter(item => item.joshuaStatus === "ready_to_bill"),\n      returnVisits: workOrders.filter(item => item.joshuaStatus === "need_to_schedule")`;
+  const queueNeedle = `      readyToBill: workOrders.filter(item => phase7QueueEligible(item, "ready_to_bill"))`;
+  const queueReplacement = `      readyToBill: workOrders.filter(item => phase7QueueEligible(item, "ready_to_bill")),\n      returnVisits: workOrders.filter(item => phase7QueueEligible(item, "need_to_schedule"))`;
 
   if (server.includes(queueNeedle)) {
     server = server.replace(queueNeedle, queueReplacement);
@@ -145,17 +145,12 @@ function patchPanel() {
  const getData=()=>{try{if(typeof cache!=="undefined"&&cache)return cache}catch(_){}return window.cache||{}};
  const getOrders=()=>{const src=getData().workOrders;return Array.isArray(src)?src:(src&&typeof src==="object"?Object.values(src):[])};
 
- function returnVisitState(item={}){
-  const live=norm(item.joshuaStatus||item.state||item.status);
-  if(["scheduled","completed","closed","paid","submitted","invoiced","invoice_submitted"].includes(live))return live;
-  if(live==="need_to_schedule")return "need_to_schedule";
-  const office=[item.sheetStatus,item.jobSheetStatus,item.jobsSheetStatus,item.officeStatus,item.workflowStatus].map(norm);
-  if(office.some(v=>["need_to_schedule","schedule"].includes(v)||/return.*visit|return.*trip|reschedule/.test(v)))return "need_to_schedule";
-  return live;
- }
-
  function returnVisitRows(){
-  return getOrders().filter(item=>returnVisitState(item||{})==="need_to_schedule");
+  // Delegate to the single canonical browser workflow authority. This keeps
+  // the Return Visit badge, card, modal and job formatting on the exact same
+  // work-order snapshot as Proposal / Parts / Billing.
+  const authority=window.joshuaCanonicalWorkflowRows||window.joshuaAtomicWorkflowRows;
+  return typeof authority==="function"?authority("return_trip"):[];
  }
 
  function installChrome(){

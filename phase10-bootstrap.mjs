@@ -123,7 +123,18 @@ function officeOpenTab(tab){
 }
 window.officeOpenTab=officeOpenTab;
 function officeAge(item){const d=new Date(item.lastSheetSyncAt||item.updatedAt||item.createdAt||0);return Number.isFinite(d.getTime())?Math.max(0,Math.round((Date.now()-d.getTime())/3600000)):0}
-function officeQueueItems(type){const cfg=officeQueueConfig[type];return cfg?[...(((window.cache||cache||{}).workflowQueues||{})[cfg.key]||[])]:[]}
+// JOSHUA_CANONICAL_OFFICE_QUEUE_V1
+function officeNorm(value){return String(value||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')}
+function officeCurrentState(item){const base=officeNorm(item?.joshuaStatus||item?.state||'');if(!officeIsServiceChannel(item))return base;const sc=[item?.serviceChannelPrimaryStatus,item?.serviceChannelExtendedStatus].map(v=>String(v||'').toLowerCase()).join(' ');if(/pending[ ]+confirmation/.test(sc))return'pending_confirmation';if(/waiting[ ]+for[ ]+approval/.test(sc))return'awaiting_authorization';if(/parts?[ ]*(?:on[ ]*order|needed|required)|waiting[ ]*(?:on|for)[ ]*parts?/.test(sc))return'parts_needed';if(/waiting[ ]+for[ ]+quote|proposal[ ]+(?:required|needed)/.test(sc))return'pending_proposal';if(/return[ ]*(?:trip|visit).*needed|need.*return[ ]*(?:trip|visit)/.test(sc))return'need_to_schedule';if(/on[ ]*site|onsite/.test(sc))return'onsite';if(/invoiced|closed|cancelled|canceled/.test(sc))return'closed';if(/completed(?:[ ]*\/[ ]*|[ ]+)confirmed/.test(sc))return'ready_to_bill';if(/proposal[ ]+approved|quote[ ]+approved|authorization[ ]+approved/.test(sc))return'open';return base}
+function officeIsServiceChannel(item){const source=[item?.source,item?.sourceSystem,item?.provider,item?.integrationSource,item?.intakeSource].map(v=>String(v||'').toLowerCase()).join(' ');const identity=[item?.customer,item?.customerName,item?.locationName,item?.location,item?.jobName,item?.clockSharkJobName].map(v=>String(v||'').toLowerCase()).join(' ');return item?.isServiceChannel===true||item?.serviceChannelSourceOfTruth===true||Boolean(item?.serviceChannelTrackingNumber||item?.scTrackingNumber)||source.includes('servicechannel')||/o['’]?reilly/.test(identity)}
+function officePhoneLike(value){const raw=String(value||'').trim();const digits=raw.replace(/[^0-9]/g,'');const local=digits.length===11&&digits.startsWith('1')?digits.slice(1):digits.length===10?digits:'';return Boolean(local&&/^[2-9][0-9]{2}[2-9][0-9]{6}$/.test(local))}
+function officeExactScTracking(value){const raw=String(value||'').trim();if(!raw||officePhoneLike(raw))return'';const m=raw.match(/^#?[ ]*([0-9]{7,14})[ ]*$/);return m&&!officePhoneLike(m[1])?m[1]:''}
+function officeInternalId(value){let raw=String(value||'').trim().replace(/^#+[ ]*/,'');if(!raw||officePhoneLike(raw))return'';if(raw.includes('#')){const tail=raw.split('#').pop().trim();if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(tail)&&!officePhoneLike(tail))return tail}if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(raw))return raw;return''}
+function officeJobId(item){if(officeIsServiceChannel(item)){for(const value of [item?.serviceChannelTrackingNumber,item?.scTrackingNumber,item?.trackingNumber]){const id=officeExactScTracking(value);if(id)return id}return''}for(const value of [item?.jobNumber,item?.clockSharkJobNumber,item?.workOrderNumber,item?.trackingNumber,item?.nestTrackingNumber]){const id=officeInternalId(value);if(id)return id}return''}
+function officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v)return'';const n=officeNorm(v);if(['unknown','unknown_customer','unknown_location','clockshark_job','service_job','unassigned'].includes(n))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}
+function officeBrand(value){const v=officeIdentity(value);if(!v)return'';const m=v.match(/^(.+?)[ ]*#[ ]*[a-z0-9-]+(?:[ ]|$)/i);return m?m[1].trim():v}
+function officeDisplayItem(item){if(!item||typeof item!=='object')return null;const id=officeJobId(item);if(!id)return null;let customer=officeBrand(item.customer||item.customerName||item.subscriber||item.subscriberName||item.client||item.clientName);let location=officeIdentity(item.locationName||item.location||item.serviceChannelLocationName||item.storeName||item.siteName||item.jobName||item.clockSharkJobName||item.address);if(!customer&&location)customer=officeBrand(location);if(!customer)customer='Customer';if(location===customer)location='';return {...item,trackingNumber:id,customer,locationName:location}}
+function officeQueueItems(type){const wanted={authorization:'awaiting_authorization',proposal:'pending_proposal',parts:'parts_needed',billing:'ready_to_bill'}[type];if(!wanted)return[];const data=window.cache||cache||{};const src=Array.isArray(data.workOrders)?data.workOrders:(data.workOrders&&typeof data.workOrders==='object'?Object.values(data.workOrders):[]);return src.filter(x=>officeCurrentState(x)===wanted).map(officeDisplayItem).filter(Boolean)}
 function officeRenderQueue(){
  const cfg=officeQueueConfig[officeActiveQueue];if(!cfg)return;
  const search=officeEl('officeQueueSearch'),sortEl=officeEl('officeQueueSort'),title=officeEl('officeQueueTitle'),summary=officeEl('officeQueueSummary'),list=officeEl('officeQueueList');
@@ -139,8 +150,8 @@ function officeRenderQueue(){
   const tracking=esc(x.trackingNumber||'');
   const customer=esc(x.customer||x.locationName||'Unknown customer');
   const location=esc(x.locationName||x.address||'');
-  const tech=esc(x.assignedTechnician||'Unassigned');
-  return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location?' · '+location:'')+'</div></div><div><span class="badge">'+esc(String(x.joshuaStatus||'').replaceAll('_',' '))+'</span><div class="small muted" style="margin-top:5px">'+officeAge(x)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="'+cfg.action+'" data-tracking="'+tracking+'">'+cfg.actionLabel+'</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>'
+  const tech=esc(x.assignedTechnician||x.technician||'Unassigned');
+  return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location&&location!==customer?' · '+location:'')+'</div></div><div><span class="badge">'+esc(String(x.joshuaStatus||'').replaceAll('_',' '))+'</span><div class="small muted" style="margin-top:5px">'+officeAge(x)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="'+cfg.action+'" data-tracking="'+tracking+'">'+cfg.actionLabel+'</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>'
  }).join(''):'<div class="queue-empty">No work orders are currently in this queue.</div>';
 }
 function officeOpenQueue(type){
@@ -156,13 +167,15 @@ function officeOpenAllWorkOrders(){officeCloseQueue();officeOpenTab('workorders'
 window.officeOpenAllWorkOrders=officeOpenAllWorkOrders;
 function officeShowSheetLog(){officeOpenTab('activity');setTimeout(()=>{const e=officeEl('events');if(e)e.scrollIntoView({behavior:'smooth',block:'start'})},100)}
 function officeUpdateChrome(){
- const data=window.cache||cache||{},q=data.workflowQueues||{},sw=data.jobSheetsWriteback||{},attention=data.actionableItems||[];
+ const data=window.cache||cache||{},sw=data.jobSheetsWriteback||{},attention=data.actionableItems||[];
  const set=(id,value)=>{const el=officeEl(id);if(el)el.textContent=value||0};
- set('navAttentionCount',attention.length);set('navProposalCount',(q.pendingProposals||[]).length);set('navBillingCount',(q.readyToBill||[]).length);set('navPartsCount',(q.partsNeeded||[]).length);set('navSheetCount',sw.pending||0);
+ const canonical={authorization:officeQueueItems('authorization'),proposal:officeQueueItems('proposal'),parts:officeQueueItems('parts'),billing:officeQueueItems('billing')};
+ data.workflowQueues=data.workflowQueues||{};data.workflowQueues.awaitingAuthorization=canonical.authorization;data.workflowQueues.pendingProposals=canonical.proposal;data.workflowQueues.partsNeeded=canonical.parts;data.workflowQueues.readyToBill=canonical.billing;
+ set('navAttentionCount',attention.length);set('navProposalCount',canonical.proposal.length);set('navBillingCount',canonical.billing.length);set('navPartsCount',canonical.parts.length);set('navSheetCount',sw.pending||0);
  const hour=new Date().getHours(),greeting=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
  const greetingEl=officeEl('officeGreeting'),briefEl=officeEl('officeBrief');
  if(greetingEl)greetingEl.textContent=greeting+', Precision Lighting Team.';
- const total=(q.awaitingAuthorization||[]).length+(q.pendingProposals||[]).length+(q.partsNeeded||[]).length+(q.readyToBill||[]).length;
+ const total=canonical.authorization.length+canonical.proposal.length+canonical.parts.length+canonical.billing.length;
  if(briefEl)briefEl.textContent=total?('Joshua has '+total+' workflow item'+(total===1?'':'s')+' organized for review.'):"Joshua has no queued workflow items requiring review.";
 }
 document.addEventListener('click',e=>{

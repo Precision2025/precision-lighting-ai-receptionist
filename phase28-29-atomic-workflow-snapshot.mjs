@@ -154,12 +154,12 @@ function mapWorkflow(value = "") {
   if (
     [
       "pending_confirmation",
-      "completed_pending_confirmation",
-      "completed_confirmed"
+      "completed_pending_confirmation"
     ].includes(state) ||
     /completed.*pending.*confirmation/.test(state)
   ) return "pending_confirmation";
 
+  if (state === "completed_confirmed") return "ready_to_bill";
   if (["completed", "complete"].includes(state)) return "completed";
   return state;
 }
@@ -191,20 +191,109 @@ function officeWorkflow(workOrder = {}) {
   return "";
 }
 
-function serviceChannelPartsEvidence(workOrder = {}) {
+function isServiceChannelRecord(workOrder = {}) {
+  const source = [
+    workOrder.source,
+    workOrder.sourceSystem,
+    workOrder.provider,
+    workOrder.integrationSource,
+    workOrder.intakeSource
+  ].map(lower).join(" ");
+  const identity = [
+    workOrder.customer,
+    workOrder.customerName,
+    workOrder.locationName,
+    workOrder.location,
+    workOrder.jobName,
+    workOrder.clockSharkJobName
+  ].map(lower).join(" ");
+  return Boolean(
+    workOrder.isServiceChannel === true ||
+    workOrder.serviceChannelSourceOfTruth === true ||
+    workOrder.serviceChannelTrackingNumber ||
+    workOrder.scTrackingNumber ||
+    source.includes("servicechannel") ||
+    /o['’]?reilly/.test(identity)
+  );
+}
+
+function phoneLikeIdentity(value = "") {
+  const raw = text(value);
+  const digits = raw.replace(/\D/g, "");
+  const local = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits.length === 10
+      ? digits
+      : "";
+  return Boolean(local && /^[2-9]\d{2}[2-9]\d{6}$/.test(local));
+}
+
+function exactServiceChannelTracking(value = "") {
+  const raw = text(value);
+  if (!raw || phoneLikeIdentity(raw)) return "";
+  const match = raw.match(/^#?\s*(\d{7,14})\s*$/);
+  return match && !phoneLikeIdentity(match[1]) ? match[1] : "";
+}
+
+function internalWorkflowId(value = "") {
+  let raw = text(value).replace(/^#+\s*/, "");
+  if (!raw || phoneLikeIdentity(raw)) return "";
+  if (raw.includes("#")) {
+    const tail = text(raw.split("#").pop());
+    if (/^[a-z0-9][a-z0-9._-]{2,}$/i.test(tail) && !phoneLikeIdentity(tail)) {
+      return tail;
+    }
+  }
+  return /^[a-z0-9][a-z0-9._-]{2,}$/i.test(raw) ? raw : "";
+}
+
+function canonicalWorkflowJobId(workOrder = {}, fallback = "") {
+  if (isServiceChannelRecord(workOrder)) {
+    for (const candidate of [
+      workOrder.serviceChannelTrackingNumber,
+      workOrder.scTrackingNumber,
+      workOrder.trackingNumber,
+      fallback
+    ]) {
+      const id = exactServiceChannelTracking(candidate);
+      if (id) return id;
+    }
+    return "";
+  }
+
+  for (const candidate of [
+    workOrder.jobNumber,
+    workOrder.clockSharkJobNumber,
+    workOrder.workOrderNumber,
+    workOrder.trackingNumber,
+    workOrder.nestTrackingNumber,
+    fallback
+  ]) {
+    const id = internalWorkflowId(candidate);
+    if (id) return id;
+  }
+  return "";
+}
+
+function currentServiceChannelWorkflow(workOrder = {}, base = "") {
+  if (!isServiceChannelRecord(workOrder)) return "";
   const body = [
     workOrder.serviceChannelPrimaryStatus,
-    workOrder.serviceChannelExtendedStatus,
-    workOrder.primaryStatus,
-    workOrder.extendedStatus,
-    workOrder.statusDescription
-  ]
-    .map(lower)
-    .join(" ");
+    workOrder.serviceChannelExtendedStatus
+  ].map(lower).join(" ");
 
-  return /parts?\s*(?:on\s*order|ordered|needed|required)|waiting\s*(?:on|for)\s*parts?/.test(
-    body
-  );
+  if (!body.trim()) return "";
+  if (/pending\s+confirmation/.test(body)) return "pending_confirmation";
+  if (/waiting\s+for\s+approval/.test(body)) return "awaiting_authorization";
+  if (/parts?\s*(?:on\s*order|needed|required)|waiting\s*(?:on|for)\s*parts?/.test(body)) return "parts_needed";
+  if (/waiting\s+for\s+quote|proposal\s+(?:required|needed)/.test(body)) return "pending_proposal";
+  if (/return\s*(?:trip|visit).*needed|need.*return\s*(?:trip|visit)/.test(body)) return "need_to_schedule";
+  if (/on\s*site|onsite/.test(body)) return "onsite";
+  if (/completed(?:\s*\/\s*|\s+)confirmed/.test(body)) return "ready_to_bill";
+  if (/invoiced|closed|cancelled|canceled/.test(body)) return "closed";
+  // Explicit provider approval clears any stale proposal/authorization queue.
+  if (/proposal\s+approved|quote\s+approved|authorization\s+approved/.test(body)) return "open";
+  return "";
 }
 
 function authoritativeWorkflowState(workOrder = {}) {
@@ -218,17 +307,23 @@ function authoritativeWorkflowState(workOrder = {}) {
     return "closed";
   }
 
-  const office = officeWorkflow(workOrder);
-  if (office) return office;
-
+  /*
+   * JOSHUA_CANONICAL_CURRENT_WORKFLOW_V1
+   * Current Joshua/provider state outranks historical Job Sheets fields.
+   * Job Sheets are allowed to seed a missing workflow only; they can never
+   * overwrite a current state on a later write and resurrect a stale queue.
+   */
   const current = mapWorkflow(
     workOrder.joshuaStatus ||
     workOrder.state ||
     workOrder.status
   );
-
+  const serviceChannel = currentServiceChannelWorkflow(workOrder, current);
+  if (serviceChannel) return serviceChannel;
   if (current) return current;
-  if (serviceChannelPartsEvidence(workOrder)) return "parts_needed";
+
+  const office = officeWorkflow(workOrder);
+  if (office) return office;
   return "";
 }
 
@@ -505,13 +600,21 @@ function reconcilePrimaryTasks(data = {}) {
         "parts_needed",
         "ready_to_bill",
         "awaiting_authorization",
-        "need_to_schedule"
+        "need_to_schedule",
+        "pending_confirmation",
+        "completed",
+        "closed",
+        "paid",
+        "submitted",
+        "onsite",
+        "open",
+        "scheduled"
       ].includes(state)
     ) {
       workOrder.state = state;
       workOrder.joshuaStatus = state;
       workOrder.workflowReason =
-        "Phase 28.29 atomic workflow snapshot authority.";
+        "Phase 28.29 canonical current-workflow authority.";
     }
   }
 
@@ -525,6 +628,15 @@ function reconcilePrimaryTasks(data = {}) {
     /* Explicit separate/manual work stays separate. */
     if (["callback", "documentation"].includes(klass)) return task;
     if (!workOrder) return task;
+
+    const canonicalId = canonicalWorkflowJobId(workOrder, tracking);
+    if (!canonicalId && primaryClasses.has(klass)) {
+      return closeTask(
+        task,
+        now,
+        "Primary workflow task retired because the work order has no canonical job identifier."
+      );
+    }
 
     const state = authoritativeWorkflowState(workOrder);
     const expected = expectedTask(state);
@@ -552,7 +664,16 @@ function reconcilePrimaryTasks(data = {}) {
       );
     }
 
-    if (!expected) return task;
+    if (!expected) {
+      if (primaryClasses.has(klass)) {
+        return closeTask(
+          task,
+          now,
+          `Primary workflow task retired because ${state || "current status"} has no active queue.`
+        );
+      }
+      return task;
+    }
 
     if (primaryClasses.has(klass) && klass !== expected.taskClass) {
       return closeTask(
@@ -580,6 +701,7 @@ function reconcilePrimaryTasks(data = {}) {
   /* Ensure exactly one primary task per actionable work order. */
   for (const [tracking, workOrder] of Object.entries(data.workOrders)) {
     if (!workOrder || typeof workOrder !== "object") continue;
+    if (!canonicalWorkflowJobId(workOrder, tracking)) continue;
     const state = authoritativeWorkflowState(workOrder);
     const expected = expectedTask(state);
     if (!expected) continue;
@@ -718,7 +840,12 @@ function patchGeneratedOfficePanel() {
   if (!html.includes("JOSHUA_PHASE28_29_ATOMIC_QUEUE_SNAPSHOT")) {
     const oldState = `  function joshuaQueueState(item){\n    return joshuaNorm(\n      item.joshuaStatus||\n      item.state||\n      item.sheetStatus||\n      item.status\n    );\n  }`;
 
-    const newState = `  function joshuaQueueState(item){\n    // JOSHUA_PHASE28_29_ATOMIC_QUEUE_SNAPSHOT\n    const raw=joshuaNorm(\n      item.sheetStatus||\n      item.jobSheetStatus||\n      item.jobsSheetStatus||\n      item.officeStatus||\n      item.workflowStatus||\n      item.joshuaStatus||\n      item.state||\n      item.status\n    );\n    if([\"parts\",\"parts_needed\",\"parts_on_order\",\"waiting_for_parts\",\"waiting_on_parts\"].includes(raw))return \"parts_needed\";\n    if([\"pp\",\"quote\",\"proposal\",\"estimate\",\"pending_proposal\",\"proposal_needed\",\"quote_needed\"].includes(raw))return \"pending_proposal\";\n    if([\"bill\",\"billing\",\"ready_to_bill\",\"ready_for_billing\"].includes(raw))return \"ready_to_bill\";\n    if([\"aa\",\"awaiting_authorization\",\"authorization_needed\",\"pending_authorization\"].includes(raw))return \"awaiting_authorization\";\n    return raw;\n  }`;
+    const newState = `  function joshuaQueueState(item){
+    // JOSHUA_PHASE28_29_ATOMIC_QUEUE_SNAPSHOT
+    // Current workflow state is authoritative; historical sheet/office fields
+    // are audit data only and cannot resurrect a queue row.
+    return joshuaNorm(item.joshuaStatus||item.state||"");
+  }`;
 
     if (html.includes(oldState)) {
       html = html.replace(oldState, newState);
@@ -734,7 +861,41 @@ function patchGeneratedOfficePanel() {
       changed = true;
     }
 
-    const runtime = `\n<script>\n// JOSHUA_PHASE28_29_ATOMIC_QUEUE_SNAPSHOT_RUNTIME\n(function(){\n function norm(v){return String(v||\"\").trim().toLowerCase().replace(/[^a-z0-9]+/g,\"_\").replace(/^_+|_+$/g,\"\");}\n function state(x){\n  const raw=norm(x.sheetStatus||x.jobSheetStatus||x.jobsSheetStatus||x.officeStatus||x.workflowStatus||x.joshuaStatus||x.state||x.status);\n  if([\"parts\",\"parts_needed\",\"parts_on_order\",\"waiting_for_parts\",\"waiting_on_parts\"].includes(raw))return \"parts_needed\";\n  if([\"pp\",\"quote\",\"proposal\",\"estimate\",\"pending_proposal\",\"proposal_needed\",\"quote_needed\"].includes(raw))return \"pending_proposal\";\n  if([\"bill\",\"billing\",\"ready_to_bill\",\"ready_for_billing\"].includes(raw))return \"ready_to_bill\";\n  if([\"aa\",\"awaiting_authorization\",\"authorization_needed\",\"pending_authorization\"].includes(raw))return \"awaiting_authorization\";\n  return raw;\n }\n function data(){try{if(typeof cache!==\"undefined\"&&cache)return cache}catch(_){}return window.cache||{}}\n function orders(){const d=data();const src=d.workOrders;return Array.isArray(src)?src:(src&&typeof src===\"object\"?Object.values(src):[])}\n function rows(type){return orders().filter(x=>{const s=state(x||{});if(type===\"proposal\")return s===\"pending_proposal\";if(type===\"parts\")return s===\"parts_needed\";if(type===\"billing\")return s===\"ready_to_bill\";if(type===\"authorization\")return s===\"awaiting_authorization\";return false})}\n function sync(){\n  const counts={proposal:rows(\"proposal\").length,parts:rows(\"parts\").length,billing:rows(\"billing\").length,authorization:rows(\"authorization\").length};\n  const ids=[[\"navProposalCount\",counts.proposal],[\"navPartsCount\",counts.parts],[\"navBillingCount\",counts.billing],[\"pendingProposal\",counts.proposal],[\"partsNeeded\",counts.parts],[\"readyToBill\",counts.billing],[\"awaitingAuthorization\",counts.authorization]];\n  for(const [id,value] of ids){const el=document.getElementById(id);if(el&&el.textContent!==String(value))el.textContent=String(value)}\n  try{window.officeQueueItems=rows;officeQueueItems=rows}catch(_){}\n }\n setTimeout(sync,100);\n setInterval(sync,250);\n const observer=new MutationObserver(()=>setTimeout(sync,0));\n observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true});\n})();\n</script>\n`;
+    const runtime = `
+<script>
+// JOSHUA_PHASE28_29_ATOMIC_QUEUE_SNAPSHOT_RUNTIME
+(function(){
+ function norm(v){return String(v||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"")}
+ function state(x){const base=norm(x?.joshuaStatus||x?.state||"");if(!isSC(x))return base;const sc=[x?.serviceChannelPrimaryStatus,x?.serviceChannelExtendedStatus].map(v=>String(v||"").toLowerCase()).join(" ");if(/pending[ ]+confirmation/.test(sc))return "pending_confirmation";if(/waiting[ ]+for[ ]+approval/.test(sc))return "awaiting_authorization";if(/parts?[ ]*(?:on[ ]*order|needed|required)|waiting[ ]*(?:on|for)[ ]*parts?/.test(sc))return "parts_needed";if(/waiting[ ]+for[ ]+quote|proposal[ ]+(?:required|needed)/.test(sc))return "pending_proposal";if(/return[ ]*(?:trip|visit).*needed|need.*return[ ]*(?:trip|visit)/.test(sc))return "need_to_schedule";if(/on[ ]*site|onsite/.test(sc))return "onsite";if(/invoiced|closed|cancelled|canceled/.test(sc))return "closed";if(/completed(?:[ ]*[/][ ]*|[ ]+)confirmed/.test(sc))return "ready_to_bill";if(/proposal[ ]+approved|quote[ ]+approved|authorization[ ]+approved/.test(sc))return "open";return base}
+ function data(){try{if(typeof cache!=="undefined"&&cache)return cache}catch(_){}return window.cache||{}}
+ function orders(){const d=data(),src=d.workOrders;return Array.isArray(src)?src:(src&&typeof src==="object"?Object.values(src):[])}
+ function isSC(x){const source=[x?.source,x?.sourceSystem,x?.provider,x?.integrationSource,x?.intakeSource].map(v=>String(v||"").toLowerCase()).join(" ");const identity=[x?.customer,x?.customerName,x?.locationName,x?.location,x?.jobName,x?.clockSharkJobName].map(v=>String(v||"").toLowerCase()).join(" ");return x?.isServiceChannel===true||x?.serviceChannelSourceOfTruth===true||Boolean(x?.serviceChannelTrackingNumber||x?.scTrackingNumber)||source.includes("servicechannel")||/o['’]?reilly/.test(identity)}
+ function phoneLike(v){const raw=String(v||"").trim(),digits=raw.replace(/[^0-9]/g,""),local=digits.length===11&&digits.startsWith("1")?digits.slice(1):digits.length===10?digits:"";return Boolean(local&&/^[2-9][0-9]{2}[2-9][0-9]{6}$/.test(local))}
+ function scId(v){const raw=String(v||"").trim();if(!raw||phoneLike(raw))return"";const m=raw.match(/^#?[ ]*([0-9]{7,14})[ ]*$/);return m&&!phoneLike(m[1])?m[1]:""}
+ function internalId(v){let raw=String(v||"").trim().replace(/^#+[ ]*/,"");if(!raw||phoneLike(raw))return"";if(raw.includes("#")){const tail=raw.split("#").pop().trim();if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(tail)&&!phoneLike(tail))return tail}if(/^[a-z0-9][a-z0-9._-]{2,}$/i.test(raw))return raw;return""}
+ function jobId(x){if(isSC(x)){for(const v of [x?.serviceChannelTrackingNumber,x?.scTrackingNumber,x?.trackingNumber]){const id=scId(v);if(id)return id}return""}for(const v of [x?.jobNumber,x?.clockSharkJobNumber,x?.workOrderNumber,x?.trackingNumber,x?.nestTrackingNumber]){const id=internalId(v);if(id)return id}return""}
+ function identity(v){const text=String(v||"").trim().replace(/\\s+/g," ");if(!text)return"";if(["unknown","unknown_customer","unknown_location","clockshark_job","service_job","unassigned"].includes(norm(text)))return"";if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(text))return"";return text}
+ function brand(v){const text=identity(v);if(!text)return"";const store=text.match(/^(.+?)[ ]*#[ ]*[a-z0-9-]+(?:[ ]|$)/i);return store?store[1].trim():text}
+ function display(x){const id=jobId(x);if(!id)return null;let customer=brand(x.customer||x.customerName||x.subscriber||x.subscriberName||x.client||x.clientName);let location=identity(x.locationName||x.location||x.serviceChannelLocationName||x.storeName||x.siteName||x.jobName||x.clockSharkJobName||x.address);if(!customer&&location)customer=brand(location);if(!customer)customer="Customer";if(location===customer)location="";return {...x,trackingNumber:id,customer,locationName:location}}
+ const wanted={proposal:"pending_proposal",parts:"parts_needed",billing:"ready_to_bill",authorization:"awaiting_authorization",return_trip:"need_to_schedule"};
+ function rows(type){const target=wanted[type];if(!target)return[];return orders().filter(x=>state(x)===target).map(display).filter(Boolean)}
+ function sync(){
+  const q={proposal:rows("proposal"),parts:rows("parts"),billing:rows("billing"),authorization:rows("authorization")};
+  const ids=[["navProposalCount",q.proposal.length],["navPartsCount",q.parts.length],["navBillingCount",q.billing.length],["pendingProposal",q.proposal.length],["partsNeeded",q.parts.length],["readyToBill",q.billing.length],["awaitingAuthorization",q.authorization.length]];
+  for(const [id,value] of ids){const el=document.getElementById(id);if(el&&el.textContent!==String(value))el.textContent=String(value)}
+  try{const d=data();d.workflowQueues=d.workflowQueues||{};d.workflowQueues.pendingProposals=q.proposal;d.workflowQueues.partsNeeded=q.parts;d.workflowQueues.readyToBill=q.billing;d.workflowQueues.awaitingAuthorization=q.authorization;d.workflowQueues.returnVisits=rows("return_trip");window.officeQueueItems=rows;officeQueueItems=rows}catch(_){}
+ }
+ setTimeout(sync,100);
+ setInterval(sync,500);
+ const observer=new MutationObserver(()=>setTimeout(sync,0));
+ observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true});
+ window.joshuaAtomicWorkflowRows=rows;
+ window.joshuaCanonicalWorkflowRows=rows;
+ window.joshuaCanonicalJobId=jobId;
+ window.joshuaCanonicalDisplayItem=display;
+})();
+</script>
+`;
 
     html = html.replace("</body>", runtime + "\n</body>");
     changed = true;

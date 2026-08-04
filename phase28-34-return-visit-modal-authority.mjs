@@ -23,21 +23,15 @@ if (fs.existsSync(panelPath)) {
 <script>
 // ${MARKER}
 (function(){
- const norm=value=>String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
  const escapeHtml=value=>String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
- const data=()=>{try{if(typeof cache!=="undefined"&&cache)return cache}catch(_){}return window.cache||{}};
- const orders=()=>{const src=data().workOrders;return Array.isArray(src)?src:(src&&typeof src==="object"?Object.values(src):[])};
 
- function state(item={}){
-  const live=norm(item.joshuaStatus||item.state||item.status);
-  if(["scheduled","completed","closed","paid","submitted","invoiced","invoice_submitted"].includes(live))return live;
-  if(live==="need_to_schedule")return "need_to_schedule";
-  const office=[item.sheetStatus,item.jobSheetStatus,item.jobsSheetStatus,item.officeStatus,item.workflowStatus].map(norm);
-  if(office.some(v=>["need_to_schedule","schedule"].includes(v)||/return.*visit|return.*trip|reschedule/.test(v)))return "need_to_schedule";
-  return live;
+ function rows(){
+  // Return Visits delegates to the same canonical browser workflow authority
+  // as Proposal / Parts / Billing. No sheet/office fallback is allowed here.
+  const authority=window.joshuaCanonicalWorkflowRows||window.joshuaAtomicWorkflowRows;
+  return typeof authority==="function"?authority("return_trip"):[];
  }
 
- function rows(){return orders().filter(item=>state(item||{})==="need_to_schedule")}
  function age(item={}){
   const raw=item.lastSheetSyncAt||item.jobsSheetUpdatedAt||item.officeUpdatedAt||item.updatedAt||item.createdAt||0;
   const t=new Date(raw).getTime();
@@ -74,9 +68,9 @@ if (fs.existsSync(panelPath)) {
   summary.textContent=items.length+" work order"+(items.length===1?"":"s")+" ready for scheduling";
   list.innerHTML=items.length?items.map(item=>{
    const tracking=escapeHtml(item.trackingNumber||"");
-   const customer=escapeHtml(item.customer||item.locationName||"Unknown customer");
+   const customer=escapeHtml(item.customer||item.locationName||"Customer");
    const location=escapeHtml(item.locationName||item.address||"");
-   const tech=escapeHtml(item.assignedTechnician||"Unassigned");
+   const tech=escapeHtml(item.assignedTechnician||item.technician||"Unassigned");
    return '<div class="queue-row"><div><strong>#'+tracking+'</strong><div class="small muted">'+customer+(location&&location!==customer?' · '+location:'')+'</div></div><div><span class="badge">need to schedule</span><div class="small muted" style="margin-top:5px">'+age(item)+' hours in workflow</div></div><div><strong>'+tech+'</strong><div class="small muted">Assigned technician</div></div><div class="actions"><button type="button" data-office-action="return_visit_scheduled" data-tracking="'+tracking+'">Mark Return Visit Scheduled</button><button type="button" data-office-job-sheet data-tracking="'+tracking+'">Update Job Sheet</button><button type="button" class="secondary" data-office-timeline data-tracking="'+tracking+'">Timeline</button></div></div>';
   }).join(""):'<div class="queue-empty">No return visits currently need scheduling.</div>';
   return true;
