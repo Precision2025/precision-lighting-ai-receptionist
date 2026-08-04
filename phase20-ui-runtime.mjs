@@ -147,6 +147,7 @@ if (!panel.includes(MARKER)) {
     <label>Role</label>
     <select id="phase20Role">
      <option value="operations">Operations</option>
+     <option value="operations_accounting">Operations + Accounting</option>
      <option value="accounting">Accounting</option>
      <option value="technician">Technician</option>
      <option value="admin">Administrator</option>
@@ -288,6 +289,13 @@ if (!panel.includes(MARKER)) {
    hide('.tab[data-tab="settings"]');
   }
 
+  if(user.role==="operations_accounting"){
+   // JOSHUA_SHELLIE_OPERATIONS_ACCOUNTING_ACCESS_UI_V1
+   // Ariana-level operations + Shellie's accounting/billing access.
+   hide('.office-nav-btn[data-office-tab="settings"]');
+   hide('.tab[data-tab="settings"]');
+  }
+
   if(user.role==="accounting"){
    [
     '[data-office-create-job]',
@@ -363,7 +371,7 @@ if (!panel.includes(MARKER)) {
      </div>
      <div class="row" style="margin-top:10px">
       <select data-phase20-role="\${safe(item.id)}">
-       \${["admin","operations","accounting","technician"].map(role=>\`<option value="\${role}" \${item.role===role?"selected":""}>\${role}</option>\`).join("")}
+       \${["admin","operations","operations_accounting","accounting","technician"].map(role=>\`<option value="\${role}" \${item.role===role?"selected":""}>\${role}</option>\`).join("")}
       </select>
       <select data-phase20-enabled="\${safe(item.id)}">
        <option value="true" \${item.enabled?"selected":""}>Enabled</option>
