@@ -185,7 +185,7 @@ function buildWorkOrderTimeline(item = {}, events = []) {
       awaitingAuthorization: workOrders.filter(item => phase7QueueEligible(item, "awaiting_authorization")),
       pendingProposals: workOrders.filter(item => phase7QueueEligible(item, "pending_proposal")),
       partsNeeded: workOrders.filter(item => phase7QueueEligible(item, "parts_needed")),
-      readyToBill: workOrders.filter(item => phase7QueueEligible(item, "ready_to_bill"))
+      readyToBill: workOrders.filter(phase25BillingReady).filter(item => phase7QueueEligible(item, "ready_to_bill"))
     },
     actionableItems: workOrders
       .map(item => ({
