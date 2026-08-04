@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase28-41-dashboard-status-authority.mjs",
+    "start": "node phase28-42-ivr-requester-messaging.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
