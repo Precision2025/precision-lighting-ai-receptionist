@@ -16,9 +16,9 @@ import { fileURLToPath } from "node:url";
  */
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V3";
-const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V3";
-const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V3";
+const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V4";
+const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V4";
+const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V4";
 const PHASE24_SERVER_MARKER =
   "JOSHUA_PHASE24_SERVICECHANNEL_AUTHORITY_RUNTIME_V1";
 const PHASE24_PANEL_MARKER =
@@ -232,6 +232,22 @@ function phase2841ServiceChannelAllowed(data = {}, item = {}, key = "") {
   );
 }
 
+function phase2841ServiceChannelCheckInIsPriorLocalDay(
+  checkInMoment = 0,
+  settings = {}
+) {
+  const moment = Number(checkInMoment || 0);
+  if (!moment) return false;
+
+  const timeZone =
+    phase2841Text(settings.businessTimeZone) ||
+    "America/Chicago";
+  const checkInDate = phase2841LocalDate(new Date(moment), timeZone);
+  const today = phase2841LocalDate(new Date(), timeZone);
+
+  return Boolean(checkInDate && today && checkInDate !== today);
+}
+
 function phase2841ServiceChannelTruth(
   data = {},
   item = {},
@@ -345,6 +361,24 @@ function phase2841ServiceChannelTruth(
       checkoutNeeded: false,
       checkInAt: "",
       action
+    };
+  }
+
+  // A confirmed IVR check-in is a same-business-day operational fact, not an
+  // indefinite presence flag. If Joshua never receives the later ServiceChannel
+  // status/checkout update, a prior local-day check-in must not remain on the
+  // live dashboard for days. Preserve the historical timestamp for audit, but
+  // remove it from Currently Onsite and Checkout Needed. A fresh check-in on a
+  // later day will immediately become current again.
+  if (phase2841ServiceChannelCheckInIsPriorLocalDay(actionAt, settings)) {
+    return {
+      isServiceChannel: true,
+      onsite: false,
+      checkoutNeeded: false,
+      checkInAt: "",
+      staleCheckInAt: new Date(actionAt).toISOString(),
+      staleStatus: true,
+      action: "stale_prior_day_checkin"
     };
   }
 
@@ -1351,6 +1385,7 @@ function serverHelperSource() {
     phase2841ServiceChannelEvents,
     phase2841ExplicitClockShark,
     phase2841ServiceChannelAllowed,
+    phase2841ServiceChannelCheckInIsPriorLocalDay,
     phase2841ServiceChannelTruth,
     phase2841FormatMinutes,
     phase2841ServiceChannelDashboard,
