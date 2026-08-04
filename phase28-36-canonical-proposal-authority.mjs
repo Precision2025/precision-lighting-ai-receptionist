@@ -10,7 +10,8 @@ import fs from "node:fs";
 
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
 const LEGACY_MARKER = "JOSHUA_PHASE28_36_CANONICAL_PROPOSAL_AUTHORITY";
-const NAV_MARKER = "JOSHUA_LEFT_NAVIGATION_AUTHORITY_V2";
+const NAV_MARKER = "JOSHUA_LEFT_NAVIGATION_AUTHORITY_V3";
+const MODAL_MARKER = "JOSHUA_QUEUE_MODAL_INTERACTION_AUTHORITY_V1";
 const IDENTITY_MARKER = "JOSHUA_QUEUE_IDENTITY_AUTHORITY_V2";
 
 await import("./phase28-35-canonical-brief-count.mjs");
@@ -294,15 +295,132 @@ const runtime = `
   fallbackOpenQueue(type);
  }
 
+ // ${MODAL_MARKER}
+ function queueTracking(element){
+  return String(element?.dataset?.tracking||"").trim();
+ }
+
+ function openWorkOrderControl(tracking){
+  const id=String(tracking||"").trim();
+  if(!id)return;
+  closeQueue();
+  try{
+   if(typeof window.openPhase12WorkOrder==="function"){
+    window.openPhase12WorkOrder(id);
+    return;
+   }
+  }catch(_){}
+  try{
+   if(typeof window.editOrder==="function"){
+    window.editOrder(id);
+    return;
+   }
+  }catch(_){}
+  openTab("workorders");
+ }
+
+ function activateQueueAction(element){
+  const tracking=queueTracking(element);
+  const action=String(element?.dataset?.officeAction||"").trim();
+  if(!tracking)return;
+  try{
+   if(typeof window.createOpsAction==="function"){
+    window.createOpsAction(tracking,action);
+    return;
+   }
+  }catch(_){}
+  // The retired queue action helper is not guaranteed to exist. The native
+  // Work Order Command Center is the durable fallback and exposes the current
+  // proposal/authorization/parts/billing actions for the selected job.
+  openWorkOrderControl(tracking);
+ }
+
+ function activateJobSheet(element){
+  const tracking=queueTracking(element);
+  if(!tracking)return;
+  try{
+   if(typeof window.editJobSheet==="function"){
+    window.editJobSheet(tracking);
+    return;
+   }
+  }catch(_){}
+  try{
+   if(typeof window.editOrder==="function"){
+    closeQueue();
+    window.editOrder(tracking);
+    return;
+   }
+  }catch(_){}
+  openWorkOrderControl(tracking);
+ }
+
+ function activateTimeline(element){
+  const tracking=queueTracking(element);
+  if(!tracking)return;
+  try{
+   if(typeof window.showTimeline==="function"){
+    window.showTimeline(tracking);
+    return;
+   }
+  }catch(_){}
+  // openPhase12WorkOrder loads the selected work order timeline immediately.
+  openWorkOrderControl(tracking);
+ }
+
+ function openAllWorkOrders(){
+  closeQueue();
+  try{
+   if(typeof window.officeOpenAllWorkOrders==="function"){
+    window.officeOpenAllWorkOrders();
+    return;
+   }
+  }catch(_){}
+  openTab("workorders");
+ }
+
  function handle(event){
   const target=event.target;
   if(!target?.closest)return;
 
+  // Own every queue-dialog control at window capture phase. Older document
+  // listeners can no longer swallow these taps or silently call missing helpers.
   const close=target.closest("[data-office-close-queue]");
   if(close){
    event.preventDefault();
    event.stopImmediatePropagation();
    closeQueue();
+   return;
+  }
+
+  const openOrders=target.closest("[data-office-open-workorders]");
+  if(openOrders){
+   event.preventDefault();
+   event.stopImmediatePropagation();
+   openAllWorkOrders();
+   return;
+  }
+
+  const action=target.closest("[data-office-action]");
+  if(action){
+   event.preventDefault();
+   event.stopImmediatePropagation();
+   activateQueueAction(action);
+   return;
+  }
+
+  const sheet=target.closest("[data-office-job-sheet]");
+  if(sheet){
+   event.preventDefault();
+   event.stopImmediatePropagation();
+   activateJobSheet(sheet);
+   return;
+  }
+
+  const timeline=target.closest("[data-office-timeline]");
+  if(timeline){
+   event.preventDefault();
+   event.stopImmediatePropagation();
+   activateTimeline(timeline);
    return;
   }
 
@@ -342,7 +460,7 @@ const runtime = `
  window.addEventListener("click",handle,true);
  window.addEventListener("keydown",event=>{
   if(!["Enter"," "].includes(event.key))return;
-  const button=event.target?.closest?.(".office-sidebar .office-nav-btn");
+  const button=event.target?.closest?.(".office-sidebar .office-nav-btn, #officeQueueDialog button");
   if(!button)return;
   event.preventDefault();
   button.click();
@@ -359,6 +477,8 @@ const runtime = `
  window.joshuaLeftNavigationOpenTab=openTab;
  window.joshuaLeftNavigationOpenQueue=openQueue;
  window.joshuaLeftNavigationCloseQueue=closeQueue;
+ window.joshuaQueueOpenWorkOrder=openWorkOrderControl;
+ window.joshuaQueueAction=activateQueueAction;
 })();
 </script>
 `;
@@ -376,5 +496,5 @@ if (fs.existsSync(panelPath)) {
 }
 
 console.log(
-  "Joshua Phase 28.36 active: left navigation + canonical customer/location identity authority installed."
+  "Joshua Phase 28.36 active: left navigation + queue popup interaction + canonical customer/location identity authority installed."
 );
