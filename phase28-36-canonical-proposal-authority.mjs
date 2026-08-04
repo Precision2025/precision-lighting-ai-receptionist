@@ -11,7 +11,7 @@ import fs from "node:fs";
 const panelPath = new URL("./public/control-panel.html", import.meta.url);
 const LEGACY_MARKER = "JOSHUA_PHASE28_36_CANONICAL_PROPOSAL_AUTHORITY";
 const NAV_MARKER = "JOSHUA_LEFT_NAVIGATION_AUTHORITY_V2";
-const IDENTITY_MARKER = "JOSHUA_QUEUE_IDENTITY_AUTHORITY_V1";
+const IDENTITY_MARKER = "JOSHUA_QUEUE_IDENTITY_AUTHORITY_V2";
 
 await import("./phase28-35-canonical-brief-count.mjs");
 
@@ -30,7 +30,7 @@ function patchCanonicalIdentityRuntime(html = "") {
   if (html.includes(IDENTITY_MARKER)) return html;
 
   const oldIdentity = `function officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v)return'';const n=officeNorm(v);if(['unknown','unknown_customer','unknown_location','clockshark_job','service_job','unassigned'].includes(n))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}`;
-  const newIdentity = `// ${IDENTITY_MARKER}\nfunction officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v)return'';const n=officeNorm(v);if(['customer','customer_name','location','location_name','job_name','unknown','unknown_customer','unknown_location','clockshark_job','service_job','servicechannel_job','placeholder','unassigned'].includes(n))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}\nfunction officeFirstIdentity(...values){for(const value of values){const v=officeIdentity(value);if(v)return v}return''}\nfunction officeFirstBrand(...values){for(const value of values){const v=officeBrand(value);if(v)return v}return''}`;
+  const newIdentity = `// ${IDENTITY_MARKER}\nfunction officeOneEdit(a,b){a=String(a||'');b=String(b||'');if(a===b)return true;if(Math.abs(a.length-b.length)>1)return false;let i=0,j=0,e=0;while(i<a.length&&j<b.length){if(a[i]===b[j]){i++;j++;continue}if(++e>1)return false;if(a.length>b.length)i++;else if(b.length>a.length)j++;else{i++;j++}}if(i<a.length||j<b.length)e++;return e<=1}\nfunction officePlaceholderIdentity(value){const compact=String(value||'').trim().toLowerCase().replace(/[^a-z]/g,'');if(!compact)return false;if(['unknown','unknowncustomer','unknownlocation','clocksharkjob','servicejob','servicechanneljob','placeholder','unassigned'].includes(compact))return true;return['customer','customername','location','locationname','jobname'].some(label=>officeOneEdit(compact,label))}\nfunction officeIdentity(value){const v=String(value||'').trim().replace(/\\s+/g,' ');if(!v||officePlaceholderIdentity(v))return'';if(/^service[ ]*channel[ ]*[#:_-]*[ ]*[0-9]+$/i.test(v))return'';return v}\nfunction officeFirstIdentity(...values){for(const value of values){const v=officeIdentity(value);if(v)return v}return''}\nfunction officeFirstBrand(...values){for(const value of values){const v=officeBrand(value);if(v)return v}return''}`;
 
   const oldDisplay = `function officeDisplayItem(item){if(!item||typeof item!=='object')return null;const id=officeJobId(item);if(!id)return null;let customer=officeBrand(item.customer||item.customerName||item.subscriber||item.subscriberName||item.client||item.clientName);let location=officeIdentity(item.locationName||item.location||item.serviceChannelLocationName||item.storeName||item.siteName||item.jobName||item.clockSharkJobName||item.address);if(!customer&&location)customer=officeBrand(location);if(!customer)customer='Customer';if(location===customer)location='';return {...item,trackingNumber:id,customer,locationName:location}}`;
   const newDisplay = `function officeDisplayItem(item){if(!item||typeof item!=='object')return null;const id=officeJobId(item);if(!id)return null;let customer=officeFirstBrand(item.customer,item.customerName,item.subscriber,item.subscriberName,item.serviceChannelCustomerName,item.serviceChannelSubscriberName,item.client,item.clientName,item.jobSheetCustomer,item.sheetCustomer,item.jobName,item.jobSheetJobName,item.sheetJobName,item.locationName);let location=officeFirstIdentity(item.locationName,item.location,item.serviceChannelLocationName,item.storeName,item.siteName,item.jobName,item.jobSheetJobName,item.sheetJobName,item.clockSharkJobName,item.address);if(!customer&&location&&!/^\d/.test(location))customer=officeBrand(location);if(!customer)customer=officeIsServiceChannel(item)?'ServiceChannel job':'Customer';if(location===customer)location='';return {...item,trackingNumber:id,customer,customerName:customer,locationName:location}}`;
@@ -53,15 +53,32 @@ const runtime = `
   return window.cache||{};
  }
 
+ function oneEdit(a,b){
+  a=String(a||"");b=String(b||"");
+  if(a===b)return true;
+  if(Math.abs(a.length-b.length)>1)return false;
+  let i=0,j=0,edits=0;
+  while(i<a.length&&j<b.length){
+   if(a[i]===b[j]){i++;j++;continue;}
+   if(++edits>1)return false;
+   if(a.length>b.length)i++;
+   else if(b.length>a.length)j++;
+   else{i++;j++;}
+  }
+  if(i<a.length||j<b.length)edits++;
+  return edits<=1;
+ }
+
+ function placeholderIdentity(value){
+  const compact=String(value??"").trim().toLowerCase().replace(/[^a-z]/g,"");
+  if(!compact)return false;
+  if(["unknown","unknowncustomer","unknownlocation","clocksharkjob","servicejob","servicechanneljob","placeholder","unassigned"].includes(compact))return true;
+  return ["customer","customername","location","locationname","jobname"].some(label=>oneEdit(compact,label));
+ }
+
  function identityText(value){
   const raw=String(value??"").trim().replace(/\s+/g," ");
-  if(!raw)return "";
-  const norm=raw.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
-  if([
-   "customer","customer_name","location","location_name","job_name",
-   "unknown","unknown_customer","unknown_location","clockshark_job",
-   "service_job","servicechannel_job","placeholder","unassigned"
-  ].includes(norm))return "";
+  if(!raw||placeholderIdentity(raw))return "";
   if(/^service\s*channel\s*[#:_-]*\s*[0-9]+$/i.test(raw))return "";
   return raw;
  }
