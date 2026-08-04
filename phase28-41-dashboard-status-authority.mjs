@@ -16,9 +16,9 @@ import { fileURLToPath } from "node:url";
  */
 
 const ROOT = new URL("./", import.meta.url);
-const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V1";
-const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V1";
+const MARKER = "JOSHUA_PHASE28_41_TIME_PAYROLL_TRUTH_V3";
+const SERVER_MARKER = "JOSHUA_PHASE28_41_SERVER_TIME_PAYROLL_V3";
+const PANEL_MARKER = "JOSHUA_PHASE28_41_PANEL_TIME_PAYROLL_V3";
 const PHASE24_SERVER_MARKER =
   "JOSHUA_PHASE24_SERVICECHANNEL_AUTHORITY_RUNTIME_V1";
 const PHASE24_PANEL_MARKER =
@@ -254,12 +254,8 @@ function phase2841ServiceChannelTruth(
     Boolean(phase2841ServiceChannelEventAction(event))
   );
 
-  let action = latestActionEvent
-    ? phase2841ServiceChannelEventAction(latestActionEvent)
-    : "";
-  let actionAt = latestActionEvent
-    ? phase2841EventWhen(latestActionEvent)
-    : 0;
+  let action = "";
+  let actionAt = 0;
 
   const checkInAt =
     phase2841Time(item.serviceChannelCheckInEventAt) ||
@@ -268,22 +264,55 @@ function phase2841ServiceChannelTruth(
     phase2841Time(item.serviceChannelCheckOutEventAt) ||
     phase2841Time(item.checkOutAt);
 
-  if (!action) {
-    if (checkOutAt && checkOutAt >= checkInAt) {
-      action = "checkout";
-      actionAt = checkOutAt;
-    } else if (
-      checkInAt &&
-      (
-        item.ivrConfirmed === true ||
-        item.serviceChannelOnsiteConfirmed === true ||
-        item.serviceChannelSourceOfTruth === true ||
-        item.serviceChannelManualOverride === true
-      )
-    ) {
-      action = "checkin";
-      actionAt = checkInAt;
-    }
+  // A current ServiceChannel workflow status that explicitly says the job is
+  // waiting for approval is authoritative evidence that nobody is onsite.
+  // Do not let an older check-in timestamp or stale Joshua checkout flag turn
+  // that record back into Onsite / Checkout Needed.
+  const currentServiceChannelStatus = [
+    item.serviceChannelPrimaryStatus,
+    item.serviceChannelExtendedStatus
+  ]
+    .map(phase2841Lower)
+    .join(" ");
+  const serviceChannelExplicitlyOffsite = Boolean(
+    /waiting\s+for\s+approval|completed\s*\/\s*confirmed|invoiced|closed|cancelled|canceled/.test(
+      currentServiceChannelStatus
+    ) &&
+    !/on\s*site|onsite/.test(currentServiceChannelStatus)
+  );
+
+  if (serviceChannelExplicitlyOffsite) {
+    return {
+      isServiceChannel: true,
+      onsite: false,
+      checkoutNeeded: false,
+      checkInAt: "",
+      action: "offsite_status"
+    };
+  }
+
+  const confirmedCheckIn = Boolean(
+    checkInAt &&
+    (
+      item.ivrConfirmed === true ||
+      item.serviceChannelOnsiteConfirmed === true ||
+      item.serviceChannelSourceOfTruth === true ||
+      item.serviceChannelManualOverride === true
+    )
+  );
+
+  // Explicit IVR/check-in timestamps are stronger than synthetic status events.
+  // A real checkout must permanently clear an older check-in, even when a
+  // later reconciliation event repeats stale "on site" metadata.
+  if (checkOutAt && checkOutAt >= checkInAt) {
+    action = "checkout";
+    actionAt = checkOutAt;
+  } else if (confirmedCheckIn) {
+    action = "checkin";
+    actionAt = checkInAt;
+  } else if (latestActionEvent) {
+    action = phase2841ServiceChannelEventAction(latestActionEvent);
+    actionAt = phase2841EventWhen(latestActionEvent);
   }
 
   if (!action) {
@@ -319,18 +348,16 @@ function phase2841ServiceChannelTruth(
     };
   }
 
-  const maxMinutes = Math.max(
-    30,
-    Number(settings.maxOnsiteMinutes || 240)
-  );
   const elapsedMinutes = actionAt
     ? Math.max(0, Math.round((Date.now() - actionAt) / 60000))
     : 0;
   const state = phase2841Lower(item.joshuaStatus || item.state);
+  // Time onsite is an audit/warning signal, not a status transition. Joshua
+  // must never move a live ServiceChannel job to Checkout Needed merely
+  // because the visit lasted longer than an arbitrary threshold.
   const checkoutNeeded = Boolean(
     item.serviceChannelCheckoutNeeded === true ||
-    state === "checkout_needed" ||
-    (actionAt && elapsedMinutes > maxMinutes)
+    state === "checkout_needed"
   );
 
   return {
@@ -479,113 +506,104 @@ function phase2841ShiftIsOpen(shift = {}) {
 function phase2841ClockSharkCurrent(data = {}) {
   const shifts = Object.values(data.clockShark?.shifts || {})
     .filter(shift => shift && typeof shift === "object");
-  const latestOpen = new Map();
 
+  const normalize = value =>
+    phase2841Lower(value).replace(/[^a-z0-9@._+-]+/g, "");
+
+  const identity = shift => ({
+    email: normalize(shift.employeeEmail),
+    id: normalize(shift.employeeId),
+    name: normalize(shift.employeeName || shift.name)
+  });
+
+  const sameEmployee = (left, right) => Boolean(
+    (left.email && right.email && left.email === right.email) ||
+    (left.id && right.id && left.id === right.id) ||
+    (left.name && right.name && left.name === right.name)
+  );
+
+  // ClockShark can deliver a real clock-out while an older open segment remains
+  // in Joshua's cache. Resolve current activity from the newest actual punch
+  // (clock-in or clock-out) per employee, not from the word "open" alone.
+  const groups = [];
   for (const shift of shifts) {
-    if (!phase2841ShiftIsOpen(shift)) continue;
-    const identity = phase2841EmployeeIdentity(shift, shift.id || shift.shiftId);
-    if (!identity) continue;
+    const keys = identity(shift);
+    if (!keys.email && !keys.id && !keys.name) continue;
 
-    const current = latestOpen.get(identity);
-    const shiftWhen =
-      phase2841Time(shift.clockInAt) ||
-      phase2841Time(shift.updatedAt) ||
-      phase2841Time(shift.createdAt);
-    const currentWhen = current
-      ? (
-          phase2841Time(current.clockInAt) ||
-          phase2841Time(current.updatedAt) ||
-          phase2841Time(current.createdAt)
-        )
-      : -1;
-
-    if (!current || shiftWhen >= currentWhen) {
-      latestOpen.set(identity, shift);
+    let group = groups.find(candidate => sameEmployee(candidate.keys, keys));
+    if (!group) {
+      group = { keys, shifts: [] };
+      groups.push(group);
+    } else {
+      group.keys = {
+        email: group.keys.email || keys.email,
+        id: group.keys.id || keys.id,
+        name: group.keys.name || keys.name
+      };
     }
+    group.shifts.push(shift);
   }
 
   const rows = [];
-  const seen = new Set();
 
-  for (const [identity, shift] of latestOpen) {
-    seen.add(identity);
-    const activityType = phase2841ClockSharkActivity(shift);
-    const clockInAt = phase2841Text(shift.clockInAt);
+  for (const group of groups) {
+    const latest = group.shifts
+      .slice()
+      .sort((left, right) => {
+        const leftMoment = Math.max(
+          phase2841Time(left.clockOutAt || left.endAt),
+          phase2841Time(left.clockInAt || left.startAt),
+          phase2841Time(left.createdAt)
+        );
+        const rightMoment = Math.max(
+          phase2841Time(right.clockOutAt || right.endAt),
+          phase2841Time(right.clockInAt || right.startAt),
+          phase2841Time(right.createdAt)
+        );
+        if (rightMoment !== leftMoment) return rightMoment - leftMoment;
+
+        // A job/task switch can close one segment and open the next at the same
+        // instant. In that exact tie, the new open segment is the current one.
+        const leftOpen = phase2841ShiftIsOpen(left) ? 1 : 0;
+        const rightOpen = phase2841ShiftIsOpen(right) ? 1 : 0;
+        return rightOpen - leftOpen;
+      })[0];
+
+    if (!latest || !phase2841ShiftIsOpen(latest)) continue;
+
+    const activityType = phase2841ClockSharkActivity(latest);
+    const clockInAt = phase2841Text(latest.clockInAt || latest.startAt);
     const elapsedMinutes = clockInAt
       ? Math.max(0, Math.round((Date.now() - phase2841Time(clockInAt)) / 60000))
       : 0;
 
     rows.push({
-      employeeName: phase2841Text(shift.employeeName) || identity,
-      employeeId: phase2841Text(shift.employeeId),
-      employeeEmail: phase2841Text(shift.employeeEmail),
+      employeeName: phase2841Text(latest.employeeName || latest.name) || "Unknown",
+      employeeId: phase2841Text(latest.employeeId),
+      employeeEmail: phase2841Text(latest.employeeEmail),
       activityType,
       activityLabel: phase2841Text(
-        shift.clockSharkActivityLabel ||
-        shift.activityName ||
-        shift.taskName ||
+        latest.clockSharkActivityLabel ||
+        latest.activityName ||
+        latest.taskName ||
         activityType
       ),
       destinationJob: phase2841Text(
-        shift.clockSharkDestinationJob ||
-        shift.jobName ||
-        shift.jobNumber
+        latest.clockSharkDestinationJob ||
+        latest.jobName ||
+        latest.jobNumber
       ),
       destinationTrackingNumber: phase2841Text(
-        shift.clockSharkDestinationTrackingNumber ||
-        shift.joshuaTrackingNumber ||
-        shift.trackingNumber ||
-        shift.jobNumber
+        latest.clockSharkDestinationTrackingNumber ||
+        latest.joshuaTrackingNumber ||
+        latest.trackingNumber ||
+        latest.jobNumber
       ),
       clockInAt,
       elapsedMinutes,
       elapsed: phase2841FormatMinutes(elapsedMinutes),
-      shiftId: phase2841Text(shift.id || shift.shiftId),
+      shiftId: phase2841Text(latest.id || latest.shiftId),
       source: "shift"
-    });
-  }
-
-  for (const [key, technician] of Object.entries(data.technicians || {})) {
-    if (!technician || typeof technician !== "object") continue;
-    if (technician.clockSharkClockedIn !== true) continue;
-
-    const identity = phase2841EmployeeIdentity(technician, key);
-    if (!identity || seen.has(identity)) continue;
-    seen.add(identity);
-
-    const activityType = phase2841ClockSharkActivity(technician);
-    const clockInAt = phase2841Text(
-      technician.clockSharkActivityStartedAt ||
-      technician.activityStartedAt
-    );
-    const elapsedMinutes = clockInAt
-      ? Math.max(0, Math.round((Date.now() - phase2841Time(clockInAt)) / 60000))
-      : 0;
-
-    rows.push({
-      employeeName: phase2841Text(technician.name || key),
-      employeeId: phase2841Text(technician.employeeId),
-      employeeEmail: phase2841Text(technician.email),
-      activityType,
-      activityLabel: phase2841Text(
-        technician.clockSharkActivityLabel ||
-        technician.activityLabel ||
-        activityType
-      ),
-      destinationJob: phase2841Text(
-        technician.clockSharkDestinationJob ||
-        technician.clockSharkCurrentJob
-      ),
-      destinationTrackingNumber: phase2841Text(
-        technician.clockSharkDestinationTrackingNumber ||
-        technician.clockSharkCurrentTrackingNumber ||
-        technician.currentTrackingNumber
-      ),
-      clockInAt,
-      elapsedMinutes,
-      elapsed: phase2841FormatMinutes(elapsedMinutes),
-      shiftId: "",
-      source: "technician"
     });
   }
 
@@ -618,7 +636,7 @@ function phase2841ClockSharkCurrent(data = {}) {
       lastSuccessAgeMinutes,
       lastPullResultCount: Number(sync.lastPullResultCount || 0),
       sourceShiftCount: shifts.length,
-      openShiftCount: latestOpen.size,
+      openShiftCount: rows.length,
       mode: snapshotReliable ? "live_snapshot" : "event_only"
     }
   };
@@ -653,36 +671,19 @@ function phase2841BuildTimePayrollAudit(
   const shifts = Object.values(data.clockShark?.shifts || {})
     .filter(shift => shift && typeof shift === "object");
 
-  // Only the newest open shift per technician is current. Closed shifts remain
-  // historical payroll evidence.
-  const latestOpenByEmployee = new Map();
-  const closed = [];
-
-  for (const shift of shifts) {
-    if (phase2841ShiftIsOpen(shift)) {
-      const identity = phase2841EmployeeIdentity(shift, shift.id || shift.shiftId);
-      if (!identity) continue;
-      const current = latestOpenByEmployee.get(identity);
-      const when =
-        phase2841Time(shift.clockInAt) ||
-        phase2841Time(shift.updatedAt) ||
-        phase2841Time(shift.createdAt);
-      const currentWhen = current
-        ? (
-            phase2841Time(current.clockInAt) ||
-            phase2841Time(current.updatedAt) ||
-            phase2841Time(current.createdAt)
-          )
-        : -1;
-      if (!current || when >= currentWhen) {
-        latestOpenByEmployee.set(identity, shift);
-      }
-    } else {
-      closed.push(shift);
-    }
-  }
-
-  const selected = [...closed, ...latestOpenByEmployee.values()];
+  // Closed segments are immutable payroll history. For current/open time, use
+  // the exact same canonical activity authority as the dashboard so stale open
+  // travel/job cache entries cannot inflate payroll.
+  const currentShiftIds = new Set(
+    phase2841ClockSharkCurrent(data).all
+      .map(row => phase2841Text(row.shiftId))
+      .filter(Boolean)
+  );
+  const selected = shifts.filter(shift => {
+    if (!phase2841ShiftIsOpen(shift)) return true;
+    const id = phase2841Text(shift.id || shift.shiftId);
+    return Boolean(id && currentShiftIds.has(id));
+  });
   const rows = [];
 
   for (const shift of selected) {
@@ -1125,7 +1126,21 @@ function phase2841RepairSourceTruthData(data = {}, now = new Date().toISOString(
   const stale = data.workOrders["358376094"];
   if (stale) {
     const state = phase2841Lower(stale.joshuaStatus || stale.state);
+    const providerStatus = [
+      stale.serviceChannelPrimaryStatus,
+      stale.serviceChannelExtendedStatus
+    ]
+      .map(phase2841Lower)
+      .join(" ");
+    const providerExplicitlyOffsite = Boolean(
+      /waiting\s+for\s+approval|completed\s*\/\s*confirmed|invoiced|closed|cancelled|canceled/.test(
+        providerStatus
+      ) &&
+      !/on\s*site|onsite/.test(providerStatus)
+    );
+
     if (
+      providerExplicitlyOffsite ||
       stale.checkOutAt ||
       stale.serviceChannelCheckOutEventAt ||
       !["onsite", "checkout_needed"].includes(state)
