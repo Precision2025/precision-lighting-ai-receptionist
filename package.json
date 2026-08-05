@@ -1,10 +1,10 @@
 {
   "name": "precision-lighting-joshua",
-  "version": "3.0.37",
+  "version": "3.0.38",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node phase28-48-actual-workorder-popup-authority.mjs",
+    "start": "node phase28-49-servicechannel-visit-time-authority.mjs",
     "start:legacy": "node phase10-bootstrap.mjs",
     "backfill": "node backfill-job-sheets.mjs job-sheets-backfill.json"
   },
@@ -17,7 +17,5 @@
     "openai": "^5.10.2",
     "twilio": "^5.8.0"
   },
-  "engines": {
-    "node": ">=20"
-  }
+  "engines": {"node": ">=20"}
 }
