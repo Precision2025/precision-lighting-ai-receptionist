@@ -26,7 +26,6 @@ const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2"
 ];
-const CACHE_MARKER = "JOSHUA_PHASE28_50_CONTROL_PANEL_NOCACHE_V1";
 
 function patchServer() {
   if (!fs.existsSync(SERVER_PATH)) {
@@ -120,19 +119,7 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
     console.log("Joshua Phase 28.50 installed durable office-note route.");
   }
 
-  if (!server.includes(CACHE_MARKER)) {
-    const panelSend = 'return reply.type("text/html").send(fs.readFileSync(htmlPath, "utf8"));';
-    if (server.includes(panelSend)) {
-      server = server.replace(
-        panelSend,
-        `/* ${CACHE_MARKER} */\n  return reply\n    .header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")\n    .header("Pragma", "no-cache")\n    .header("Expires", "0")\n    .header("X-Joshua-Build", "phase28.50-v3")\n    .type("text/html")\n    .send(fs.readFileSync(htmlPath, "utf8"));`
-      );
-      changed = true;
-      console.log("Joshua Phase 28.50 disabled Control Panel HTML caching.");
-    } else {
-      console.warn("Joshua Phase 28.50: Control Panel send anchor not found; cache headers not patched.");
-    }
-  }
+
 
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
@@ -238,7 +225,8 @@ function patchPanel(fileUrl) {
   return true;
 }
 
-// The API route and no-cache authority must exist before the existing chain imports server.js.
+// The durable Office Notes API route must exist before the existing chain imports server.js.
+// IMPORTANT: do not rewrite the /control-panel route here. Phase 20 matches that route exactly during startup.
 patchServer();
 
 // Patch once before import and again after the stable Phase 28.46 chain rebuilds the final panel.
@@ -256,5 +244,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V3 active: durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, popup performance fix, and no-cache Control Panel (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V4 active: durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
