@@ -22,13 +22,14 @@ const PANEL_PATHS = [
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
 const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V7";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V4",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V5"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V5",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6"
 ];
 
 function patchServer() {
@@ -236,16 +237,26 @@ function patchPanelSmartActions(html) {
 
 function patchPanelDashboardAndLayout(html) {
   let out = html;
-  const oldBacklog = '<div class="card stat"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>';
-  const newBacklog = '<div class="card stat clickable-stat" id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing" aria-label="Open Billing Queue for invoice backlog"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>';
-  if (out.includes(oldBacklog)) out = out.replace(oldBacklog, newBacklog);
 
-  // Be tolerant of an already-upgraded card from an earlier runtime while
-  // ensuring the Billing Queue action remains attached.
-  if (out.includes('id="invoiceBacklogCard"') && !out.includes('id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing"')) {
-    out = out.replace(/<div class="card stat(?: clickable-stat)?" id="invoiceBacklogCard"[^>]*>/,
-      '<div class="card stat clickable-stat" id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing" aria-label="Open Billing Queue for invoice backlog">');
+  // Upgrade the Invoice Backlog KPI itself. This is intentionally tolerant of
+  // older/newer dashboard markup so the card stays actionable after other
+  // phases rebuild the Control Panel.
+  const backlogStrong = /<strong\s+id=["']invoiceBacklog["'][^>]*>[\s\S]*?<\/strong>/i;
+  const strongMatch = out.match(backlogStrong);
+  if (strongMatch) {
+    const strongIndex = strongMatch.index;
+    const before = out.slice(0, strongIndex);
+    const openIndex = before.lastIndexOf('<div class="card stat');
+    const closeIndex = out.indexOf('</div>', strongIndex);
+    if (openIndex >= 0 && closeIndex > strongIndex) {
+      const oldCard = out.slice(openIndex, closeIndex + 6);
+      const innerStart = oldCard.indexOf('>') + 1;
+      const inner = innerStart > 0 ? oldCard.slice(innerStart, -6) : oldCard;
+      const newCard = '<div class="card stat clickable-stat" id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing" aria-label="Open Billing Queue for invoice backlog">' + inner + '</div>';
+      out = out.slice(0, openIndex) + newCard + out.slice(closeIndex + 6);
+    }
   }
+
   return out;
 }
 
@@ -298,6 +309,14 @@ function patchPanel(fileUrl) {
 #invoiceBacklogCard:hover,#invoiceBacklogCard:focus{border-color:#eab308;background:#172536;outline:none}
 #invoiceBacklogCard:focus-visible{outline:2px solid #eab308;outline-offset:2px}
 #invoiceBacklogCard::after{content:"›";position:absolute;right:14px;bottom:14px;color:#eab308;font-size:28px;font-weight:900}
+.j2850-route-card{cursor:pointer!important;position:relative!important;touch-action:manipulation}
+.j2850-route-card:hover,.j2850-route-card:focus{border-color:#eab308!important;outline:none}
+.j2850-route-card:focus-visible{outline:2px solid #eab308!important;outline-offset:2px}
+.j2850-route-card::after{content:"›";position:absolute;right:14px;bottom:12px;color:#eab308;font-size:24px;font-weight:900;line-height:1}
+.j2850-route-card .queue-arrow{display:none!important}
+#insights .insight{position:relative;cursor:pointer;padding-right:28px}
+#insights .insight::after{content:"›";position:absolute;right:2px;top:50%;transform:translateY(-50%);color:#eab308;font-size:22px;font-weight:900}
+#insights .insight:hover{background:rgba(255,255,255,.025)}
 /* V6 containment authority: keep desktop-first cards and dialogs inside their actual container. */
 html,body{max-width:100%;overflow-x:hidden}
 main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j2850-grid,#timepayroll,#timepayroll>.card{min-width:0;max-width:100%}
@@ -332,6 +351,8 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  function currentUser(){var a=window.__JOSHUA_AUTH__||{};var u=a.user||{};return text(u.displayName||u.username||'Office')||'Office'}
  function cleanMention(value){return text(value).replace(/@(shellie|ariana|travis)\\b/ig,'').replace(/\\s+/g,' ').trim()}
  function mentioned(value){var s=text(value);if(/@shellie\\b/i.test(s))return 'Shellie';if(/@ariana\\b/i.test(s))return 'Ariana';if(/@travis\\b/i.test(s))return 'Travis';return ''}
+ function ensureInvoiceBacklogCard(){var amount=document.getElementById('invoiceBacklog');if(!amount)return null;var card=amount.closest&&amount.closest('.card.stat');if(!card)return null;card.id='invoiceBacklogCard';card.classList.add('clickable-stat');card.setAttribute('role','button');card.setAttribute('tabindex','0');card.setAttribute('data-office-queue','billing');card.setAttribute('aria-label','Open Billing Queue for invoice backlog');return card}
+ function openInvoiceBacklogQueue(){ensureInvoiceBacklogCard();try{if(typeof window.officeOpenQueue==='function'){window.officeOpenQueue('billing');return true}}catch(_){ }var nav=document.querySelector('.office-nav-btn[data-office-queue="billing"]');if(nav){try{nav.click();return true}catch(_){ }}return false}
  function findPrefix(node){var host=node&&node.closest&&node.closest('[data-j2850-prefix]');return host?host.getAttribute('data-j2850-prefix'):''}
  function ids(prefix){return {
   notes:prefix+'OfficeNotesList',noteInput:prefix+'OfficeNoteInput',noteMsg:prefix+'OfficeNoteMessage',
@@ -365,13 +386,45 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
  async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
  async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
- document.addEventListener('keydown',function(e){var card=e.target&&e.target.closest&&e.target.closest('#invoiceBacklogCard');if(card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();card.click()}});
+ function dashboardMetricCard(id){var el=document.getElementById(id);return el&&el.closest?el.closest('.card'):null}
+ function markDashboardRouteCard(id,label){var card=dashboardMetricCard(id);if(!card)return null;card.classList.remove('dashboard-clickable');card.removeAttribute('data-dashboard-action');card.removeAttribute('data-dashboard-value');card.classList.add('j2850-route-card');card.setAttribute('role','button');card.setAttribute('tabindex','0');if(label)card.setAttribute('aria-label',label);return card}
+ function clearBadGenericDashboardRoutes(){var intelligence=document.getElementById('insights');var card=intelligence&&intelligence.closest&&intelligence.closest('.card');if(card){card.classList.remove('dashboard-clickable');card.removeAttribute('data-dashboard-action');card.removeAttribute('data-dashboard-value')}}
+ function installDashboardRouteCards(){
+  markDashboardRouteCard('completedToday','Open completed work orders from today');
+  markDashboardRouteCard('openOrders','Open all work orders');
+  markDashboardRouteCard('availableTechs','Open available technicians');
+  markDashboardRouteCard('outs',"Open today's checked-out work orders");
+  markDashboardRouteCard('awaitingAuth','Open Authorization Queue');
+  markDashboardRouteCard('pendingProposal','Open Proposal Queue');
+  markDashboardRouteCard('partsNeeded','Open Parts Queue');
+  markDashboardRouteCard('returnVisitsNeeded','Open Return Visit Queue');
+  markDashboardRouteCard('readyToBill','Open Billing Queue');
+  ensureInvoiceBacklogCard();
+  clearBadGenericDashboardRoutes();
+ }
+ function openQueueSafe(type){try{if(typeof window.officeOpenQueue==='function'){window.officeOpenQueue(type);return true}}catch(_){ }var nav=document.querySelector('[data-office-queue="'+type+'"],[data-queue="'+type+'"]');if(nav){try{nav.click();return true}catch(_){ }}return false}
+ function openTabSafe(tab){try{if(typeof window.officeOpenTab==='function'){window.officeOpenTab(tab);return true}}catch(_){ }var b=document.querySelector('.tab[data-tab="'+tab+'"],[data-office-tab="'+tab+'"]');if(b){try{b.click();return true}catch(_){ }}return false}
+ function openWorkOrdersFiltered(completed){try{if(typeof window.setWorkOrderListFilter==='function')window.setWorkOrderListFilter(completed?'completed_today':'all')}catch(_){ }var ok=openTabSafe('workorders');setTimeout(function(){try{if(typeof window.setWorkOrderListFilter==='function')window.setWorkOrderListFilter(completed?'completed_today':'all')}catch(_){ }var w=document.getElementById('workorders');if(w&&w.scrollIntoView)w.scrollIntoView({block:'start'})},0);return ok}
+ function onsiteTrackingFromCard(card){var m=text(card&&card.textContent).match(/Tracking\s*#?\s*([A-Za-z0-9-]+)/i);return m?text(m[1]):''}
+ function insightRoute(node){var body=norm50(node&&node.textContent);if(!body)return'';if(/invoice|ready for review|ready to bill|billing/.test(body))return'queue:billing';if(/nte|warning level|authorization/.test(body))return'tab:workorders';if(/technician currently onsite|currently onsite|onsite/.test(body))return'onsite';if(/technicians available|technician available|available technicians/.test(body))return'tab:technicians';return''}
+ function dashboardRouteFromTarget(target){
+  if(!target||!target.closest)return null;
+  var onsite=target.closest('#onsiteCards .card');if(onsite)return{kind:'job',tracking:onsiteTrackingFromCard(onsite)};
+  var insight=target.closest('#insights .insight');if(insight){var ir=insightRoute(insight);if(ir)return{kind:'route',route:ir}}
+  var pairs=[['invoiceBacklog','queue:billing'],['completedToday','workorders:completed'],['openOrders','workorders:all'],['availableTechs','tab:technicians'],['outs','workorders:completed'],['awaitingAuth','queue:authorization'],['pendingProposal','queue:proposal'],['partsNeeded','queue:parts'],['returnVisitsNeeded','queue:return_trip'],['readyToBill','queue:billing']];
+  for(var n=0;n<pairs.length;n++){var card=dashboardMetricCard(pairs[n][0]);if(card&&card.contains(target))return{kind:'route',route:pairs[n][1]}}
+  return null
+ }
+ function executeDashboardRoute(hit){if(!hit)return false;if(hit.kind==='job'){if(hit.tracking)return openJobPopup(hit.tracking,null);return false}var route=text(hit.route);if(route==='workorders:completed')return openWorkOrdersFiltered(true);if(route==='workorders:all')return openWorkOrdersFiltered(false);if(route==='onsite'){var top=document.getElementById('currentlyOnsiteCard');if(top){setTimeout(function(){top.click()},0);return true}return openTabSafe('dispatch')}if(route.indexOf('queue:')===0)return openQueueSafe(route.slice(6));if(route.indexOf('tab:')===0)return openTabSafe(route.slice(4));return false}
+ window.addEventListener('click',function(e){var hit=dashboardRouteFromTarget(e.target);if(!hit)return;e.preventDefault();e.stopImmediatePropagation();if(!executeDashboardRoute(hit))alert('Joshua could not open that list yet. Refresh the Control Panel and try again.');},true);
+ window.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var hit=dashboardRouteFromTarget(e.target);if(!hit)return;e.preventDefault();e.stopImmediatePropagation();executeDashboardRoute(hit)},true);
  document.addEventListener('input',function(e){var p=findPrefix(e.target);if(!p)return;var i=ids(p);if(e.target.id===i.taskTitle){var a=mentioned(e.target.value);var s=document.getElementById(i.taskAssigned);if(a&&s)s.value=a}});
  document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&text(t.value).toLowerCase().indexOf('@'+String(v).toLowerCase())<0)t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
  // Performance authority: no whole-page MutationObserver and no 2.5-second popup poll.
  // Refresh only when the job is opened or a note/task operation changes it.
  if(typeof window.openPhase12WorkOrder==='function'&&!window.openPhase12WorkOrder.__j2850Wrapped){var originalOpen=window.openPhase12WorkOrder;var openWrapped=function(){var r=originalOpen.apply(this,arguments);setTimeout(renderOpen,0);setTimeout(renderOpen,100);return r};openWrapped.__j2850Wrapped=true;window.openPhase12WorkOrder=openWrapped}
- if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',renderOpen);else renderOpen();setTimeout(renderOpen,300);
+ installDashboardRouteCards();setTimeout(installDashboardRouteCards,350);setTimeout(installDashboardRouteCards,1350);
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){ensureInvoiceBacklogCard();renderOpen()});else renderOpen();setTimeout(renderOpen,300);
  window.joshuaPhase2850RenderWorkOrderCollaboration=renderOpen;
  window.joshuaPhase2850OpenWorkOrder=openJobPopup;
  window.joshuaPhase2850FindWorkflowTask=workflowTask;
@@ -404,5 +457,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V6 active: clickable invoice backlog, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V8 active: dashboard routing authority for every KPI/list card and Joshua Intelligence row, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
