@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node phase28-50-office-notes-task-command-center.mjs
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION

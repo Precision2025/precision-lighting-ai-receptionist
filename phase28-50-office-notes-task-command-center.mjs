@@ -21,8 +21,12 @@ const PANEL_PATHS = [
 ];
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2";
-const OLD_PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3";
+const OLD_PANEL_MARKERS = [
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2"
+];
+const CACHE_MARKER = "JOSHUA_PHASE28_50_CONTROL_PANEL_NOCACHE_V1";
 
 function patchServer() {
   if (!fs.existsSync(SERVER_PATH)) {
@@ -30,13 +34,9 @@ function patchServer() {
   }
 
   let server = fs.readFileSync(SERVER_PATH, "utf8");
-  if (server.includes(SERVER_MARKER)) return;
+  let changed = false;
 
   const anchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
-  if (!server.includes(anchor)) {
-    throw new Error("Phase 28.50: work-order update route anchor not found.");
-  }
-
   const route = `/* ${SERVER_MARKER} */
 app.post("/api/control/work-orders/:tracking/office-notes", async (request, reply) => {
   if (!controlAuthorized(request)) {
@@ -111,20 +111,41 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
 
 `;
 
-  server = server.replace(anchor, route + anchor);
-  fs.writeFileSync(SERVER_PATH, server);
-  console.log("Joshua Phase 28.50 installed durable office-note route.");
+  if (!server.includes(SERVER_MARKER)) {
+    if (!server.includes(anchor)) {
+      throw new Error("Phase 28.50: work-order update route anchor not found.");
+    }
+    server = server.replace(anchor, route + anchor);
+    changed = true;
+    console.log("Joshua Phase 28.50 installed durable office-note route.");
+  }
+
+  if (!server.includes(CACHE_MARKER)) {
+    const panelSend = 'return reply.type("text/html").send(fs.readFileSync(htmlPath, "utf8"));';
+    if (server.includes(panelSend)) {
+      server = server.replace(
+        panelSend,
+        `/* ${CACHE_MARKER} */\n  return reply\n    .header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")\n    .header("Pragma", "no-cache")\n    .header("Expires", "0")\n    .header("X-Joshua-Build", "phase28.50-v3")\n    .type("text/html")\n    .send(fs.readFileSync(htmlPath, "utf8"));`
+      );
+      changed = true;
+      console.log("Joshua Phase 28.50 disabled Control Panel HTML caching.");
+    } else {
+      console.warn("Joshua Phase 28.50: Control Panel send anchor not found; cache headers not patched.");
+    }
+  }
+
+  if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
 
 function patchPanel(fileUrl) {
   if (!fs.existsSync(fileUrl)) return false;
   let html = fs.readFileSync(fileUrl, "utf8");
   if (html.includes(PANEL_MARKER)) return false;
-  // If an older generated Phase 28.50 runtime was ever committed, remove it first
-  // so its global MutationObserver/polling loop cannot survive beside V2.
-  if (html.includes(OLD_PANEL_MARKER)) {
+  // Remove any earlier Phase 28.50 generated runtime before installing V3.
+  for (const oldMarker of OLD_PANEL_MARKERS) {
+    if (!html.includes(oldMarker)) continue;
     const oldRuntime = new RegExp(
-      "<style>\\s*\\/\\*\\s*" + OLD_PANEL_MARKER +
+      "<style>\\s*\\/\\*\\s*" + oldMarker +
       "\\s*\\*\\/[\\s\\S]*?<\\/script>",
       "g"
     );
@@ -188,12 +209,12 @@ function patchPanel(fileUrl) {
  function renderPrefix(prefix,titleId){var tr=trackingFromTitle(titleId);if(!tr)return;var item=orderByTracking(tr);if(!item)return;renderNotes(prefix,item);renderTasks(prefix,item);selectAssignedTech(item)}
  function renderOpen(){mountHome();mountPhase12();var h=document.getElementById('homeWorkOrderDialog');if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2850Home','homeWorkOrderTitle');var p=document.getElementById('phase12WorkOrderDialog');if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2850Phase12','phase12Title')}
  function prefixTracking(prefix){return prefix==='j2850Home'?trackingFromTitle('homeWorkOrderTitle'):trackingFromTitle('phase12Title')}
- function norm50(v){return text(v).toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim()}
+ function norm50(v){return text(v).toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\\s+/g,' ').trim()}
  function orderIdentifiers(o){return [o&&o.trackingNumber,o&&o.serviceChannelTrackingNumber,o&&o.scTrackingNumber,o&&o.workOrderNumber,o&&o.jobNumber,o&&o.nestTrackingNumber,o&&o.clockSharkJobNumber].map(text).filter(Boolean)}
  function orderLabels(o){return [o&&o.jobName,o&&o.clockSharkJobName,o&&o.locationName,o&&o.location,o&&o.customer,o&&o.customerName,o&&o.address].map(norm50).filter(Boolean)}
- function resolveOrderTracking(candidate,task){var raw=text(candidate),list=orders();var taskValues=[];if(task&&typeof task==='object'){['trackingNumber','serviceChannelTrackingNumber','scTrackingNumber','workOrderNumber','jobNumber','relatedTrackingNumber','sourceTrackingNumber','identity','jobName','locationName'].forEach(function(k){var v=text(task[k]);if(v)taskValues.push(v)})}var values=[raw].concat(taskValues).filter(Boolean);for(var vi=0;vi<values.length;vi++){var value=values[vi],nv=norm50(value);for(var oi=0;oi<list.length;oi++){var o=list[oi],ids=orderIdentifiers(o);if(ids.some(function(id){return norm50(id)===nv}))return text(o.trackingNumber||o.serviceChannelTrackingNumber||o.scTrackingNumber||o.workOrderNumber)}var nums=value.match(/\b\d{4,14}\b/g)||[];for(var ni=0;ni<nums.length;ni++){var num=nums[ni];for(var oj=0;oj<list.length;oj++){var oo=list[oj],oids=orderIdentifiers(oo);if(oids.some(function(id){return text(id).replace(/\D/g,'')===num.replace(/\D/g,'')}))return text(oo.trackingNumber||oo.serviceChannelTrackingNumber||oo.scTrackingNumber||oo.workOrderNumber)}}if(nv.length>=8){for(var ok=0;ok<list.length;ok++){var ol=list[ok],labels=orderLabels(ol);if(labels.some(function(label){return label===nv||label.includes(nv)||nv.includes(label)}))return text(ol.trackingNumber||ol.serviceChannelTrackingNumber||ol.scTrackingNumber||ol.workOrderNumber)}}}return ''}
- function taskForRow(row){if(!row)return null;var id='';var b=row.querySelector('[data-phase19-complete]');if(b)id=text(b.getAttribute('data-phase19-complete'));if(!id){var c=row.querySelector('[onclick*="closeTask"]');var m=text(c&&c.getAttribute('onclick')).match(/closeTask\([\"\']([^\"\']+)/);if(m)id=m[1]}return id?openTasks().find(function(t){return text(t&&t.id)===id})||null:null}
- function rowCandidate(row){if(!row)return '';var d=row.querySelector('[data-tracking]');if(d&&text(d.getAttribute('data-tracking')))return text(d.getAttribute('data-tracking'));var p=row.querySelector('[data-phase19-workorder]');if(p&&text(p.getAttribute('data-phase19-workorder')))return text(p.getAttribute('data-phase19-workorder'));var body=text(row.textContent);var m=body.match(/Tracking\s*#?\s*([^·\n]+?)(?:\s*·\s*Due|$)/i);if(m)return text(m[1]);m=body.match(/#([A-Za-z0-9-]{4,})/);return m?text(m[1]):''}
+ function resolveOrderTracking(candidate,task){var raw=text(candidate),list=orders();var taskValues=[];if(task&&typeof task==='object'){['trackingNumber','serviceChannelTrackingNumber','scTrackingNumber','workOrderNumber','jobNumber','relatedTrackingNumber','sourceTrackingNumber','identity','jobName','locationName'].forEach(function(k){var v=text(task[k]);if(v)taskValues.push(v)})}var values=[raw].concat(taskValues).filter(Boolean);for(var vi=0;vi<values.length;vi++){var value=values[vi],nv=norm50(value);for(var oi=0;oi<list.length;oi++){var o=list[oi],ids=orderIdentifiers(o);if(ids.some(function(id){return norm50(id)===nv}))return text(o.trackingNumber||o.serviceChannelTrackingNumber||o.scTrackingNumber||o.workOrderNumber)}var nums=value.match(/\\b\\d{4,14}\\b/g)||[];for(var ni=0;ni<nums.length;ni++){var num=nums[ni];for(var oj=0;oj<list.length;oj++){var oo=list[oj],oids=orderIdentifiers(oo);if(oids.some(function(id){return text(id).replace(/\\D/g,'')===num.replace(/\\D/g,'')}))return text(oo.trackingNumber||oo.serviceChannelTrackingNumber||oo.scTrackingNumber||oo.workOrderNumber)}}if(nv.length>=8){for(var ok=0;ok<list.length;ok++){var ol=list[ok],labels=orderLabels(ol);if(labels.some(function(label){return label===nv||label.includes(nv)||nv.includes(label)}))return text(ol.trackingNumber||ol.serviceChannelTrackingNumber||ol.scTrackingNumber||ol.workOrderNumber)}}}return ''}
+ function taskForRow(row){if(!row)return null;var id='';var b=row.querySelector('[data-phase19-complete]');if(b)id=text(b.getAttribute('data-phase19-complete'));if(!id){var c=row.querySelector('[onclick*="closeTask"]');var call=text(c&&c.getAttribute('onclick'));var pos=call.indexOf('closeTask(');if(pos>=0){var rest=call.slice(pos+10),q=rest.charAt(0);if(q==="'"||q==='"'){rest=rest.slice(1);id=rest.split(q)[0]}else{id=rest.split(')')[0]}}}return id?openTasks().find(function(t){return text(t&&t.id)===id})||null:null}
+ function rowCandidate(row){if(!row)return '';var d=row.querySelector('[data-tracking]');if(d&&text(d.getAttribute('data-tracking')))return text(d.getAttribute('data-tracking'));var p=row.querySelector('[data-phase19-workorder]');if(p&&text(p.getAttribute('data-phase19-workorder')))return text(p.getAttribute('data-phase19-workorder'));var body=text(row.textContent);var m=body.match(/Tracking\\s*#?\\s*([^·\\n]+?)(?:\\s*·\\s*Due|$)/i);if(m)return text(m[1]);m=body.match(/#([A-Za-z0-9-]{4,})/);return m?text(m[1]):''}
  function openJobPopup(candidate,task){var tr=resolveOrderTracking(candidate,task);if(!tr){alert('This task or queue item is not linked to a work order Joshua can open yet.');return false}try{if(typeof window.openPhase12WorkOrder==='function'){window.openPhase12WorkOrder(tr);setTimeout(renderOpen,0);setTimeout(renderOpen,100);return true}}catch(_){ }try{if(typeof window.joshuaQueueOpenWorkOrder==='function'){window.joshuaQueueOpenWorkOrder(tr);setTimeout(renderOpen,0);setTimeout(renderOpen,100);return true}}catch(_){ }return false}
  function listRowFromTarget(target){if(!target||!target.closest)return null;return target.closest('#officeQueueList .queue-row,#taskList .task,#phase19TaskList .phase19-task')}
  function interactiveTarget(target){return !!(target&&target.closest&&target.closest('button,a,input,select,textarea,label,[contenteditable="true"]'))}
@@ -202,7 +223,7 @@ function patchPanel(fileUrl) {
  async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
  async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
  document.addEventListener('input',function(e){var p=findPrefix(e.target);if(!p)return;var i=ids(p);if(e.target.id===i.taskTitle){var a=mentioned(e.target.value);var s=document.getElementById(i.taskAssigned);if(a&&s)s.value=a}});
- document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&!new RegExp('@'+v+'\\b','i').test(t.value))t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
+ document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&text(t.value).toLowerCase().indexOf('@'+String(v).toLowerCase())<0)t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
  // Performance authority: no whole-page MutationObserver and no 2.5-second popup poll.
  // Refresh only when the job is opened or a note/task operation changes it.
  if(typeof window.openPhase12WorkOrder==='function'&&!window.openPhase12WorkOrder.__j2850Wrapped){var originalOpen=window.openPhase12WorkOrder;var openWrapped=function(){var r=originalOpen.apply(this,arguments);setTimeout(renderOpen,0);setTimeout(renderOpen,100);return r};openWrapped.__j2850Wrapped=true;window.openPhase12WorkOrder=openWrapped}
@@ -217,17 +238,23 @@ function patchPanel(fileUrl) {
   return true;
 }
 
-// The API route must exist before the existing startup chain imports server.js.
+// The API route and no-cache authority must exist before the existing chain imports server.js.
 patchServer();
 
-// Preserve the deployed stable Phase 28.46 startup chain, then patch the final generated panel.
+// Patch once before import and again after the stable Phase 28.46 chain rebuilds the final panel.
+// This makes the UI survive Render restarts/redeploys even when an earlier phase regenerates HTML.
+let patchedBefore = 0;
+for (const panelPath of PANEL_PATHS) {
+  if (patchPanel(panelPath)) patchedBefore += 1;
+}
+
 await import("./phase28-46-verified-workorder-status-reconciliation.mjs");
 
-let patched = 0;
+let patchedAfter = 0;
 for (const panelPath of PANEL_PATHS) {
-  if (patchPanel(panelPath)) patched += 1;
+  if (patchPanel(panelPath)) patchedAfter += 1;
 }
 
 console.log(
-  `Joshua Phase 28.50 active: office notes, in-job task assignment, @mentions, open-task list, and technician auto-selection installed (${patched} panel file${patched === 1 ? "" : "s"} updated).`
+  `Joshua Phase 28.50 V3 active: durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, popup performance fix, and no-cache Control Panel (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
