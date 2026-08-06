@@ -21,10 +21,12 @@ const PANEL_PATHS = [
 ];
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3";
+const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V4";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3"
 ];
 
 function patchServer() {
@@ -120,15 +122,127 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
   }
 
 
+  if (!server.includes(TASK_ROUTE_MARKER)) {
+    const taskStart = 'app.post("/api/control/tasks", async (request, reply) => {';
+    const taskEnd = 'app.post("/api/control/tasks/:id/close", async (request, reply) => {';
+    const startIndex = server.indexOf(taskStart);
+    const endIndex = server.indexOf(taskEnd, startIndex);
+    if (startIndex < 0 || endIndex < 0) {
+      throw new Error("Phase 28.50: task route anchors not found.");
+    }
+    const upgradedTaskRoute = `/* ${TASK_ROUTE_MARKER} */
+app.post("/api/control/tasks", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  if (!title) return reply.code(400).send({ ok: false, error: "Task title is required." });
+
+  const trackingNumber = String(body.trackingNumber || "").trim();
+  const assignedTo = String(body.assignedTo || "").trim();
+  const dueAt = String(body.dueAt || "").trim();
+  const priority = String(body.priority || "normal");
+  const notes = String(body.notes || "").trim();
+  const workflowType = String(body.workflowType || "").trim().toLowerCase();
+  const actionLabel = String(body.actionLabel || "").trim();
+
+  // Smart Actions are idempotent: one open proposal/billing task per work order.
+  // Manual tasks (which do not send workflowType) are never collapsed.
+  if (trackingNumber && (workflowType === "proposal" || workflowType === "billing")) {
+    const taskData = readControlData();
+    const existing = (taskData.tasks || []).find(task => {
+      if (String(task.trackingNumber || "").trim() !== trackingNumber) return false;
+      if (String(task.status || "open").toLowerCase() === "closed") return false;
+      const existingWorkflow = String(task.workflowType || "").trim().toLowerCase();
+      const existingTitle = String(task.title || "").trim();
+      if (workflowType === "proposal") {
+        return existingWorkflow === "proposal" || /prepare (?:and submit )?quote|prepare or follow up on proposal/i.test(existingTitle);
+      }
+      return existingWorkflow === "billing" || /prepare (?:servicechannel )?invoice|review job for billing/i.test(existingTitle);
+    });
+    if (existing) {
+      return reply.send({ ok: true, task: existing, duplicate: true });
+    }
+  }
+
+  const task = addControlTask({
+    title,
+    trackingNumber,
+    assignedTo,
+    dueAt,
+    priority,
+    notes,
+    ...(workflowType ? { workflowType } : {}),
+    ...(actionLabel ? { actionLabel } : {})
+  });
+  return reply.send({ ok: true, task, duplicate: false });
+});
+
+`;
+    server = server.slice(0, startIndex) + upgradedTaskRoute + server.slice(endIndex);
+    changed = true;
+    console.log("Joshua Phase 28.50 installed Smart Action duplicate protection.");
+  }
 
   if (changed) fs.writeFileSync(SERVER_PATH, server);
+}
+
+function patchPanelSmartActions(html) {
+  let out = html;
+  out = out.replace('add("Create / Submit Quote","quote","")', 'add("Prepare Quote","quote","")');
+  out = out.replace('quote:["Prepare and submit quote","Travis","proposal"]', 'quote:["Prepare quote","Travis","proposal"]');
+
+  const fnStart = 'async function phase12CreateTask(title,assignedTo="Ariana",workflowType=""){' ;
+  const fnEnd = 'document.addEventListener("click",async e=>{';
+  const start = out.indexOf(fnStart);
+  const end = out.indexOf(fnEnd, start);
+  if (start >= 0 && end > start) {
+    const upgraded = `async function phase12CreateTask(title,assignedTo="Ariana",workflowType=""){
+ if(!phase12SelectedWorkOrder)return;
+ const message=document.getElementById("phase12ActionMessage");
+ const tracking=String(phase12SelectedWorkOrder.trackingNumber||"");
+ const noun=workflowType==="proposal"?"Quote":workflowType==="billing"?"Invoice":title;
+ const existing=window.joshuaPhase2850FindWorkflowTask?.(tracking,workflowType);
+ if(existing){
+  const owner=existing.assignedTo||assignedTo||"Office";
+  message.textContent=\`✅ \${noun} task already open — assigned to \${owner}.\`;
+  window.joshuaPhase2850RenderWorkOrderCollaboration?.();
+  window.joshuaPhase2850SyncSmartActions?.();
+  return existing;
+ }
+ message.textContent=\`Creating \${noun.toLowerCase()} task…\`;
+ try{
+  const result=await api("/api/control/tasks",{method:"POST",body:JSON.stringify({
+   title,trackingNumber:tracking,assignedTo,priority:workflowType==="proposal"?"urgent":"normal",workflowType
+  })});
+  const owner=result?.task?.assignedTo||assignedTo||"Office";
+  message.textContent=result?.duplicate
+   ?\`✅ \${noun} task already open — assigned to \${owner}.\`
+   :\`✅ \${noun} task created — assigned to \${owner}.\`;
+  await refresh();
+  window.joshuaPhase2850RenderWorkOrderCollaboration?.();
+  window.joshuaPhase2850SyncSmartActions?.();
+  return result?.task||null;
+ }catch(error){message.textContent=\`⚠ \${error.message}\`}
+}
+`;
+    out = out.slice(0, start) + upgraded + out.slice(end);
+  }
+  return out;
 }
 
 function patchPanel(fileUrl) {
   if (!fs.existsSync(fileUrl)) return false;
   let html = fs.readFileSync(fileUrl, "utf8");
-  if (html.includes(PANEL_MARKER)) return false;
-  // Remove any earlier Phase 28.50 generated runtime before installing V3.
+  let changed = false;
+  const smartPatched = patchPanelSmartActions(html);
+  if (smartPatched !== html) { html = smartPatched; changed = true; }
+  if (html.includes(PANEL_MARKER)) {
+    if (changed) fs.writeFileSync(fileUrl, html);
+    return changed;
+  }
+  // Remove any earlier Phase 28.50 generated runtime before installing V4.
   for (const oldMarker of OLD_PANEL_MARKERS) {
     if (!html.includes(oldMarker)) continue;
     const oldRuntime = new RegExp(
@@ -160,6 +274,7 @@ function patchPanel(fileUrl) {
 .j2850-task-actions button{width:auto!important;padding:7px 9px!important}
 .j2850-empty{font-size:12px;color:#9fb0c7;padding:7px 0}
 .j2850-msg{min-height:18px;margin-top:7px;font-size:12px;color:#9fb0c7}
+.j2850-action-created{background:#176a45!important;border-color:#2f9b6b!important;color:#fff!important;opacity:1!important;cursor:default!important}
 #phase12WorkOrderDialog .j2850-grid{grid-column:1/-1}
 #officeQueueList .queue-row,#taskList .task,#phase19TaskList .phase19-task{cursor:pointer}
 #officeQueueList .queue-row:hover,#taskList .task:hover,#phase19TaskList .phase19-task:hover{border-color:#eab308}
@@ -192,9 +307,12 @@ function patchPanel(fileUrl) {
  function mountPhase12(){var d=document.getElementById('phase12WorkOrderDialog');if(!d||d.querySelector('[data-j2850-prefix="j2850Phase12"]'))return;var g=d.querySelector('.phase12-grid');if(g)g.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'))}
  function renderNotes(prefix,item){var box=document.getElementById(ids(prefix).notes);if(!box)return;var list=Array.isArray(item&&item.officeNotes)?item.officeNotes:[];var legacy=text(item&&item.notes);var rows=list.map(function(n){return '<div class="j2850-note"><div class="j2850-note-body">'+esc50(n.text||'')+'</div><div class="j2850-meta">'+esc50(n.author||'Office')+' · '+esc50(formatWhen(n.createdAt))+'</div></div>'});if(!rows.length&&legacy)rows.push('<div class="j2850-note"><div class="j2850-note-body">'+esc50(legacy)+'</div><div class="j2850-meta">Existing office note</div></div>');box.innerHTML=rows.length?rows.join(''):'<div class="j2850-empty">No office notes yet.</div>'}
  function renderTasks(prefix,item){var box=document.getElementById(ids(prefix).taskList);if(!box)return;var tr=text(item&&item.trackingNumber);var list=openTasks().filter(function(t){return text(t&&t.trackingNumber)===tr&&text(t&&t.status).toLowerCase()!=='closed'});box.innerHTML=list.length?list.map(function(t){return '<div class="j2850-task"><div class="j2850-task-title"><strong>'+(text(t.priority).toLowerCase()==='urgent'?'🚨 ':'')+esc50(t.title||'Task')+'</strong></div><div class="j2850-meta">'+esc50(t.assignedTo||'Unassigned')+(t.dueAt?' · Due '+esc50(formatWhen(t.dueAt)):'')+'</div>'+(t.notes?'<div class="small" style="margin-top:6px">'+esc50(t.notes)+'</div>':'')+'<div class="j2850-task-actions"><span></span><button type="button" class="secondary" data-j2850-complete-task="'+esc50(t.id||'')+'">Mark Complete</button></div></div>'}).join(''):'<div class="j2850-empty">No open tasks for this job.</div>'}
+ function workflowKind(task){var w=norm50(task&&task.workflowType),title=norm50(task&&task.title);if(w==='proposal'||w==='quote')return 'proposal';if(w==='billing'||w==='invoice')return 'billing';if(/prepare and submit quote|prepare quote|prepare or follow up on proposal/.test(title))return 'proposal';if(/prepare invoice|prepare servicechannel invoice|review job for billing/.test(title))return 'billing';return ''}
+ function workflowTask(tracking,workflow){return openTasks().find(function(t){return text(t&&t.trackingNumber)===text(tracking)&&text(t&&t.status).toLowerCase()!=='closed'&&workflowKind(t)===workflow})||null}
+ function syncSmartActions(){var wrap=document.getElementById('phase12SmartActions'),tr=trackingFromTitle('phase12Title');if(!wrap||!tr)return;[['quote','proposal','Quote','Travis'],['invoice','billing','Invoice','Shellie']].forEach(function(cfg){var button=wrap.querySelector('[data-phase12-action="'+cfg[0]+'"]');if(!button)return;var task=workflowTask(tr,cfg[1]);if(task){button.textContent='✓ '+cfg[2]+' Task Created — '+text(task.assignedTo||cfg[3]);button.disabled=true;button.classList.add('j2850-action-created')}else{button.textContent=cfg[0]==='quote'?'Prepare Quote':'Prepare Invoice';button.disabled=false;button.classList.remove('j2850-action-created')}})}
  function selectAssignedTech(item){var name=text(item&&(item.technician||item.assignedTechnician||item.technicianName));if(!name)return;['jobCheckinTechnician','jobCheckoutTechnician','phase12Technician'].forEach(function(id){var s=document.getElementById(id);if(!s)return;var option=Array.from(s.options||[]).find(function(o){return text(o.value).toLowerCase()===name.toLowerCase()||text(o.textContent).toLowerCase()===name.toLowerCase()});if(option)s.value=option.value})}
  function renderPrefix(prefix,titleId){var tr=trackingFromTitle(titleId);if(!tr)return;var item=orderByTracking(tr);if(!item)return;renderNotes(prefix,item);renderTasks(prefix,item);selectAssignedTech(item)}
- function renderOpen(){mountHome();mountPhase12();var h=document.getElementById('homeWorkOrderDialog');if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2850Home','homeWorkOrderTitle');var p=document.getElementById('phase12WorkOrderDialog');if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2850Phase12','phase12Title')}
+ function renderOpen(){mountHome();mountPhase12();var h=document.getElementById('homeWorkOrderDialog');if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2850Home','homeWorkOrderTitle');var p=document.getElementById('phase12WorkOrderDialog');if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2850Phase12','phase12Title');syncSmartActions()}
  function prefixTracking(prefix){return prefix==='j2850Home'?trackingFromTitle('homeWorkOrderTitle'):trackingFromTitle('phase12Title')}
  function norm50(v){return text(v).toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\\s+/g,' ').trim()}
  function orderIdentifiers(o){return [o&&o.trackingNumber,o&&o.serviceChannelTrackingNumber,o&&o.scTrackingNumber,o&&o.workOrderNumber,o&&o.jobNumber,o&&o.nestTrackingNumber,o&&o.clockSharkJobNumber].map(text).filter(Boolean)}
@@ -217,12 +335,15 @@ function patchPanel(fileUrl) {
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',renderOpen);else renderOpen();setTimeout(renderOpen,300);
  window.joshuaPhase2850RenderWorkOrderCollaboration=renderOpen;
  window.joshuaPhase2850OpenWorkOrder=openJobPopup;
+ window.joshuaPhase2850FindWorkflowTask=workflowTask;
+ window.joshuaPhase2850SyncSmartActions=syncSmartActions;
 })();
 </script>`;
 
   html = html.replace("</body>", runtime + "\n</body>");
+  changed = true;
   fs.writeFileSync(fileUrl, html);
-  return true;
+  return changed;
 }
 
 // The durable Office Notes API route must exist before the existing chain imports server.js.
@@ -244,5 +365,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V4 active: durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V5 active: Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
