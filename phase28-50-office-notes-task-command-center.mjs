@@ -22,7 +22,11 @@ const PANEL_PATHS = [
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
 const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V10";
+const TECH_ROUTE_MARKER = "JOSHUA_PHASE28_52_TECHNICIAN_OVERRIDE_ROUTE_V1";
+const TECH_PRESERVE_MARKER = "JOSHUA_PHASE28_52_TECHNICIAN_OVERRIDE_PRESERVE_V1";
+const TECH_FINAL_BOOTSTRAP_MARKER = "JOSHUA_PHASE28_52_TECHNICIAN_OVERRIDE_FINAL_BOOTSTRAP_V1";
+const PHASE24_RUNTIME_PATH = new URL("./phase24-servicechannel-authority-runtime.mjs", ROOT);
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V11";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
@@ -32,7 +36,8 @@ const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V7",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V8",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V9"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V9",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V10"
 ];
 
 
@@ -493,6 +498,117 @@ function phase2851ClockSharkApplyComment(data, state, payload = {}) {
   }
 }
 
+function patchFinalTechnicianAuthorityBootstrap() {
+  // Phase 24 runtime is the last server-source patch immediately before Phase 10
+  // imports the live Fastify app. Install the technician override there so we do
+  // not disturb exact server.js anchors required by earlier Phase 23 patches.
+  try {
+    if (!fs.existsSync(PHASE24_RUNTIME_PATH)) {
+      console.warn("Joshua Phase 28.52: final ServiceChannel runtime not found; technician preservation bootstrap skipped safely.");
+      return false;
+    }
+
+    let source = fs.readFileSync(PHASE24_RUNTIME_PATH, "utf8");
+    if (source.includes(TECH_FINAL_BOOTSTRAP_MARKER)) return false;
+
+    const definitionAnchor = "reconcilePersistedServiceChannelState();";
+    const callAnchor = "patchFinalServer();";
+    if (!source.includes(definitionAnchor) || !source.includes(callAnchor)) {
+      console.warn("Joshua Phase 28.52: final runtime anchors changed; technician preservation bootstrap skipped safely.");
+      return false;
+    }
+
+    const guardText = `  /* ${TECH_PRESERVE_MARKER} */
+  if (updates && typeof updates === "object") {
+    if (updates.manualTechnicianOverrideActive === true) {
+      const selected = String(
+        updates.manualTechnicianOverride !== undefined
+          ? updates.manualTechnicianOverride
+          : updates.technician || ""
+      ).trim();
+      updates = {
+        ...updates,
+        manualTechnicianOverride: selected,
+        technician: selected,
+        assignedTechnician: selected,
+        technicianPhone: String(
+          updates.manualTechnicianOverridePhone !== undefined
+            ? updates.manualTechnicianOverridePhone
+            : updates.technicianPhone || ""
+        ).trim()
+      };
+    } else if (current?.manualTechnicianOverrideActive === true) {
+      const selected = String(current.manualTechnicianOverride || "").trim();
+      updates = {
+        ...updates,
+        technician: selected,
+        assignedTechnician: selected,
+        technicianPhone: String(
+          current.manualTechnicianOverridePhone ||
+          current.technicianPhone ||
+          ""
+        ).trim()
+      };
+    }
+  }
+
+`;
+
+    const installer = `/* ${TECH_FINAL_BOOTSTRAP_MARKER} */
+function phase2852InstallTechnicianOverridePreservation() {
+  const serverPath = new URL("./server.js", ROOT);
+  let server = fs.readFileSync(serverPath, "utf8");
+  if (server.includes("${TECH_PRESERVE_MARKER}")) return;
+
+  const updateStart = server.indexOf("function updateControlWorkOrder(");
+  const updateEnd = updateStart >= 0
+    ? server.indexOf("function addControlTask(", updateStart + 1)
+    : -1;
+  if (updateStart < 0 || updateEnd <= updateStart) {
+    console.warn("Joshua Phase 28.52: final work-order update function not found; technician preservation skipped.");
+    return;
+  }
+
+  let block = server.slice(updateStart, updateEnd);
+  const assignmentAnchor = "  data.workOrders[key] = {";
+  if (!block.includes(assignmentAnchor)) {
+    console.warn("Joshua Phase 28.52: final work-order assignment anchor not found; technician preservation skipped.");
+    return;
+  }
+
+  const guard = ${JSON.stringify(guardText)};
+  block = block.replace(assignmentAnchor, guard + assignmentAnchor);
+  server = server.slice(0, updateStart) + block + server.slice(updateEnd);
+  fs.writeFileSync(serverPath, server);
+
+  const syntax = spawnSync(
+    process.execPath,
+    ["--check", fileURLToPath(serverPath)],
+    { encoding: "utf8" }
+  );
+  if (syntax.status !== 0) {
+    throw new Error(
+      "Phase 28.52 generated invalid server.js:\\n" +
+      (syntax.stderr || syntax.stdout || "")
+    );
+  }
+
+  console.log("Joshua Phase 28.52 installed final durable technician override preservation.");
+}
+
+`;
+
+    source = source.replace(definitionAnchor, installer + definitionAnchor);
+    source = source.replace(callAnchor, callAnchor + "\nphase2852InstallTechnicianOverridePreservation();");
+    fs.writeFileSync(PHASE24_RUNTIME_PATH, source);
+    console.log("Joshua Phase 28.52 prepared final technician override preservation bootstrap.");
+    return true;
+  } catch (error) {
+    console.warn(`Joshua Phase 28.52 final technician preservation bootstrap skipped safely: ${error.message}`);
+    return false;
+  }
+}
+
 function patchServer() {
   if (!fs.existsSync(SERVER_PATH)) {
     throw new Error("Phase 28.50: server.js not found.");
@@ -508,9 +624,9 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
     return reply.code(401).send({ ok: false, error: "Unauthorized" });
   }
 
-  const tracking = String(request.params.tracking || "").replace(/\\D/g, "");
-  if (tracking.length < 4) {
-    return reply.code(400).send({ ok: false, error: "Invalid tracking number." });
+  const requestedTracking = String(request.params.tracking || "").trim();
+  if (!requestedTracking) {
+    return reply.code(400).send({ ok: false, error: "Work order is required." });
   }
 
   const noteText = String(request.body?.note || request.body?.text || "").trim();
@@ -522,7 +638,19 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
   }
 
   const data = readControlData();
-  const current = data.workOrders?.[tracking];
+  const workOrders = data.workOrders && typeof data.workOrders === "object"
+    ? data.workOrders
+    : {};
+  const keys = Object.keys(workOrders);
+  const lowerRequested = requestedTracking.toLowerCase();
+  const numericRequested = requestedTracking.replace(/\\D/g, "");
+  const tracking = keys.find(key => key === requestedTracking) ||
+    keys.find(key => String(key).toLowerCase() === lowerRequested) ||
+    keys.find(key => String(workOrders[key]?.trackingNumber || "").toLowerCase() === lowerRequested) ||
+    (numericRequested
+      ? keys.find(key => String(key).replace(/\\D/g, "") === numericRequested)
+      : "");
+  const current = tracking ? workOrders[tracking] : null;
   if (!current) {
     return reply.code(404).send({ ok: false, error: "Work order not found." });
   }
@@ -575,6 +703,107 @@ app.post("/api/control/work-orders/:tracking/office-notes", async (request, repl
 });
 
 `;
+
+  if (!server.includes(TECH_ROUTE_MARKER)) {
+    const technicianRoute = `/* ${TECH_ROUTE_MARKER} */
+app.post("/api/control/work-orders/:tracking/technician", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const requestedTracking = String(request.params.tracking || "").trim();
+  if (!requestedTracking) {
+    return reply.code(400).send({ ok: false, error: "Work order is required." });
+  }
+
+  const data = readControlData();
+  const workOrders = data.workOrders && typeof data.workOrders === "object"
+    ? data.workOrders
+    : {};
+  const keys = Object.keys(workOrders);
+  const lowerRequested = requestedTracking.toLowerCase();
+  const numericRequested = requestedTracking.replace(/\\D/g, "");
+  const tracking = keys.find(key => key === requestedTracking) ||
+    keys.find(key => String(key).toLowerCase() === lowerRequested) ||
+    keys.find(key => String(workOrders[key]?.trackingNumber || "").toLowerCase() === lowerRequested) ||
+    (numericRequested
+      ? keys.find(key => String(key).replace(/\\D/g, "") === numericRequested)
+      : "");
+
+  if (!tracking || !workOrders[tracking]) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  let technicianName = String(request.body?.technician || "").trim();
+  if (/^(?:office\\s*\\/\\s*)?unassigned(?:\\s+technician)?$/i.test(technicianName)) {
+    technicianName = "";
+  }
+
+  const technicianRecords = data.technicians && typeof data.technicians === "object"
+    ? Object.values(data.technicians)
+    : [];
+  const technician = technicianRecords.find(item =>
+    String(item?.name || "").trim().toLowerCase() === technicianName.toLowerCase()
+  );
+  const technicianPhone = technicianName
+    ? String(technician?.phone || "").trim()
+    : "";
+  const now = new Date().toISOString();
+  const actor = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    request.body?.requestedBy ||
+    "Office"
+  ).trim() || "Office";
+  const current = workOrders[tracking];
+  const previousTechnician = String(
+    current.manualTechnicianOverrideActive
+      ? current.manualTechnicianOverride
+      : current.technician || current.assignedTechnician || ""
+  ).trim();
+
+  data.workOrders[tracking] = {
+    ...current,
+    technician: technicianName,
+    assignedTechnician: technicianName,
+    technicianPhone,
+    manualTechnicianOverrideActive: true,
+    manualTechnicianOverride: technicianName,
+    manualTechnicianOverridePhone: technicianPhone,
+    manualTechnicianOverrideAt: now,
+    manualTechnicianOverrideBy: actor,
+    updatedAt: now
+  };
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "technician-correction-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: "technician_assignment_corrected",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: actor,
+    previousTechnician,
+    technician: technicianName || "Office / Unassigned",
+    createdAt: now
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  return reply.send({
+    ok: true,
+    workOrder: data.workOrders[tracking],
+    technician: technicianName || "Office / Unassigned"
+  });
+});
+
+`;
+    if (!server.includes(anchor)) {
+      throw new Error("Phase 28.52: work-order technician route anchor not found.");
+    }
+    server = server.replace(anchor, technicianRoute + anchor);
+    changed = true;
+    console.log("Joshua Phase 28.52 installed Work Order Change Technician route.");
+  }
 
   if (!server.includes(SERVER_MARKER)) {
     if (!server.includes(anchor)) {
@@ -649,6 +878,26 @@ app.post("/api/control/tasks", async (request, reply) => {
     console.log("Joshua Phase 28.50 installed Smart Action duplicate protection.");
   }
 
+
+  // Existing Dispatch / Assign actions are also deliberate office assignments.
+  // Mark them as manual authority so they can replace any prior correction.
+  const dispatchAssignAnchor = `    technician: technicianName,
+    technicianPhone: technician.phone || "",
+    state: body.state || "scheduled",`;
+  if (server.includes(dispatchAssignAnchor) && !server.includes('manualTechnicianOverride: technicianName,\n    manualTechnicianOverridePhone: technician.phone || "",')) {
+    server = server.replace(
+      dispatchAssignAnchor,
+      `    technician: technicianName,
+    technicianPhone: technician.phone || "",
+    manualTechnicianOverrideActive: true,
+    manualTechnicianOverride: technicianName,
+    manualTechnicianOverridePhone: technician.phone || "",
+    manualTechnicianOverrideAt: new Date().toISOString(),
+    manualTechnicianOverrideBy: "Control Panel",
+    state: body.state || "scheduled",`
+    );
+    changed = true;
+  }
 
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
@@ -807,6 +1056,10 @@ function patchPanel(fileUrl) {
 .j2850-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
 .j2850-card{padding:14px;border:1px solid #2d4158;border-radius:12px;background:#101a27}
 .j2850-card h3{margin:0 0 10px;font-size:14px}
+.j2850-full{grid-column:1/-1}
+.j2850-tech-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px}
+.j2850-tech-row select{width:100%;min-width:0}
+.j2850-tech-row button{width:auto!important;white-space:nowrap}
 .j2850-note-list,.j2850-task-list{display:grid;gap:8px;margin:10px 0;max-height:220px;overflow:auto}
 .j2850-note,.j2850-task{padding:10px;border:1px solid #2d4158;border-radius:9px;background:#0e1722}
 .j2850-note-body,.j2850-task-title{white-space:pre-wrap;word-break:break-word}
@@ -850,7 +1103,7 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
 #phase12WorkOrderDialog .j2850-grid{grid-column:1/-1}
 #officeQueueList .queue-row,#taskList .task,#phase19TaskList .phase19-task{cursor:pointer}
 #officeQueueList .queue-row:hover,#taskList .task:hover,#phase19TaskList .phase19-task:hover{border-color:#eab308}
-@media(max-width:760px){.j2850-grid,.j2850-form-grid{grid-template-columns:1fr}.j2850-form-grid .full{grid-column:auto}}
+@media(max-width:760px){.j2850-grid,.j2850-form-grid,.j2850-tech-row{grid-template-columns:1fr}.j2850-form-grid .full{grid-column:auto}.j2850-tech-row button{width:100%!important}}
 </style>
 <script>
 (function(){
@@ -860,7 +1113,7 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  function data(){try{if(typeof cache!=='undefined'&&cache)return cache}catch(_){ }return window.cache||{}}
  function orders(){var w=data().workOrders;return Array.isArray(w)?w:(w&&typeof w==='object'?Object.values(w):[])}
  function openTasks(){var t=data().openTasks;return Array.isArray(t)?t:[]}
- function trackingFromTitle(id){var n=document.getElementById(id);var m=text(n&&n.textContent).match(/Work Order\\s*#\\s*([A-Za-z0-9-]+)/i);return m?m[1]:''}
+ function trackingFromTitle(id){var n=document.getElementById(id);var m=text(n&&n.textContent).match(/Work Order\\s*#\\s*(.+)$/i);return m?text(m[1]):''}
  function orderByTracking(tracking){return orders().find(function(o){return text(o&&o.trackingNumber)===text(tracking)})||null}
  function formatWhen(value){if(!value)return '';var d=new Date(value);return Number.isFinite(d.getTime())?d.toLocaleString():text(value)}
  function currentUser(){var a=window.__JOSHUA_AUTH__||{};var u=a.user||{};return text(u.displayName||u.username||'Office')||'Office'}
@@ -870,22 +1123,27 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  function openInvoiceBacklogQueue(){ensureInvoiceBacklogCard();try{if(typeof window.officeOpenQueue==='function'){window.officeOpenQueue('billing');return true}}catch(_){ }var nav=document.querySelector('.office-nav-btn[data-office-queue="billing"]');if(nav){try{nav.click();return true}catch(_){ }}return false}
  function findPrefix(node){var host=node&&node.closest&&node.closest('[data-j2850-prefix]');return host?host.getAttribute('data-j2850-prefix'):''}
  function ids(prefix){return {
+  technician:prefix+'AssignedTechnician',technicianMsg:prefix+'AssignedTechnicianMessage',
   notes:prefix+'OfficeNotesList',noteInput:prefix+'OfficeNoteInput',noteMsg:prefix+'OfficeNoteMessage',
   taskTitle:prefix+'TaskTitle',taskAssigned:prefix+'TaskAssigned',taskPriority:prefix+'TaskPriority',taskDue:prefix+'TaskDue',taskNotes:prefix+'TaskNotes',taskList:prefix+'TaskList',taskMsg:prefix+'TaskMessage'
  }}
+ function technicianMarkup(prefix){var i=ids(prefix);return '<div class="j2850-card j2850-full j2850-tech-control" data-j2850-tech-prefix="'+prefix+'"><h3>CHANGE TECHNICIAN</h3><div class="small muted">Correct the technician assigned to this work order. Manual corrections stay authoritative in Joshua until changed again.</div><div class="j2850-tech-row"><select id="'+i.technician+'" aria-label="Assigned technician"></select><button type="button" data-j2850-change-technician="1">Update Technician</button></div><div id="'+i.technicianMsg+'" class="j2850-msg"></div></div>'}
  function sectionMarkup(prefix){var i=ids(prefix);return '<div class="j2850-grid" data-j2850-prefix="'+prefix+'">'+
   '<div class="j2850-card"><h3>OFFICE NOTES</h3><div class="small muted">Internal Precision Lighting notes. Separate from technician notes and ServiceChannel.</div><div id="'+i.notes+'" class="j2850-note-list"></div><textarea id="'+i.noteInput+'" placeholder="Add an internal office note..."></textarea><button type="button" data-j2850-add-note="1" style="margin-top:8px">Add Office Note</button><div id="'+i.noteMsg+'" class="j2850-msg"></div></div>'+
   '<div class="j2850-card"><h3>ASSIGN A TASK</h3><div class="small muted">The work-order tracking number is attached automatically. Type @Shellie, @Ariana or @Travis to assign instantly.</div><div class="j2850-tag-row"><button type="button" class="j2850-tag" data-j2850-tag="Shellie">@Shellie</button><button type="button" class="j2850-tag" data-j2850-tag="Ariana">@Ariana</button><button type="button" class="j2850-tag" data-j2850-tag="Travis">@Travis</button></div><div class="j2850-form-grid"><div class="full"><label>Task</label><input id="'+i.taskTitle+'" placeholder="@Shellie verify invoice before billing"></div><div><label>Assign to</label><select id="'+i.taskAssigned+'"><option>Ariana</option><option>Shellie</option><option>Travis</option><option>Technician</option></select></div><div><label>Priority</label><select id="'+i.taskPriority+'"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div><div class="full"><label>Due</label><input id="'+i.taskDue+'" type="datetime-local"></div><div class="full"><label>Task notes</label><textarea id="'+i.taskNotes+'" placeholder="Optional details"></textarea></div></div><button type="button" data-j2850-create-task="1">Create Task</button><div id="'+i.taskMsg+'" class="j2850-msg"></div><h3 style="margin-top:14px">OPEN TASKS FOR THIS JOB</h3><div id="'+i.taskList+'" class="j2850-task-list"></div></div>'+
   '</div>'}
- function mountHome(){var d=document.getElementById('homeWorkOrderDialog');if(!d||d.querySelector('[data-j2850-prefix="j2850Home"]'))return;var anchor=d.querySelector('.job-action-grid');if(anchor)anchor.insertAdjacentHTML('beforebegin',sectionMarkup('j2850Home'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Home'))}
- function mountPhase12(){var d=document.getElementById('phase12WorkOrderDialog');if(!d||d.querySelector('[data-j2850-prefix="j2850Phase12"]'))return;var g=d.querySelector('.phase12-grid');if(g)g.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'))}
+ function mountHome(){var d=document.getElementById('homeWorkOrderDialog');if(!d)return;var anchor=d.querySelector('.job-action-grid');if(!d.querySelector('[data-j2850-tech-prefix="j2850Home"]')){if(anchor)anchor.insertAdjacentHTML('beforebegin',technicianMarkup('j2850Home'));else d.insertAdjacentHTML('afterbegin',technicianMarkup('j2850Home'))}if(!d.querySelector('[data-j2850-prefix="j2850Home"]')){if(anchor)anchor.insertAdjacentHTML('beforebegin',sectionMarkup('j2850Home'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Home'))}}
+ function mountPhase12(){var d=document.getElementById('phase12WorkOrderDialog');if(!d)return;var g=d.querySelector('.phase12-grid');if(!d.querySelector('[data-j2850-tech-prefix="j2850Phase12"]')){var details=g&&g.querySelector('.phase12-card');if(details)details.insertAdjacentHTML('afterend',technicianMarkup('j2850Phase12'));else if(g)g.insertAdjacentHTML('afterbegin',technicianMarkup('j2850Phase12'));else d.insertAdjacentHTML('afterbegin',technicianMarkup('j2850Phase12'))}if(!d.querySelector('[data-j2850-prefix="j2850Phase12"]')){if(g)g.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'))}}
  function renderNotes(prefix,item){var box=document.getElementById(ids(prefix).notes);if(!box)return;var list=Array.isArray(item&&item.officeNotes)?item.officeNotes:[];var legacy=text(item&&item.notes);var rows=list.map(function(n){return '<div class="j2850-note"><div class="j2850-note-body">'+esc50(n.text||'')+'</div><div class="j2850-meta">'+esc50(n.author||'Office')+' · '+esc50(formatWhen(n.createdAt))+'</div></div>'});if(!rows.length&&legacy)rows.push('<div class="j2850-note"><div class="j2850-note-body">'+esc50(legacy)+'</div><div class="j2850-meta">Existing office note</div></div>');box.innerHTML=rows.length?rows.join(''):'<div class="j2850-empty">No office notes yet.</div>'}
  function renderTasks(prefix,item){var box=document.getElementById(ids(prefix).taskList);if(!box)return;var tr=text(item&&item.trackingNumber);var list=openTasks().filter(function(t){return text(t&&t.trackingNumber)===tr&&text(t&&t.status).toLowerCase()!=='closed'});box.innerHTML=list.length?list.map(function(t){return '<div class="j2850-task"><div class="j2850-task-title"><strong>'+(text(t.priority).toLowerCase()==='urgent'?'🚨 ':'')+esc50(t.title||'Task')+'</strong></div><div class="j2850-meta">'+esc50(t.assignedTo||'Unassigned')+(t.dueAt?' · Due '+esc50(formatWhen(t.dueAt)):'')+'</div>'+(t.notes?'<div class="small" style="margin-top:6px">'+esc50(t.notes)+'</div>':'')+'<div class="j2850-task-actions"><span></span><button type="button" class="secondary" data-j2850-complete-task="'+esc50(t.id||'')+'">Mark Complete</button></div></div>'}).join(''):'<div class="j2850-empty">No open tasks for this job.</div>'}
  function workflowKind(task){var w=norm50(task&&task.workflowType),title=norm50(task&&task.title);if(w==='proposal'||w==='quote')return 'proposal';if(w==='billing'||w==='invoice')return 'billing';if(/prepare and submit quote|prepare quote|prepare or follow up on proposal/.test(title))return 'proposal';if(/prepare invoice|prepare servicechannel invoice|review job for billing/.test(title))return 'billing';return ''}
  function workflowTask(tracking,workflow){return openTasks().find(function(t){return text(t&&t.trackingNumber)===text(tracking)&&text(t&&t.status).toLowerCase()!=='closed'&&workflowKind(t)===workflow})||null}
  function syncSmartActions(){var wrap=document.getElementById('phase12SmartActions'),tr=trackingFromTitle('phase12Title');if(!wrap||!tr)return;[['quote','proposal','Quote','Travis'],['invoice','billing','Invoice','Shellie']].forEach(function(cfg){var button=wrap.querySelector('[data-phase12-action="'+cfg[0]+'"]');if(!button)return;var task=workflowTask(tr,cfg[1]);if(task){button.textContent='✓ '+cfg[2]+' Task Created — '+text(task.assignedTo||cfg[3]);button.disabled=true;button.classList.add('j2850-action-created')}else{button.textContent=cfg[0]==='quote'?'Prepare Quote':'Prepare Invoice';button.disabled=false;button.classList.remove('j2850-action-created')}})}
- function selectAssignedTech(item){var name=text(item&&(item.technician||item.assignedTechnician||item.technicianName));if(!name)return;['jobCheckinTechnician','jobCheckoutTechnician','phase12Technician'].forEach(function(id){var s=document.getElementById(id);if(!s)return;var option=Array.from(s.options||[]).find(function(o){return text(o.value).toLowerCase()===name.toLowerCase()||text(o.textContent).toLowerCase()===name.toLowerCase()});if(option)s.value=option.value})}
- function renderPrefix(prefix,titleId){var tr=trackingFromTitle(titleId);if(!tr)return;var item=orderByTracking(tr);if(!item)return;renderNotes(prefix,item);renderTasks(prefix,item);selectAssignedTech(item)}
+ function effectiveTechnician(item){if(item&&item.manualTechnicianOverrideActive===true)return text(item.manualTechnicianOverride)||'Office / Unassigned';return text(item&&(item.technician||item.assignedTechnician||item.technicianName))||'Office / Unassigned'}
+ function technicianNames(item){var raw=data().technicians;var list=Array.isArray(raw)?raw:(raw&&typeof raw==='object'?Object.values(raw):[]);var names=list.filter(function(t){return t&&t.name&&text(t.status).toLowerCase()!=='inactive'&&t.active!==false}).map(function(t){return text(t.name)}).filter(Boolean);var current=effectiveTechnician(item);if(current&&current!=='Office / Unassigned'&&!names.some(function(n){return n.toLowerCase()===current.toLowerCase()}))names.push(current);return ['Office / Unassigned'].concat(names.filter(function(n,i,a){return a.findIndex(function(x){return x.toLowerCase()===n.toLowerCase()})===i}).sort(function(a,b){return a.localeCompare(b)}))}
+ function renderTechnicianControl(prefix,item){var i=ids(prefix),select=document.getElementById(i.technician);if(!select)return;var current=effectiveTechnician(item);var names=technicianNames(item);select.innerHTML=names.map(function(name){return '<option value="'+esc50(name)+'">'+esc50(name)+'</option>'}).join('');var option=Array.from(select.options||[]).find(function(o){return text(o.value).toLowerCase()===current.toLowerCase()});if(option)select.value=option.value;var msg=document.getElementById(i.technicianMsg);if(msg){msg.textContent=item&&item.manualTechnicianOverrideActive===true?'Manual technician correction active'+(item.manualTechnicianOverrideBy?' — '+text(item.manualTechnicianOverrideBy):'')+'.':'';msg.className='j2850-msg'}}
+ function selectAssignedTech(item){var name=effectiveTechnician(item);['jobCheckinTechnician','jobCheckoutTechnician','phase12Technician'].forEach(function(id){var s=document.getElementById(id);if(!s)return;var desired=name==='Office / Unassigned'?'Office / Unassigned':name;var option=Array.from(s.options||[]).find(function(o){var ov=text(o.value).toLowerCase(),ot=text(o.textContent).toLowerCase(),dn=desired.toLowerCase();return ov===dn||ot===dn||(desired==='Office / Unassigned'&&(ov==='unassigned technician'||ot==='office / unassigned'))});if(option)s.value=option.value})}
+ function renderPrefix(prefix,titleId){var tr=trackingFromTitle(titleId);if(!tr)return;var item=orderByTracking(tr);if(!item)return;renderTechnicianControl(prefix,item);renderNotes(prefix,item);renderTasks(prefix,item);selectAssignedTech(item)}
  function renderOpen(){mountHome();mountPhase12();var h=document.getElementById('homeWorkOrderDialog');if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2850Home','homeWorkOrderTitle');var p=document.getElementById('phase12WorkOrderDialog');if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2850Phase12','phase12Title');syncSmartActions()}
  function prefixTracking(prefix){return prefix==='j2850Home'?trackingFromTitle('homeWorkOrderTitle'):trackingFromTitle('phase12Title')}
  function norm50(v){return text(v).toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\\s+/g,' ').trim()}
@@ -898,7 +1156,8 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  function listRowFromTarget(target){if(!target||!target.closest)return null;return target.closest('#officeQueueList .queue-row,#taskList .task,#phase19TaskList .phase19-task')}
  function interactiveTarget(target){return !!(target&&target.closest&&target.closest('button,a,input,select,textarea,label,[contenteditable="true"]'))}
  function setMsg(id,msg,error){var e=document.getElementById(id);if(!e)return;e.textContent=msg||'';e.className=error?'j2850-msg warnText':'j2850-msg'}
- async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
+ async function changeTechnician(prefix){var i=ids(prefix),select=document.getElementById(i.technician),tr=prefixTracking(prefix),chosen=text(select&&select.value)||'Office / Unassigned';if(!tr){setMsg(i.technicianMsg,'Work order could not be identified.',true);return}setMsg(i.technicianMsg,'Updating technician…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/technician',{method:'POST',body:JSON.stringify({technician:chosen,requestedBy:currentUser()})});if(typeof refresh==='function')await refresh();var item=(r&&r.workOrder)||orderByTracking(tr)||{};try{if(typeof phase12SelectedWorkOrder!=='undefined'&&phase12SelectedWorkOrder&&text(phase12SelectedWorkOrder.trackingNumber)===text(tr)){Object.assign(phase12SelectedWorkOrder,item)}}catch(_){ }renderTechnicianControl(prefix,item);selectAssignedTech(item);setMsg(i.technicianMsg,'✅ Technician updated to '+(r&&r.technician?r.technician:chosen)+'.');if(prefix==='j2850Phase12'&&typeof window.openPhase12WorkOrder==='function'){setTimeout(function(){try{window.openPhase12WorkOrder(tr);renderOpen()}catch(_){ }},0)}else{renderOpen()}}catch(e){setMsg(i.technicianMsg,'⚠ '+e.message,true)}}
+  async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
  async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
  async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
  function dashboardMetricCard(id){var el=document.getElementById(id);return el&&el.closest?el.closest('.card'):null}
@@ -934,7 +1193,7 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  window.addEventListener('click',function(e){var hit=dashboardRouteFromTarget(e.target);if(!hit)return;e.preventDefault();e.stopImmediatePropagation();if(!executeDashboardRoute(hit))alert('Joshua could not open that list yet. Refresh the Control Panel and try again.');},true);
  window.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var hit=dashboardRouteFromTarget(e.target);if(!hit)return;e.preventDefault();e.stopImmediatePropagation();executeDashboardRoute(hit)},true);
  document.addEventListener('input',function(e){var p=findPrefix(e.target);if(!p)return;var i=ids(p);if(e.target.id===i.taskTitle){var a=mentioned(e.target.value);var s=document.getElementById(i.taskAssigned);if(a&&s)s.value=a}});
- document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&text(t.value).toLowerCase().indexOf('@'+String(v).toLowerCase())<0)t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
+ document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&text(t.value).toLowerCase().indexOf('@'+String(v).toLowerCase())<0)t.value='@'+v+' '+t.value;t&&t.focus();return}var tech=e.target.closest&&e.target.closest('[data-j2850-change-technician]');if(tech){changeTechnician(findPrefix(tech));return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
  // Performance authority: no whole-page MutationObserver and no 2.5-second popup poll.
  // Refresh only when the job is opened or a note/task operation changes it.
  if(typeof window.openPhase12WorkOrder==='function'&&!window.openPhase12WorkOrder.__j2850Wrapped){var originalOpen=window.openPhase12WorkOrder;var openWrapped=function(){var r=originalOpen.apply(this,arguments);setTimeout(renderOpen,0);setTimeout(renderOpen,100);return r};openWrapped.__j2850Wrapped=true;window.openPhase12WorkOrder=openWrapped}
@@ -957,6 +1216,9 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
 // This is intentionally fail-safe: a ClockShark schema mismatch must never take Joshua offline.
 patchClockSharkCommentsBootstrap();
 
+// Prepare the final technician override authority without disturbing Phase 23 server anchors.
+patchFinalTechnicianAuthorityBootstrap();
+
 // The durable Office Notes API route must exist before the existing chain imports server.js.
 // IMPORTANT: do not rewrite the /control-panel route here. Phase 20 matches that route exactly during startup.
 patchServer();
@@ -976,5 +1238,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V10 active: ClockShark Job Comments now feed TECHNICIAN COMMENTS with author/timestamp, plus dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V11 active: every Work Order now has a durable Change Technician control, plus ClockShark Job Comments in TECHNICIAN COMMENTS, dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
