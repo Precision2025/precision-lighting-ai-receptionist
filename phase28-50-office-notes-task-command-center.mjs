@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.57 V16 — Operations OS + Call Survival Fail-Safe
+ * Joshua Phase 28.58 V17 — Operations OS + Call Survival Hotfix
  *
  * Builds on the stable Phase 28.50 command center and keeps the live integration
  * fields intact while giving the office a durable, correctable operating layer:
@@ -55,54 +55,126 @@ const OPS_PANEL_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_UI_V1";
 const JOB_SHEETS_SYNC_RUNTIME_PATH = new URL("./search-sync-runtime.mjs", ROOT);
 const JOB_SHEETS_DURABLE_SYNC_MARKER = "JOSHUA_PHASE28_55_JOB_SHEETS_DURABLE_SYNC_V1";
 
-const CALL_FAILSAFE_RUNTIME_MARKER = "JOSHUA_PHASE28_57_CONVERSATION_RELAY_FAILSAFE_V1";
-const CALL_FAILSAFE_ROUTE_SOURCE = "app.post(\"/connect-action\", async (request, reply) => {\n  /* JOSHUA_PHASE28_57_CONVERSATION_RELAY_FAILSAFE_V1 */\n  if (!validateHttpRequest(request)) {\n    return reply.code(403).send(\"Invalid Twilio signature\");\n  }\n\n  let handoff = {};\n  const raw = request.body?.HandoffData || request.body?.handoffData;\n  if (raw) {\n    try {\n      handoff = JSON.parse(raw);\n    } catch {\n      handoff = { reason: raw };\n    }\n  }\n\n  const sessionStatus = String(request.body?.SessionStatus || \"\").toLowerCase();\n  const callStatus = String(request.body?.CallStatus || \"\").toLowerCase();\n  const errorCode = String(request.body?.ErrorCode || \"\");\n  const errorMessage = String(request.body?.ErrorMessage || \"\");\n  const retryCount = Math.max(0, Number(request.query?.retry || 0) || 0);\n\n  if (handoff.reasonCode !== \"live-agent-handoff\") {\n    app.log.warn(\n      {\n        callSid: request.body?.CallSid || \"\",\n        sessionId: request.body?.SessionId || \"\",\n        sessionStatus,\n        callStatus,\n        errorCode,\n        errorMessage,\n        retryCount,\n        handoffReason: String(handoff.reason || \"\")\n      },\n      \"ConversationRelay ended without live-agent handoff\"\n    );\n\n    if (callStatus === \"completed\" || sessionStatus === \"completed\") {\n      return reply\n        .type(\"text/xml\")\n        .send(`<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>`);\n    }\n\n    if (retryCount < 1) {\n      const reconnectTwiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">One moment while I reconnect your call.</Say>\n  <Connect action=\"${publicBaseUrl}/connect-action?retry=1\" method=\"POST\">\n    <ConversationRelay\n      url=\"${wsBaseUrl}/ws\"\n      welcomeGreeting=\"Thank you for your patience. This is Joshua with Precision Lighting. How can I help you?\"\n      welcomeGreetingInterruptible=\"any\"\n      language=\"en-US\"\n      interruptible=\"any\"\n      dtmfDetection=\"true\"\n    />\n  </Connect>\n</Response>`;\n      return reply.type(\"text/xml\").send(reconnectTwiml);\n    }\n\n    const fallbackTwiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">I’m sorry, our automated assistant is having trouble. Please hold while I connect you with our office.</Say>\n  <Dial\n    timeout=\"25\"\n    answerOnBridge=\"true\"\n    action=\"${publicBaseUrl}/dial-result?department=default&amp;stage=conversation-failsafe\"\n    method=\"POST\">\n    <Number>${xmlEscape(defaultTransferNumber)}</Number>\n  </Dial>\n</Response>`;\n    return reply.type(\"text/xml\").send(fallbackTwiml);\n  }\n\n  const department = String(handoff.department || \"default\").toLowerCase();\n  let destinationName = \"the Precision Lighting team\";\n  let destinationNumber = defaultTransferNumber;\n  let stage = \"default\";\n\n  if (department === \"travis\") {\n    if (isThursdayInDallas()) {\n      destinationName = \"Ariana\";\n      destinationNumber = arianaTransferNumber;\n      stage = \"thursday-ariana\";\n    } else {\n      destinationName = \"Travis\";\n      destinationNumber = travisTransferNumber;\n      stage = \"travis\";\n    }\n  } else if (department === \"accounting\" || department === \"shellie\") {\n    destinationName = \"Shellie\";\n    destinationNumber = accountingTransferNumber;\n    stage = \"shellie\";\n  } else if (department === \"ariana\" || department === \"operations\") {\n    destinationName = \"Ariana\";\n    destinationNumber = arianaTransferNumber;\n    stage = \"ariana\";\n  }\n\n  const session = getSessionForTwilioRequest(request);\n  if (session) {\n    session.transferAttempted = true;\n    session.transferRequestedAt = session.transferRequestedAt || new Date().toISOString();\n    session.transferDepartment = department;\n    session.transferStage = stage;\n    session.transferDestinationName = destinationName;\n  }\n\n  const twiml = `<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n  <Say voice=\"Polly.Joanna-Neural\">Please hold while I connect you with ${xmlEscape(destinationName)}.</Say>\n  <Dial\n    timeout=\"25\"\n    answerOnBridge=\"true\"\n    action=\"${publicBaseUrl}/dial-result?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n    method=\"POST\">\n    <Number\n      url=\"${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}\"\n      method=\"POST\"\n      machineDetection=\"Enable\"\n      machineDetectionTimeout=\"18\"\n      machineDetectionSpeechThreshold=\"1800\"\n      machineDetectionSpeechEndThreshold=\"2000\"\n      machineDetectionSilenceTimeout=\"6000\">${xmlEscape(destinationNumber)}</Number>\n  </Dial>\n</Response>`;\n\n  return reply.type(\"text/xml\").send(twiml);\n});";
+const CALL_SURVIVAL_RUNTIME_MARKER = "JOSHUA_PHASE28_58_CONNECT_ACTION_SURVIVAL_GENERATOR_V1";
+const CALL_SURVIVAL_SERVER_MARKER = "JOSHUA_PHASE28_58_CONNECT_ACTION_SURVIVAL_V1";
 
-function patchConversationRelayFailSafeRuntime() {
+function patchConversationRelaySurvivalRuntime() {
   try {
     if (!fs.existsSync(JOB_SHEETS_SYNC_RUNTIME_PATH)) {
-      console.warn("Joshua Phase 28.57: search-sync-runtime.mjs not found; call fail-safe patch skipped.");
+      console.warn("Joshua Phase 28.58: search-sync-runtime.mjs not found; call survival skipped safely.");
       return false;
     }
+
     let source = fs.readFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, "utf8");
-    if (source.includes(CALL_FAILSAFE_RUNTIME_MARKER)) return false;
-    const start = source.indexOf('  const connectActionRoute = "app.post(\\"/connect-action\\"');
-    const endAnchor = ';\n  replaceServerSection(\n    \'app.post("/connect-action", async (request, reply) => {\',';
-    const end = source.indexOf(endAnchor, start);
-    if (start < 0 || end < 0) {
-      console.warn("Joshua Phase 28.57: ConversationRelay action generator not recognized; startup preserved.");
+    if (source.includes(CALL_SURVIVAL_RUNTIME_MARKER)) return false;
+
+    const importAnchor = 'await import("./contact-greeting-bootstrap.mjs");';
+    if (!source.includes(importAnchor)) {
+      console.warn("Joshua Phase 28.58: search-sync tail anchor not recognized; call survival skipped safely.");
       return false;
     }
-    const replacement = "  const connectActionRoute = " + JSON.stringify(CALL_FAILSAFE_ROUTE_SOURCE);
-    source = source.slice(0, start) + replacement + source.slice(end);
+
+    const oldBranch = `  if (handoff.reasonCode !== "live-agent-handoff") {
+    return reply
+      .type("text/xml")
+      .send(\`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>\`);
+  }`;
+
+    const newBranch = `  /* ${CALL_SURVIVAL_SERVER_MARKER} */
+  if (handoff.reasonCode !== "live-agent-handoff") {
+    const sessionStatus = String(request.body?.SessionStatus || "").toLowerCase();
+    const callStatus = String(request.body?.CallStatus || "").toLowerCase();
+    const errorCode = String(request.body?.ErrorCode || "");
+    const errorMessage = String(request.body?.ErrorMessage || "");
+    const retryCount = Math.max(0, Number(request.query?.retry || 0) || 0);
+
+    app.log.warn(
+      {
+        callSid: request.body?.CallSid || "",
+        sessionId: request.body?.SessionId || "",
+        sessionStatus,
+        callStatus,
+        errorCode,
+        errorMessage,
+        retryCount,
+        handoffReason: String(handoff.reason || "")
+      },
+      "ConversationRelay ended without live-agent handoff"
+    );
+
+    if (["completed", "canceled", "busy", "failed", "no-answer"].includes(callStatus)) {
+      return reply
+        .type("text/xml")
+        .send(\`<?xml version="1.0" encoding="UTF-8"?><Response></Response>\`);
+    }
+
+    if (retryCount < 1) {
+      const reconnectTwiml = \`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna-Neural">One moment while I reconnect your call.</Say>
+  <Connect action="\${publicBaseUrl}/connect-action?retry=1" method="POST">
+    <ConversationRelay
+      url="\${wsBaseUrl}/ws"
+      welcomeGreeting="Thank you for your patience. This is Joshua with Precision Lighting. How can I help you?"
+      welcomeGreetingInterruptible="any"
+      language="en-US"
+      ttsProvider="\${ttsProvider}"
+      voice="\${voice}"
+      elevenlabsTextNormalization="on"
+      transcriptionProvider="\${transcriptionProvider}"
+      speechModel="\${speechModel}"
+      interruptible="any"
+      dtmfDetection="true"
+    />
+  </Connect>
+</Response>\`;
+      return reply.type("text/xml").send(reconnectTwiml);
+    }
+
+    const fallbackTwiml = \`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna-Neural">I’m sorry, our automated assistant is having trouble. Please hold while I connect you with our office.</Say>
+  <Dial
+    timeout="25"
+    answerOnBridge="true"
+    action="\${publicBaseUrl}/dial-result?department=default&amp;stage=conversation-failsafe"
+    method="POST">
+    <Number>\${xmlEscape(defaultTransferNumber)}</Number>
+  </Dial>
+</Response>\`;
+    return reply.type("text/xml").send(fallbackTwiml);
+  }`;
+
+    const runtimePatch = [
+      "",
+      "/* " + CALL_SURVIVAL_RUNTIME_MARKER + " */",
+      "{",
+      "  let callSurvivalServer = fs.readFileSync(serverPath, \"utf8\");",
+      "  if (!callSurvivalServer.includes(" + JSON.stringify(CALL_SURVIVAL_SERVER_MARKER) + ")) {",
+      "    const oldNonHandoffBranch = " + JSON.stringify(oldBranch) + ";",
+      "    const newNonHandoffBranch = " + JSON.stringify(newBranch) + ";",
+      "    if (callSurvivalServer.includes(oldNonHandoffBranch)) {",
+      "      callSurvivalServer = callSurvivalServer.replace(oldNonHandoffBranch, newNonHandoffBranch);",
+      "      fs.writeFileSync(serverPath, callSurvivalServer);",
+      "      console.log(\"Joshua Phase 28.58 ConversationRelay call survival installed after transfer routing.\");",
+      "    } else {",
+      "      console.warn(\"Joshua Phase 28.58: non-handoff Hangup branch not recognized; startup preserved.\");",
+      "    }",
+      "  }",
+      "}",
+      ""
+    ].join("\n");
+
+    source = source.replace(importAnchor, runtimePatch + "\n" + importAnchor);
     fs.writeFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, source);
-    console.log("Joshua Phase 28.57 ConversationRelay call-survival generator installed.");
+    console.log("Joshua Phase 28.58 prepared post-routing ConversationRelay call survival.");
     return true;
   } catch (error) {
-    console.warn("Joshua Phase 28.57: call fail-safe generator patch skipped safely:", error.message);
+    console.warn("Joshua Phase 28.58: call survival generator patch skipped safely:", error.message);
     return false;
   }
 }
 
-function patchConversationRelayFailSafeServer() {
-  try {
-    let server = fs.readFileSync(SERVER_PATH, "utf8");
-    if (server.includes(CALL_FAILSAFE_RUNTIME_MARKER)) return false;
-    const start = server.indexOf('app.post("/connect-action", async (request, reply) => {');
-    const end = server.indexOf('\n\napp.post("/screen-transfer"', start);
-    if (start < 0 || end < 0) {
-      console.warn("Joshua Phase 28.57: live /connect-action route not recognized; direct call fail-safe skipped.");
-      return false;
-    }
-    server = server.slice(0, start) + CALL_FAILSAFE_ROUTE_SOURCE + server.slice(end);
-    fs.writeFileSync(SERVER_PATH, server);
-    console.log("Joshua Phase 28.57 live ConversationRelay call-survival route installed.");
-    return true;
-  } catch (error) {
-    console.warn("Joshua Phase 28.57: direct call fail-safe skipped safely:", error.message);
-    return false;
-  }
-}
 
 function patchDurableJobSheetsSyncRuntime() {
   // search-sync-runtime generates the live ServiceChannel -> Job Sheets helper.
@@ -2495,9 +2567,9 @@ function patchOperationsOSPanel(fileUrl) {
 }
 
 
-// Install call survival before any runtime imports the live voice routes.
-patchConversationRelayFailSafeRuntime();
-patchConversationRelayFailSafeServer();
+// Queue the call-survival change so it runs only after the existing transfer-routing
+// edits have consumed their original server anchors.
+patchConversationRelaySurvivalRuntime();
 
 // Repair the ServiceChannel -> Job Sheets generator before search-sync-runtime builds the live server.
 patchDurableJobSheetsSyncRuntime();
@@ -2531,5 +2603,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.57 V16 Operations OS + call survival active: durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
+  `Joshua Phase 28.58 V17 Operations OS + call survival active: durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
 );
