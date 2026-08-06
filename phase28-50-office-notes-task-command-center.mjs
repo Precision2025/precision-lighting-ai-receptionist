@@ -22,14 +22,16 @@ const PANEL_PATHS = [
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
 const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V7";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V9";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V4",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V5",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V7",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V8"
 ];
 
 function patchServer() {
@@ -188,6 +190,580 @@ app.post("/api/control/tasks", async (request, reply) => {
     console.log("Joshua Phase 28.50 installed Smart Action duplicate protection.");
   }
 
+
+  const CLOCKSHARK_COMMENTS_MARKER = "JOSHUA_PHASE28_51_CLOCKSHARK_COMMENTS_V1";
+  if (!server.includes(CLOCKSHARK_COMMENTS_MARKER)) {
+    const canonicalAnchor = "function phase21ClockSharkCanonicalType(";
+    if (!server.includes(canonicalAnchor)) {
+      throw new Error("Phase 28.51: ClockShark canonical-type anchor not found.");
+    }
+
+    const commentHelpers = `/* ${CLOCKSHARK_COMMENTS_MARKER} */
+function phase2851ClockSharkCommentValue(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    return phase21ClockSharkText(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map(item => phase2851ClockSharkCommentValue(item))
+      .filter(Boolean)
+      .join("\\n\\n");
+  }
+  if (typeof value === "object") {
+    for (const key of [
+      "text","Text","body","Body","message","Message",
+      "comment","Comment","content","Content","value","Value",
+      "description","Description","notes","Notes"
+    ]) {
+      const candidate = phase2851ClockSharkCommentValue(value[key]);
+      if (candidate) return candidate;
+    }
+  }
+  return "";
+}
+
+function phase2851ClockSharkCommentAuthor(payload = {}) {
+  const nested =
+    (payload.author && typeof payload.author === "object" && payload.author) ||
+    (payload.createdBy && typeof payload.createdBy === "object" && payload.createdBy) ||
+    (payload.created_by && typeof payload.created_by === "object" && payload.created_by) ||
+    (payload.user && typeof payload.user === "object" && payload.user) ||
+    {};
+  return phase21ClockSharkText(
+    phase21ClockSharkFirst(payload, [
+      "authorName","author_name","createdByName","created_by_name",
+      "userName","user_name","employeeName","employee_name",
+      "technicianName","technician_name","displayName","fullName"
+    ]) ||
+    nested.displayName || nested.fullName || nested.name ||
+    [nested.firstName || nested.first_name, nested.lastName || nested.last_name]
+      .filter(Boolean).join(" ") ||
+    phase21ClockSharkEmployee(payload).name
+  );
+}
+
+function phase2851ClockSharkCommentTime(payload = {}) {
+  return phase21ClockSharkDate(
+    phase21ClockSharkFirst(payload, [
+      "createdAt","created_at","commentedAt","commented_at",
+      "timestamp","dateTime","date_time","date","updatedAt","updated_at"
+    ])
+  );
+}
+
+function phase2851ClockSharkCommentObjects(payload = {}) {
+  const values = [];
+  const add = value => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      for (const item of value) add(item);
+      return;
+    }
+    values.push(value);
+  };
+
+  for (const key of [
+    "comments","Comments","jobComments","job_comments",
+    "conversationComments","conversation_comments","conversations"
+  ]) add(payload?.[key]);
+
+  for (const key of [
+    "comment","Comment","jobComment","job_comment",
+    "conversationComment","conversation_comment"
+  ]) add(payload?.[key]);
+
+  // A dedicated comment event usually IS the comment object.
+  const rawType = phase21ClockSharkCanonicalType(
+    payload?.eventType || payload?.event_type || payload?.event ||
+    payload?.type || payload?.trigger || ""
+  );
+  const looksLikeComment = [
+    payload?.commentText, payload?.comment_text,
+    payload?.text, payload?.Text,
+    payload?.body, payload?.Body,
+    payload?.message, payload?.Message,
+    payload?.content, payload?.Content
+  ].some(value => phase21ClockSharkText(value));
+  if (!values.length && (rawType === "comment" || looksLikeComment)) add(payload);
+
+  const output = [];
+  for (const raw of values) {
+    const object = raw && typeof raw === "object" ? raw : { comment: raw };
+    const merged = {
+      ...payload,
+      ...object,
+      job: object.job || payload.job,
+      employee: object.employee || payload.employee
+    };
+    const text = phase2851ClockSharkCommentValue(
+      object.comment ?? object.Comment ?? object.text ?? object.Text ??
+      object.body ?? object.Body ?? object.message ?? object.Message ??
+      object.content ?? object.Content ?? raw
+    );
+    if (!text) continue;
+
+    const author = phase2851ClockSharkCommentAuthor(merged);
+    const createdAt = phase2851ClockSharkCommentTime(merged);
+    const id = phase21ClockSharkText(
+      object.commentId || object.comment_id || object.id ||
+      object.conversationId || object.conversation_id ||
+      crypto.createHash("sha256")
+        .update([author, createdAt, text].join("|"))
+        .digest("hex")
+        .slice(0, 24)
+    );
+    const attachments = phase21ClockSharkUnique([
+      ...phase21ClockSharkArray(object.attachments),
+      ...phase21ClockSharkArray(object.attachmentUrls),
+      ...phase21ClockSharkArray(object.attachment_urls),
+      object.attachmentUrl, object.attachment_url,
+      object.photoUrl, object.photo_url
+    ]);
+
+    output.push({
+      id,
+      text,
+      author,
+      createdAt,
+      attachments,
+      source: "ClockShark Comments"
+    });
+  }
+
+  const seen = new Set();
+  return output.filter(item => {
+    const key = String(item.id || [item.author,item.createdAt,item.text].join("|")).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function phase2851ClockSharkFormatComment(comment = {}) {
+  const text = phase21ClockSharkText(comment.text);
+  if (!text) return "";
+  const meta = [
+    phase21ClockSharkText(comment.author),
+    phase21ClockSharkText(comment.createdAt)
+  ].filter(Boolean).join(" · ");
+  return meta ? meta + "\\n" + text : text;
+}
+
+function phase2851ClockSharkFormatComments(comments = []) {
+  return (Array.isArray(comments) ? comments : [])
+    .slice()
+    .sort((a, b) => {
+      const at = new Date(a?.createdAt || 0).getTime();
+      const bt = new Date(b?.createdAt || 0).getTime();
+      return (Number.isFinite(at) ? at : 0) - (Number.isFinite(bt) ? bt : 0);
+    })
+    .map(phase2851ClockSharkFormatComment)
+    .filter(Boolean);
+}
+
+function phase2851ClockSharkResolveWorkOrder(data, state, payload = {}) {
+  const parsedJob = phase21ClockSharkJob(payload);
+  const directJobId = phase21ClockSharkText(
+    payload.jobId || payload.job_id ||
+    (payload.job && typeof payload.job === "object" ? payload.job.id : "")
+  );
+  const savedJob =
+    (directJobId && state?.jobs?.[directJobId]) ||
+    Object.values(state?.jobs || {}).find(item =>
+      directJobId && phase21ClockSharkText(item?.id) === directJobId
+    ) ||
+    null;
+
+  const tracking = phase21ClockSharkTracking(
+    parsedJob.trackingNumber,
+    parsedJob.number,
+    payload.trackingNumber,
+    payload.tracking_number,
+    payload.workOrderNumber,
+    payload.work_order_number,
+    payload.jobNumber,
+    payload.job_number,
+    savedJob?.trackingNumber,
+    savedJob?.number,
+    parsedJob.name,
+    savedJob?.name
+  );
+
+  const jobId = phase21ClockSharkText(
+    parsedJob.id || directJobId || savedJob?.id
+  );
+  const jobNumber = phase21ClockSharkText(
+    parsedJob.number || savedJob?.number
+  );
+  const jobName = phase21ClockSharkText(
+    parsedJob.name || savedJob?.name
+  ).toLowerCase();
+
+  for (const [key, workOrder] of Object.entries(data.workOrders || {})) {
+    const references = [
+      key,
+      workOrder?.trackingNumber,
+      workOrder?.workOrderNumber,
+      workOrder?.serviceChannelTrackingNumber,
+      workOrder?.clockSharkJobNumber
+    ].map(value => phase21ClockSharkText(value));
+
+    if (tracking && references.includes(tracking)) return { key, workOrder };
+
+    if (
+      jobId &&
+      phase21ClockSharkText(workOrder?.clockSharkJobId) === jobId
+    ) return { key, workOrder };
+
+    if (
+      jobNumber &&
+      phase21ClockSharkText(workOrder?.clockSharkJobNumber) === jobNumber
+    ) return { key, workOrder };
+
+    if (jobName) {
+      const names = [
+        workOrder?.clockSharkJobName,
+        workOrder?.jobName,
+        workOrder?.locationName
+      ].map(value => phase21ClockSharkText(value).toLowerCase()).filter(Boolean);
+      if (names.includes(jobName)) return { key, workOrder };
+    }
+  }
+
+  return null;
+}
+
+function phase2851ClockSharkApplyComment(data, state, payload = {}) {
+  const comments = phase2851ClockSharkCommentObjects(payload);
+  if (!comments.length) {
+    return { comments: [], matched: false };
+  }
+
+  const matched = phase2851ClockSharkResolveWorkOrder(data, state, payload);
+  if (!matched) {
+    return { comments, matched: false };
+  }
+
+  const current = matched.workOrder || {};
+  const prior = Array.isArray(current.clockSharkComments)
+    ? current.clockSharkComments
+    : [];
+  const byId = new Map();
+
+  for (const item of [...prior, ...comments]) {
+    if (!item || !phase21ClockSharkText(item.text)) continue;
+    const key = phase21ClockSharkText(
+      item.id ||
+      crypto.createHash("sha256")
+        .update([
+          phase21ClockSharkText(item.author),
+          phase21ClockSharkText(item.createdAt),
+          phase21ClockSharkText(item.text)
+        ].join("|"))
+        .digest("hex")
+        .slice(0, 24)
+    );
+    byId.set(key, { ...item, id: key });
+  }
+
+  const merged = [...byId.values()]
+    .sort((a, b) => {
+      const at = new Date(a?.createdAt || 0).getTime();
+      const bt = new Date(b?.createdAt || 0).getTime();
+      return (Number.isFinite(at) ? at : 0) - (Number.isFinite(bt) ? bt : 0);
+    })
+    .slice(-200);
+
+  const existingNotes = Array.isArray(current.clockSharkNotes)
+    ? current.clockSharkNotes
+    : [current.clockSharkNotes];
+
+  data.workOrders[matched.key] = {
+    ...current,
+    clockSharkComments: merged,
+    clockSharkNotes: phase21ClockSharkUnique([
+      ...existingNotes,
+      ...phase2851ClockSharkFormatComments(merged)
+    ]).slice(-200),
+    clockSharkCommentsUpdatedAt: phase21ClockSharkNow(),
+    clockSharkLastSyncAt: phase21ClockSharkNow(),
+    updatedAt: phase21ClockSharkNow()
+  };
+
+  return {
+    comments,
+    stored: merged,
+    matched: true,
+    trackingNumber:
+      data.workOrders[matched.key].trackingNumber ||
+      matched.key,
+    workOrder:
+      data.workOrders[matched.key]
+  };
+}
+
+`;
+
+    server = server.replace(canonicalAnchor, commentHelpers + canonicalAnchor);
+
+    // ClockShark's job-level field is "Comments", not timesheet/checkout Notes.
+    const canonicalCommentAnchor = `  if (
+    /clock_?in|new_?clock_?in|started_?shift/.test(`;
+    if (!server.includes(canonicalCommentAnchor)) {
+      throw new Error("Phase 28.51: ClockShark comment canonicalization anchor not found.");
+    }
+    server = server.replace(
+      canonicalCommentAnchor,
+      `  if (/comment|conversation/.test(value)) {
+    return "comment";
+  }
+
+  if (
+    /clock_?in|new_?clock_?in|started_?shift/.test(`
+    );
+
+    const eventIdAnchor = `          "timeEntryId",
+          "time_entry_id",
+          "id"`;
+    if (server.includes(eventIdAnchor)) {
+      server = server.replace(
+        eventIdAnchor,
+        `          "timeEntryId",
+          "time_entry_id",
+          "commentId",
+          "comment_id",
+          "conversationId",
+          "conversation_id",
+          "id"`
+      );
+    }
+
+    const eventNotesAnchor = `          "shiftNotes",
+          "shift_notes"
+        ]`;
+    if (server.includes(eventNotesAnchor)) {
+      server = server.replace(
+        eventNotesAnchor,
+        `          "shiftNotes",
+          "shift_notes",
+          "comments",
+          "Comments",
+          "comment",
+          "Comment",
+          "jobComments",
+          "job_comments",
+          "commentText",
+          "comment_text",
+          "text",
+          "Text",
+          "body",
+          "Body",
+          "message",
+          "Message",
+          "content",
+          "Content"
+        ]`
+      );
+    }
+
+    const shiftNotesAnchor = `            "clockOutNotes",
+            "clock_out_notes",
+            "description"`;
+    if (server.includes(shiftNotesAnchor)) {
+      server = server.replace(
+        shiftNotesAnchor,
+        `            "clockOutNotes",
+            "clock_out_notes",
+            "comments",
+            "Comments",
+            "comment",
+            "Comment",
+            "jobComments",
+            "job_comments",
+            "description"`
+      );
+    }
+
+    const recalcOld = `  const notes =
+    phase21ClockSharkUnique(
+      closed.map(shift =>
+        shift.notes
+      )
+    ).slice(-100);`;
+    const recalcNew = `  const currentCommentsWorkOrder =
+    data.workOrders[workOrderKey] || {};
+  const notes =
+    phase21ClockSharkUnique([
+      ...closed.map(shift => shift.notes),
+      ...phase2851ClockSharkFormatComments(
+        currentCommentsWorkOrder.clockSharkComments
+      )
+    ]).slice(-200);`;
+    if (!server.includes(recalcOld)) {
+      throw new Error("Phase 28.51: ClockShark work-order notes recalculation anchor not found.");
+    }
+    server = server.replace(recalcOld, recalcNew);
+
+    const applyShiftAnchor = `  phase21ClockSharkUpsertJob(
+    state,
+    job
+  );
+
+  let existing = null;`;
+    if (!server.includes(applyShiftAnchor)) {
+      throw new Error("Phase 28.51: ClockShark shift comment anchor not found.");
+    }
+    server = server.replace(
+      applyShiftAnchor,
+      `  phase21ClockSharkUpsertJob(
+    state,
+    job
+  );
+
+  // Job Comments are separate from timesheet notes in ClockShark.
+  // Capture them whenever the live feed includes them.
+  phase2851ClockSharkApplyComment(
+    data,
+    state,
+    payload
+  );
+
+  let existing = null;`
+    );
+
+    const applyJobAnchor = `  phase22ClockSharkEnsureWorkOrder(
+    data,
+    state,
+    job,
+    { initialState: "new" }
+  );
+
+  if (`;
+    if (!server.includes(applyJobAnchor)) {
+      throw new Error("Phase 28.51: ClockShark job comment anchor not found.");
+    }
+    server = server.replace(
+      applyJobAnchor,
+      `  phase22ClockSharkEnsureWorkOrder(
+    data,
+    state,
+    job,
+    { initialState: "new" }
+  );
+
+  phase2851ClockSharkApplyComment(
+    data,
+    state,
+    payload
+  );
+
+  if (`
+    );
+
+    const processBranchAnchor = `  } else if (
+    eventType === "job_added"
+  ) {`;
+    if (!server.includes(processBranchAnchor)) {
+      throw new Error("Phase 28.51: ClockShark process branch anchor not found.");
+    }
+    server = server.replace(
+      processBranchAnchor,
+      `  } else if (
+    eventType === "comment"
+  ) {
+    result =
+      phase2851ClockSharkApplyComment(
+        data,
+        state,
+        { ...payload, eventType: "comment" }
+      );
+  } else if (
+    eventType === "job_added"
+  ) {`
+    );
+
+    const groupsAnchor = `      ["notifications", "notification"],
+      ["timeEntries", "snapshot"],`;
+    if (!server.includes(groupsAnchor)) {
+      throw new Error("Phase 28.51: ClockShark grouped payload anchor not found.");
+    }
+    server = server.replace(
+      groupsAnchor,
+      `      ["notifications", "notification"],
+      ["comments", "comment"],
+      ["Comments", "comment"],
+      ["jobComments", "comment"],
+      ["job_comments", "comment"],
+      ["conversationComments", "comment"],
+      ["conversation_comments", "comment"],
+      ["timeEntries", "snapshot"],`
+    );
+
+    const groupedProcessAnchor = `            results.push(
+              phase21ClockSharkProcessOne(
+                data,
+                state,
+                item,
+                type ||
+                forcedType
+              )
+            );`;
+    if (!server.includes(groupedProcessAnchor)) {
+      throw new Error("Phase 28.51: ClockShark grouped comment context anchor not found.");
+    }
+    server = server.replace(
+      groupedProcessAnchor,
+      `            results.push(
+              phase21ClockSharkProcessOne(
+                data,
+                state,
+                type === "comment"
+                  ? {
+                      ...payload,
+                      eventId: undefined,
+                      event_id: undefined,
+                      zapId: undefined,
+                      zap_id: undefined,
+                      id: undefined,
+                      comments: undefined,
+                      Comments: undefined,
+                      jobComments: undefined,
+                      job_comments: undefined,
+                      conversationComments: undefined,
+                      conversation_comments: undefined,
+                      ...(item && typeof item === "object"
+                        ? item
+                        : { comment: item })
+                    }
+                  : item,
+                type ||
+                forcedType
+              )
+            );`
+    );
+
+    const rowsAnchor = `      "data",
+      "timeEntries",`;
+    if (server.includes(rowsAnchor)) {
+      server = server.replace(
+        rowsAnchor,
+        `      "data",
+      "comments",
+      "Comments",
+      "jobComments",
+      "job_comments",
+      "conversationComments",
+      "conversation_comments",
+      "timeEntries",`
+      );
+    }
+
+    changed = true;
+    console.log("Joshua Phase 28.51 installed ClockShark Job Comments authority.");
+  }
+
+
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
 
@@ -260,6 +836,57 @@ function patchPanelDashboardAndLayout(html) {
   return out;
 }
 
+
+function patchPanelClockSharkComments(html) {
+  let out = html;
+
+  // ClockShark distinguishes Job Comments from timesheet Notes.
+  out = out
+    .replaceAll("No ClockShark checkout notes received.", "No ClockShark comments received.")
+    .replaceAll(">TECHNICIAN NOTES<", ">TECHNICIAN COMMENTS<");
+
+  const oldHelper = `function joshuaClockSharkNotesText(item={}){
+ const raw=item&&item.clockSharkNotes;
+ const values=Array.isArray(raw)?raw:[raw];
+ return values
+  .map(value=>String(value==null?"":value).trim())
+  .filter(Boolean)
+  .join("\\n\\n");
+}`;
+  const newHelper = `function joshuaClockSharkNotesText(item={}){
+ const comments=Array.isArray(item&&item.clockSharkComments)?item.clockSharkComments:[];
+ if(comments.length){
+  return comments
+   .slice()
+   .sort((a,b)=>new Date(a&&a.createdAt||0)-new Date(b&&b.createdAt||0))
+   .map(comment=>{
+    const body=String(comment&&comment.text||"").trim();
+    if(!body)return "";
+    const author=String(comment&&comment.author||"").trim();
+    const rawWhen=comment&&comment.createdAt;
+    let when="";
+    if(rawWhen){
+     const date=new Date(rawWhen);
+     when=Number.isFinite(date.getTime())?date.toLocaleString():String(rawWhen);
+    }
+    const meta=[author,when].filter(Boolean).join(" · ");
+    return meta?meta+"\\n"+body:body;
+   })
+   .filter(Boolean)
+   .join("\\n\\n");
+ }
+ const raw=item&&item.clockSharkNotes;
+ const values=Array.isArray(raw)?raw:[raw];
+ return values
+  .map(value=>String(value==null?"":value).trim())
+  .filter(Boolean)
+  .join("\\n\\n");
+}`;
+  if (out.includes(oldHelper)) out = out.replace(oldHelper, newHelper);
+
+  return out;
+}
+
 function patchPanel(fileUrl) {
   if (!fs.existsSync(fileUrl)) return false;
   let html = fs.readFileSync(fileUrl, "utf8");
@@ -268,6 +895,8 @@ function patchPanel(fileUrl) {
   if (smartPatched !== html) { html = smartPatched; changed = true; }
   const layoutPatched = patchPanelDashboardAndLayout(html);
   if (layoutPatched !== html) { html = layoutPatched; changed = true; }
+  const commentsPatched = patchPanelClockSharkComments(html);
+  if (commentsPatched !== html) { html = commentsPatched; changed = true; }
   if (html.includes(PANEL_MARKER)) {
     if (changed) fs.writeFileSync(fileUrl, html);
     return changed;
@@ -457,5 +1086,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V8 active: dashboard routing authority for every KPI/list card and Joshua Intelligence row, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V9 active: ClockShark Job Comments now feed TECHNICIAN COMMENTS with author/timestamp, plus dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
