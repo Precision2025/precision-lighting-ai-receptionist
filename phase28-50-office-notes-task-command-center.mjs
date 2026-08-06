@@ -22,11 +22,13 @@ const PANEL_PATHS = [
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
 const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V4";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V3",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V4",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V5"
 ];
 
 function patchServer() {
@@ -232,12 +234,29 @@ function patchPanelSmartActions(html) {
   return out;
 }
 
+function patchPanelDashboardAndLayout(html) {
+  let out = html;
+  const oldBacklog = '<div class="card stat"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>';
+  const newBacklog = '<div class="card stat clickable-stat" id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing" aria-label="Open Billing Queue for invoice backlog"><span class="muted">Invoice backlog</span><strong id="invoiceBacklog">$0</strong></div>';
+  if (out.includes(oldBacklog)) out = out.replace(oldBacklog, newBacklog);
+
+  // Be tolerant of an already-upgraded card from an earlier runtime while
+  // ensuring the Billing Queue action remains attached.
+  if (out.includes('id="invoiceBacklogCard"') && !out.includes('id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing"')) {
+    out = out.replace(/<div class="card stat(?: clickable-stat)?" id="invoiceBacklogCard"[^>]*>/,
+      '<div class="card stat clickable-stat" id="invoiceBacklogCard" role="button" tabindex="0" data-office-queue="billing" aria-label="Open Billing Queue for invoice backlog">');
+  }
+  return out;
+}
+
 function patchPanel(fileUrl) {
   if (!fs.existsSync(fileUrl)) return false;
   let html = fs.readFileSync(fileUrl, "utf8");
   let changed = false;
   const smartPatched = patchPanelSmartActions(html);
   if (smartPatched !== html) { html = smartPatched; changed = true; }
+  const layoutPatched = patchPanelDashboardAndLayout(html);
+  if (layoutPatched !== html) { html = layoutPatched; changed = true; }
   if (html.includes(PANEL_MARKER)) {
     if (changed) fs.writeFileSync(fileUrl, html);
     return changed;
@@ -275,6 +294,25 @@ function patchPanel(fileUrl) {
 .j2850-empty{font-size:12px;color:#9fb0c7;padding:7px 0}
 .j2850-msg{min-height:18px;margin-top:7px;font-size:12px;color:#9fb0c7}
 .j2850-action-created{background:#176a45!important;border-color:#2f9b6b!important;color:#fff!important;opacity:1!important;cursor:default!important}
+#invoiceBacklogCard{cursor:pointer;position:relative;touch-action:manipulation}
+#invoiceBacklogCard:hover,#invoiceBacklogCard:focus{border-color:#eab308;background:#172536;outline:none}
+#invoiceBacklogCard:focus-visible{outline:2px solid #eab308;outline-offset:2px}
+#invoiceBacklogCard::after{content:"›";position:absolute;right:14px;bottom:14px;color:#eab308;font-size:28px;font-weight:900}
+/* V6 containment authority: keep desktop-first cards and dialogs inside their actual container. */
+html,body{max-width:100%;overflow-x:hidden}
+main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j2850-grid,#timepayroll,#timepayroll>.card{min-width:0;max-width:100%}
+.grid>* ,.phase12-grid>* ,.phase12-details>* ,.phase12-actions>* ,.j2850-grid>* ,.j2850-form-grid>*{min-width:0}
+#timepayroll{overflow-x:hidden}
+.phase2841-summary{grid-template-columns:repeat(auto-fit,minmax(112px,1fr))!important;max-width:100%;min-width:0}
+.phase2841-summary>.card{min-width:0;overflow:hidden}
+.phase2841-summary .metric,.phase2841-summary .muted{overflow-wrap:anywhere;word-break:normal}
+.phase2841-toolbar{grid-template-columns:repeat(auto-fit,minmax(118px,1fr))!important;max-width:100%;min-width:0}
+.phase2841-toolbar>*{min-width:0;max-width:100%}
+.phase2841-toolbar input,.phase2841-toolbar select,.phase2841-toolbar button{min-width:0;max-width:100%}
+.phase2841-table-wrap{max-width:100%!important;min-width:0;overflow-x:auto!important;-webkit-overflow-scrolling:touch}
+#timepayroll .office-section-title{flex-wrap:wrap}
+#phase12WorkOrderDialog,#homeWorkOrderDialog{max-width:calc(100vw - 18px)!important}
+#phase12WorkOrderDialog textarea,#phase12WorkOrderDialog input,#phase12WorkOrderDialog select,#homeWorkOrderDialog textarea,#homeWorkOrderDialog input,#homeWorkOrderDialog select{max-width:100%;min-width:0}
 #phase12WorkOrderDialog .j2850-grid{grid-column:1/-1}
 #officeQueueList .queue-row,#taskList .task,#phase19TaskList .phase19-task{cursor:pointer}
 #officeQueueList .queue-row:hover,#taskList .task:hover,#phase19TaskList .phase19-task:hover{border-color:#eab308}
@@ -327,6 +365,7 @@ function patchPanel(fileUrl) {
  async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
  async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
  async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
+ document.addEventListener('keydown',function(e){var card=e.target&&e.target.closest&&e.target.closest('#invoiceBacklogCard');if(card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();card.click()}});
  document.addEventListener('input',function(e){var p=findPrefix(e.target);if(!p)return;var i=ids(p);if(e.target.id===i.taskTitle){var a=mentioned(e.target.value);var s=document.getElementById(i.taskAssigned);if(a&&s)s.value=a}});
  document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&text(t.value).toLowerCase().indexOf('@'+String(v).toLowerCase())<0)t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}var row=listRowFromTarget(e.target);if(row&&!interactiveTarget(e.target)){var task=row.matches('#taskList .task,#phase19TaskList .phase19-task')?taskForRow(row):null;openJobPopup(rowCandidate(row),task);return}var opener=e.target.closest&&e.target.closest('.work-order-link,[onclick*="openPhase12WorkOrder"],[data-phase2841-open-job],[data-home-work-order]');if(opener){setTimeout(renderOpen,0);setTimeout(renderOpen,100)}});
  // Performance authority: no whole-page MutationObserver and no 2.5-second popup poll.
@@ -365,5 +404,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V5 active: Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V6 active: clickable invoice backlog, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
