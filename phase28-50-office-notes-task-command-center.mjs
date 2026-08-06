@@ -1,0 +1,209 @@
+import fs from "node:fs";
+
+/*
+ * Joshua Phase 28.50 — Work Order Office Notes + Task Command Center
+ *
+ * Adds the missing internal office collaboration tools directly to an opened job:
+ * - durable OFFICE NOTES with author + timestamp;
+ * - ASSIGN A TASK with Ariana/Shellie/Travis/Technician, priority, due date and notes;
+ * - @Shellie / @Ariana / @Travis mention recognition;
+ * - open tasks for the current job with one-tap completion;
+ * - assigned technician auto-selected in the Work Order check-in/check-out controls.
+ *
+ * Office notes remain separate from ClockShark TECHNICIAN NOTES and ServiceChannel data.
+ */
+
+const ROOT = new URL("./", import.meta.url);
+const SERVER_PATH = new URL("./server.js", ROOT);
+const PANEL_PATHS = [
+  new URL("./public/control-panel.html", ROOT),
+  new URL("./control-panel.html", ROOT)
+];
+
+const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1";
+
+function patchServer() {
+  if (!fs.existsSync(SERVER_PATH)) {
+    throw new Error("Phase 28.50: server.js not found.");
+  }
+
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  if (server.includes(SERVER_MARKER)) return;
+
+  const anchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
+  if (!server.includes(anchor)) {
+    throw new Error("Phase 28.50: work-order update route anchor not found.");
+  }
+
+  const route = `/* ${SERVER_MARKER} */
+app.post("/api/control/work-orders/:tracking/office-notes", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const tracking = String(request.params.tracking || "").replace(/\\D/g, "");
+  if (tracking.length < 4) {
+    return reply.code(400).send({ ok: false, error: "Invalid tracking number." });
+  }
+
+  const noteText = String(request.body?.note || request.body?.text || "").trim();
+  if (!noteText) {
+    return reply.code(400).send({ ok: false, error: "Office note is required." });
+  }
+  if (noteText.length > 5000) {
+    return reply.code(400).send({ ok: false, error: "Office note is too long." });
+  }
+
+  const data = readControlData();
+  const current = data.workOrders?.[tracking];
+  if (!current) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  const now = new Date().toISOString();
+  const author = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    request.body?.author ||
+    "Office"
+  ).trim() || "Office";
+
+  const officeNote = {
+    id: "office-note-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    text: noteText,
+    author,
+    createdAt: now
+  };
+
+  const prior = Array.isArray(current.officeNotes) ? current.officeNotes : [];
+  const officeNotes = [officeNote, ...prior]
+    .filter(item => item && typeof item === "object")
+    .slice(0, 150);
+
+  data.workOrders[tracking] = {
+    ...current,
+    officeNotes,
+    officeNotesUpdatedAt: now,
+    updatedAt: now
+  };
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "office-note-event-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: "office_note_added",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: author,
+    createdAt: now,
+    note: noteText.slice(0, 500)
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  return reply.send({
+    ok: true,
+    officeNote,
+    workOrder: data.workOrders[tracking]
+  });
+});
+
+`;
+
+  server = server.replace(anchor, route + anchor);
+  fs.writeFileSync(SERVER_PATH, server);
+  console.log("Joshua Phase 28.50 installed durable office-note route.");
+}
+
+function patchPanel(fileUrl) {
+  if (!fs.existsSync(fileUrl)) return false;
+  let html = fs.readFileSync(fileUrl, "utf8");
+  if (html.includes(PANEL_MARKER)) return false;
+  if (!html.includes("</body>")) {
+    throw new Error("Phase 28.50: </body> not found in control panel.");
+  }
+
+  const runtime = `
+<style>
+/* ${PANEL_MARKER} */
+.j2850-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.j2850-card{padding:14px;border:1px solid #2d4158;border-radius:12px;background:#101a27}
+.j2850-card h3{margin:0 0 10px;font-size:14px}
+.j2850-note-list,.j2850-task-list{display:grid;gap:8px;margin:10px 0;max-height:220px;overflow:auto}
+.j2850-note,.j2850-task{padding:10px;border:1px solid #2d4158;border-radius:9px;background:#0e1722}
+.j2850-note-body,.j2850-task-title{white-space:pre-wrap;word-break:break-word}
+.j2850-meta{font-size:11px;color:#9fb0c7;margin-top:5px}
+.j2850-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.j2850-form-grid .full{grid-column:1/-1}
+.j2850-tag-row{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0 9px}
+.j2850-tag{width:auto!important;padding:7px 10px!important;background:#27384e!important;color:#fff!important;font-size:12px!important}
+.j2850-task-actions{display:flex;gap:7px;align-items:center;justify-content:space-between;margin-top:7px}
+.j2850-task-actions button{width:auto!important;padding:7px 9px!important}
+.j2850-empty{font-size:12px;color:#9fb0c7;padding:7px 0}
+.j2850-msg{min-height:18px;margin-top:7px;font-size:12px;color:#9fb0c7}
+#phase12WorkOrderDialog .j2850-grid{grid-column:1/-1}
+@media(max-width:760px){.j2850-grid,.j2850-form-grid{grid-template-columns:1fr}.j2850-form-grid .full{grid-column:auto}}
+</style>
+<script>
+(function(){
+ var MARKER='${PANEL_MARKER}';
+ function text(v){return String(v==null?'':v).trim()}
+ function esc50(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+ function data(){try{if(typeof cache!=='undefined'&&cache)return cache}catch(_){ }return window.cache||{}}
+ function orders(){var w=data().workOrders;return Array.isArray(w)?w:(w&&typeof w==='object'?Object.values(w):[])}
+ function openTasks(){var t=data().openTasks;return Array.isArray(t)?t:[]}
+ function trackingFromTitle(id){var n=document.getElementById(id);var m=text(n&&n.textContent).match(/Work Order\\s*#\\s*([A-Za-z0-9-]+)/i);return m?m[1]:''}
+ function orderByTracking(tracking){return orders().find(function(o){return text(o&&o.trackingNumber)===text(tracking)})||null}
+ function formatWhen(value){if(!value)return '';var d=new Date(value);return Number.isFinite(d.getTime())?d.toLocaleString():text(value)}
+ function currentUser(){var a=window.__JOSHUA_AUTH__||{};var u=a.user||{};return text(u.displayName||u.username||'Office')||'Office'}
+ function cleanMention(value){return text(value).replace(/@(shellie|ariana|travis)\\b/ig,'').replace(/\\s+/g,' ').trim()}
+ function mentioned(value){var s=text(value);if(/@shellie\\b/i.test(s))return 'Shellie';if(/@ariana\\b/i.test(s))return 'Ariana';if(/@travis\\b/i.test(s))return 'Travis';return ''}
+ function findPrefix(node){var host=node&&node.closest&&node.closest('[data-j2850-prefix]');return host?host.getAttribute('data-j2850-prefix'):''}
+ function ids(prefix){return {
+  notes:prefix+'OfficeNotesList',noteInput:prefix+'OfficeNoteInput',noteMsg:prefix+'OfficeNoteMessage',
+  taskTitle:prefix+'TaskTitle',taskAssigned:prefix+'TaskAssigned',taskPriority:prefix+'TaskPriority',taskDue:prefix+'TaskDue',taskNotes:prefix+'TaskNotes',taskList:prefix+'TaskList',taskMsg:prefix+'TaskMessage'
+ }}
+ function sectionMarkup(prefix){var i=ids(prefix);return '<div class="j2850-grid" data-j2850-prefix="'+prefix+'">'+
+  '<div class="j2850-card"><h3>OFFICE NOTES</h3><div class="small muted">Internal Precision Lighting notes. Separate from technician notes and ServiceChannel.</div><div id="'+i.notes+'" class="j2850-note-list"></div><textarea id="'+i.noteInput+'" placeholder="Add an internal office note..."></textarea><button type="button" data-j2850-add-note="1" style="margin-top:8px">Add Office Note</button><div id="'+i.noteMsg+'" class="j2850-msg"></div></div>'+
+  '<div class="j2850-card"><h3>ASSIGN A TASK</h3><div class="small muted">The work-order tracking number is attached automatically. Type @Shellie, @Ariana or @Travis to assign instantly.</div><div class="j2850-tag-row"><button type="button" class="j2850-tag" data-j2850-tag="Shellie">@Shellie</button><button type="button" class="j2850-tag" data-j2850-tag="Ariana">@Ariana</button><button type="button" class="j2850-tag" data-j2850-tag="Travis">@Travis</button></div><div class="j2850-form-grid"><div class="full"><label>Task</label><input id="'+i.taskTitle+'" placeholder="@Shellie verify invoice before billing"></div><div><label>Assign to</label><select id="'+i.taskAssigned+'"><option>Ariana</option><option>Shellie</option><option>Travis</option><option>Technician</option></select></div><div><label>Priority</label><select id="'+i.taskPriority+'"><option value="normal">Normal</option><option value="urgent">Urgent</option></select></div><div class="full"><label>Due</label><input id="'+i.taskDue+'" type="datetime-local"></div><div class="full"><label>Task notes</label><textarea id="'+i.taskNotes+'" placeholder="Optional details"></textarea></div></div><button type="button" data-j2850-create-task="1">Create Task</button><div id="'+i.taskMsg+'" class="j2850-msg"></div><h3 style="margin-top:14px">OPEN TASKS FOR THIS JOB</h3><div id="'+i.taskList+'" class="j2850-task-list"></div></div>'+
+  '</div>'}
+ function mountHome(){var d=document.getElementById('homeWorkOrderDialog');if(!d||d.querySelector('[data-j2850-prefix="j2850Home"]'))return;var anchor=d.querySelector('.job-action-grid');if(anchor)anchor.insertAdjacentHTML('beforebegin',sectionMarkup('j2850Home'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Home'))}
+ function mountPhase12(){var d=document.getElementById('phase12WorkOrderDialog');if(!d||d.querySelector('[data-j2850-prefix="j2850Phase12"]'))return;var g=d.querySelector('.phase12-grid');if(g)g.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'));else d.insertAdjacentHTML('beforeend',sectionMarkup('j2850Phase12'))}
+ function renderNotes(prefix,item){var box=document.getElementById(ids(prefix).notes);if(!box)return;var list=Array.isArray(item&&item.officeNotes)?item.officeNotes:[];var legacy=text(item&&item.notes);var rows=list.map(function(n){return '<div class="j2850-note"><div class="j2850-note-body">'+esc50(n.text||'')+'</div><div class="j2850-meta">'+esc50(n.author||'Office')+' · '+esc50(formatWhen(n.createdAt))+'</div></div>'});if(!rows.length&&legacy)rows.push('<div class="j2850-note"><div class="j2850-note-body">'+esc50(legacy)+'</div><div class="j2850-meta">Existing office note</div></div>');box.innerHTML=rows.length?rows.join(''):'<div class="j2850-empty">No office notes yet.</div>'}
+ function renderTasks(prefix,item){var box=document.getElementById(ids(prefix).taskList);if(!box)return;var tr=text(item&&item.trackingNumber);var list=openTasks().filter(function(t){return text(t&&t.trackingNumber)===tr&&text(t&&t.status).toLowerCase()!=='closed'});box.innerHTML=list.length?list.map(function(t){return '<div class="j2850-task"><div class="j2850-task-title"><strong>'+(text(t.priority).toLowerCase()==='urgent'?'🚨 ':'')+esc50(t.title||'Task')+'</strong></div><div class="j2850-meta">'+esc50(t.assignedTo||'Unassigned')+(t.dueAt?' · Due '+esc50(formatWhen(t.dueAt)):'')+'</div>'+(t.notes?'<div class="small" style="margin-top:6px">'+esc50(t.notes)+'</div>':'')+'<div class="j2850-task-actions"><span></span><button type="button" class="secondary" data-j2850-complete-task="'+esc50(t.id||'')+'">Mark Complete</button></div></div>'}).join(''):'<div class="j2850-empty">No open tasks for this job.</div>'}
+ function selectAssignedTech(item){var name=text(item&&(item.technician||item.assignedTechnician||item.technicianName));if(!name)return;['jobCheckinTechnician','jobCheckoutTechnician','phase12Technician'].forEach(function(id){var s=document.getElementById(id);if(!s)return;var option=Array.from(s.options||[]).find(function(o){return text(o.value).toLowerCase()===name.toLowerCase()||text(o.textContent).toLowerCase()===name.toLowerCase()});if(option)s.value=option.value})}
+ function renderPrefix(prefix,titleId){var tr=trackingFromTitle(titleId);if(!tr)return;var item=orderByTracking(tr);if(!item)return;renderNotes(prefix,item);renderTasks(prefix,item);selectAssignedTech(item)}
+ function renderOpen(){mountHome();mountPhase12();var h=document.getElementById('homeWorkOrderDialog');if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2850Home','homeWorkOrderTitle');var p=document.getElementById('phase12WorkOrderDialog');if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2850Phase12','phase12Title')}
+ function prefixTracking(prefix){return prefix==='j2850Home'?trackingFromTitle('homeWorkOrderTitle'):trackingFromTitle('phase12Title')}
+ function setMsg(id,msg,error){var e=document.getElementById(id);if(!e)return;e.textContent=msg||'';e.className=error?'j2850-msg warnText':'j2850-msg'}
+ async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
+ async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
+ async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
+ document.addEventListener('input',function(e){var p=findPrefix(e.target);if(!p)return;var i=ids(p);if(e.target.id===i.taskTitle){var a=mentioned(e.target.value);var s=document.getElementById(i.taskAssigned);if(a&&s)s.value=a}});
+ document.addEventListener('click',function(e){var tag=e.target.closest&&e.target.closest('[data-j2850-tag]');if(tag){var p=findPrefix(tag),i=ids(p),v=tag.getAttribute('data-j2850-tag'),s=document.getElementById(i.taskAssigned),t=document.getElementById(i.taskTitle);if(s)s.value=v;if(t&&!new RegExp('@'+v+'\\\\b','i').test(t.value))t.value='@'+v+' '+t.value;t&&t.focus();return}var add=e.target.closest&&e.target.closest('[data-j2850-add-note]');if(add){addNote(findPrefix(add));return}var create=e.target.closest&&e.target.closest('[data-j2850-create-task]');if(create){createTask(findPrefix(create));return}var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');if(complete){completeTask(complete.getAttribute('data-j2850-complete-task'));return}setTimeout(renderOpen,0);setTimeout(renderOpen,120)});
+ var oldRefresh=window.refresh;if(typeof oldRefresh==='function'&&!oldRefresh.__j2850Wrapped){var wrapped=async function(){var r=await oldRefresh.apply(this,arguments);renderOpen();return r};wrapped.__j2850Wrapped=true;window.refresh=wrapped}
+ new MutationObserver(function(){requestAnimationFrame(renderOpen)}).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',renderOpen);else renderOpen();setTimeout(renderOpen,300);setTimeout(renderOpen,1200);setInterval(renderOpen,2500);
+ window.joshuaPhase2850RenderWorkOrderCollaboration=renderOpen;
+})();
+</script>`;
+
+  html = html.replace("</body>", runtime + "\n</body>");
+  fs.writeFileSync(fileUrl, html);
+  return true;
+}
+
+// The API route must exist before the existing startup chain imports server.js.
+patchServer();
+
+// Preserve the deployed stable Phase 28.46 startup chain, then patch the final generated panel.
+await import("./phase28-46-verified-workorder-status-reconciliation.mjs");
+
+let patched = 0;
+for (const panelPath of PANEL_PATHS) {
+  if (patchPanel(panelPath)) patched += 1;
+}
+
+console.log(
+  `Joshua Phase 28.50 active: office notes, in-job task assignment, @mentions, open-task list, and technician auto-selection installed (${patched} panel file${patched === 1 ? "" : "s"} updated).`
+);
