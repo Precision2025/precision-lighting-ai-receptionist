@@ -1,16 +1,20 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.50 — Work Order Office Notes + Task Command Center
+ * Joshua Phase 28.53 V12 — Unified Work Order Operations OS
  *
- * Adds the missing internal office collaboration tools directly to an opened job:
- * - durable OFFICE NOTES with author + timestamp;
- * - ASSIGN A TASK with Ariana/Shellie/Travis/Technician, priority, due date and notes;
- * - @Shellie / @Ariana / @Travis mention recognition;
- * - open tasks for the current job with one-tap completion;
- * - assigned technician auto-selected in the Work Order check-in/check-out controls.
+ * Builds on the stable Phase 28.50 command center and keeps the live integration
+ * fields intact while giving the office a durable, correctable operating layer:
+ * - Office Notes, task assignment and Change Technician on the opened job;
+ * - ClockShark Comments under Technician Comments;
+ * - office-facing corrections for status, priority, NTE and job identity/scope;
+ * - one canonical command-center snapshot with workflow stages + Next Action;
+ * - workflow-aware task completion for quote, billing, parts and return visits;
+ * - Office Accountability by owner, overdue and urgent work;
+ * - canonical queue/status authority so corrected jobs stay in the right queue.
  *
- * Office notes remain separate from ClockShark TECHNICIAN NOTES and ServiceChannel data.
+ * ServiceChannel/ClockShark source values remain underneath office corrections and
+ * can be restored at any time from the Work Order screen.
  */
 
 const ROOT = new URL("./", import.meta.url);
@@ -43,6 +47,10 @@ const OLD_PANEL_MARKERS = [
 
 const CLOCKSHARK_BOOTSTRAP_PATH = new URL("./phase21-clockshark-bootstrap.mjs", ROOT);
 const CLOCKSHARK_COMMENTS_MARKER = "JOSHUA_PHASE28_51_CLOCKSHARK_COMMENTS_V2";
+
+const OPS_SERVER_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_SERVER_V1";
+const OPS_TASK_COMPLETE_MARKER = "JOSHUA_PHASE28_53_WORKFLOW_TASK_COMPLETE_ROUTE_V1";
+const OPS_PANEL_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_UI_V1";
 
 function patchClockSharkCommentsBootstrap() {
   // Phase 21 generates the live ClockShark backend into server.js during startup.
@@ -902,6 +910,511 @@ app.post("/api/control/tasks", async (request, reply) => {
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
 
+
+function patchOperationsOSServer() {
+  if (!fs.existsSync(SERVER_PATH)) {
+    throw new Error("Phase 28.53: server.js not found.");
+  }
+
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  let changed = false;
+
+  const workOrderRouteAnchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
+
+  if (!server.includes(OPS_SERVER_MARKER)) {
+    if (!server.includes(workOrderRouteAnchor)) {
+      throw new Error("Phase 28.53: work-order API anchor not found.");
+    }
+
+    const routes = `/* ${OPS_SERVER_MARKER} */
+function phase2853ResolveWorkOrderKey(data, requestedTracking) {
+  const requested = String(requestedTracking || "").trim();
+  if (!requested) return "";
+  const workOrders = data && data.workOrders && typeof data.workOrders === "object"
+    ? data.workOrders
+    : {};
+  const keys = Object.keys(workOrders);
+  const lower = requested.toLowerCase();
+  const numeric = requested.replace(/\\D/g, "");
+  return keys.find(key => key === requested) ||
+    keys.find(key => String(key).toLowerCase() === lower) ||
+    keys.find(key => String(workOrders[key]?.trackingNumber || "").toLowerCase() === lower) ||
+    keys.find(key => String(workOrders[key]?.workOrderNumber || "").toLowerCase() === lower) ||
+    (numeric
+      ? keys.find(key => String(key).replace(/\\D/g, "") === numeric) ||
+        keys.find(key => String(workOrders[key]?.trackingNumber || "").replace(/\\D/g, "") === numeric) ||
+        keys.find(key => String(workOrders[key]?.workOrderNumber || "").replace(/\\D/g, "") === numeric)
+      : "") ||
+    "";
+}
+
+function phase2853WorkflowSnapshot(workOrder = {}, tasks = []) {
+  const text = value => String(value == null ? "" : value).trim();
+  const normalized = value => text(value).toLowerCase().replace(/[\\s-]+/g, "_");
+  const sourceStatus = normalized(workOrder.joshuaStatus || workOrder.state || "new") || "new";
+  const officeStatus = normalized(workOrder.officeWorkflowStatus || "");
+  const status = officeStatus || sourceStatus;
+  const officeStages = workOrder.officeWorkflowStages && typeof workOrder.officeWorkflowStages === "object"
+    ? workOrder.officeWorkflowStages
+    : {};
+  const proposal = normalized(officeStages.proposal || workOrder.proposalStatus || "");
+  const parts = normalized(officeStages.parts || workOrder.partsStatus || "");
+  const returnVisit = normalized(officeStages.returnTrip || workOrder.returnVisitStatus || workOrder.returnTripStatus || "");
+  const billing = normalized(officeStages.billing || workOrder.invoiceStatus || "");
+  const authorization = normalized(officeStages.authorization || workOrder.authorizationStatus || "");
+
+  const open = (Array.isArray(tasks) ? tasks : []).filter(task =>
+    String(task?.status || "open").toLowerCase() !== "closed"
+  );
+  const now = Date.now();
+  const overdue = open.filter(task => {
+    const when = new Date(task?.dueAt || 0).getTime();
+    return Number.isFinite(when) && when > 0 && when < now;
+  });
+  const urgent = open.filter(task => String(task?.priority || "").toLowerCase() === "urgent");
+
+  let nextAction = "";
+  let owner = "";
+  let reason = "";
+
+  const firstTask = overdue[0] || urgent[0] || open[0];
+  if (firstTask) {
+    nextAction = text(firstTask.title) || "Complete open task";
+    owner = text(firstTask.assignedTo) || "Office";
+    reason = overdue.includes(firstTask)
+      ? "This assigned task is overdue."
+      : urgent.includes(firstTask)
+        ? "This is the highest-priority open task."
+        : "This is the next assigned task on the job.";
+  } else if (status === "pending_proposal" || status === "waiting_for_quote") {
+    nextAction = proposal === "prepared" ? "Submit quote" : "Prepare quote";
+    owner = "Travis";
+    reason = "This work order is waiting on a proposal.";
+  } else if (status === "awaiting_authorization") {
+    nextAction = "Follow up on authorization";
+    owner = "Ariana";
+    reason = "The proposal/work is waiting on customer or ServiceChannel authorization.";
+  } else if (status === "parts_needed") {
+    nextAction = parts === "ordered" ? "Schedule return visit" : "Order parts";
+    owner = "Ariana";
+    reason = parts === "ordered"
+      ? "Parts are marked ordered; the return visit is the next office action."
+      : "Parts must be ordered before the job can move forward.";
+  } else if (status === "return_trip" || status === "return_visit") {
+    nextAction = returnVisit === "scheduled" ? "Monitor scheduled return visit" : "Schedule return visit";
+    owner = "Ariana";
+    reason = "The job requires another site visit.";
+  } else if (status === "ready_to_bill") {
+    nextAction = billing === "prepared" ? "Review / submit invoice" : "Prepare invoice";
+    owner = "Shellie";
+    reason = "The job is ready for billing.";
+  } else if (status === "pending_confirmation") {
+    nextAction = "Confirm ServiceChannel completion";
+    owner = "Joshua";
+    reason = "The technician has checked out, but ServiceChannel confirmation is still pending.";
+  } else if (status === "onsite") {
+    nextAction = "Complete work and check out";
+    owner = text(workOrder.technician) || "Technician";
+    reason = "The technician is currently onsite.";
+  } else if (["scheduled", "assigned"].includes(status)) {
+    nextAction = "Check in for the scheduled visit";
+    owner = text(workOrder.technician) || "Technician";
+    reason = "The job is assigned and ready for field execution.";
+  } else if (["new", "open", "need_to_schedule"].includes(status)) {
+    nextAction = "Schedule and assign technician";
+    owner = "Ariana";
+    reason = "The work order has not been scheduled yet.";
+  } else if (status === "completed") {
+    nextAction = billing === "submitted" ? "Monitor payment" : "Review billing readiness";
+    owner = "Shellie";
+    reason = "Field work is complete.";
+  } else if (status === "paid") {
+    nextAction = "No action required";
+    owner = "Joshua";
+    reason = "The job is paid and complete.";
+  } else {
+    nextAction = "Review work order";
+    owner = "Ariana";
+    reason = "Joshua could not determine a more specific next action.";
+  }
+
+  return {
+    sourceStatus,
+    officeStatus,
+    effectiveStatus: status,
+    proposal,
+    parts,
+    returnVisit,
+    billing,
+    authorization,
+    nextAction,
+    owner,
+    reason,
+    openTaskCount: open.length,
+    overdueTaskCount: overdue.length,
+    urgentTaskCount: urgent.length
+  };
+}
+
+app.get("/api/control/work-orders/:tracking/command-center", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const data = readControlData();
+  const tracking = phase2853ResolveWorkOrderKey(data, request.params.tracking);
+  if (!tracking || !data.workOrders[tracking]) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  const sourceWorkOrder = data.workOrders[tracking];
+  const overrides = sourceWorkOrder.officeFieldOverrides && typeof sourceWorkOrder.officeFieldOverrides === "object"
+    ? sourceWorkOrder.officeFieldOverrides
+    : {};
+  const workOrder = { ...sourceWorkOrder, ...overrides };
+  const openTasks = (data.tasks || []).filter(task =>
+    String(task?.trackingNumber || "").trim() === String(tracking).trim() &&
+    String(task?.status || "open").toLowerCase() !== "closed"
+  );
+  const recentEvents = (data.events || []).filter(event =>
+    String(event?.trackingNumber || "").trim() === String(tracking).trim()
+  ).slice(0, 75);
+  const workflow = phase2853WorkflowSnapshot(workOrder, openTasks);
+
+  return reply.send({
+    ok: true,
+    trackingNumber: tracking,
+    workOrder,
+    sourceWorkOrder,
+    openTasks,
+    recentEvents,
+    workflow
+  });
+});
+
+app.post("/api/control/work-orders/:tracking/operations", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const data = readControlData();
+  const tracking = phase2853ResolveWorkOrderKey(data, request.params.tracking);
+  if (!tracking || !data.workOrders[tracking]) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  const current = data.workOrders[tracking];
+  const body = request.body || {};
+  const actor = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    body.requestedBy ||
+    "Office"
+  ).trim() || "Office";
+  const now = new Date().toISOString();
+
+  const allowedTextFields = [
+    "workOrderNumber", "customer", "locationName", "address",
+    "priority", "trade", "problemDescription"
+  ];
+  const allowedNumericFields = ["nte"];
+  const overrides = current.officeFieldOverrides && typeof current.officeFieldOverrides === "object"
+    ? { ...current.officeFieldOverrides }
+    : {};
+  const changedFields = [];
+
+  const clearFields = Array.isArray(body.clearFields)
+    ? body.clearFields.map(value => String(value || "").trim()).filter(Boolean)
+    : [];
+  if (body.clearAllFieldOverrides === true || body.clearAllFieldOverrides === "true") {
+    clearFields.push(...Object.keys(overrides));
+  }
+
+  for (const field of [...new Set(clearFields)]) {
+    if (!Object.prototype.hasOwnProperty.call(overrides, field)) continue;
+    delete overrides[field];
+    changedFields.push(field + " (restored to live source)");
+  }
+
+  for (const field of allowedTextFields) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const value = String(body[field] == null ? "" : body[field]).trim();
+    overrides[field] = value;
+    changedFields.push(field);
+  }
+
+  for (const field of allowedNumericFields) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const raw = body[field];
+    const value = raw === "" || raw === null || raw === undefined ? "" : Number(raw);
+    if (value !== "" && !Number.isFinite(value)) {
+      return reply.code(400).send({ ok: false, error: field + " must be a valid number." });
+    }
+    overrides[field] = value;
+    changedFields.push(field);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "officeWorkflowStatus")) {
+    const allowedStatuses = new Set([
+      "", "new", "open", "need_to_schedule", "scheduled", "assigned", "onsite",
+      "pending_confirmation", "pending_proposal", "waiting_for_quote",
+      "awaiting_authorization", "parts_needed", "return_trip", "ready_to_bill",
+      "completed", "paid"
+    ]);
+    const requestedStatus = String(body.officeWorkflowStatus || "").trim().toLowerCase().replace(/[\\s-]+/g, "_");
+    if (!allowedStatuses.has(requestedStatus)) {
+      return reply.code(400).send({ ok: false, error: "Invalid office workflow status." });
+    }
+    current.officeWorkflowStatus = requestedStatus;
+    current.officeWorkflowStatusUpdatedAt = now;
+    current.officeWorkflowStatusUpdatedBy = actor;
+    changedFields.push("office workflow status");
+  }
+
+  current.officeFieldOverrides = overrides;
+  current.officeCorrectionsUpdatedAt = now;
+  current.officeCorrectionsUpdatedBy = actor;
+  current.updatedAt = now;
+  data.workOrders[tracking] = current;
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "office-correction-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: "work_order_office_correction",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: actor,
+    changedFields,
+    createdAt: now
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  const openTasks = (data.tasks || []).filter(task =>
+    String(task?.trackingNumber || "").trim() === String(tracking).trim() &&
+    String(task?.status || "open").toLowerCase() !== "closed"
+  );
+
+  const effectiveWorkOrder = { ...current, ...overrides };
+  return reply.send({
+    ok: true,
+    workOrder: effectiveWorkOrder,
+    sourceWorkOrder: current,
+    workflow: phase2853WorkflowSnapshot(effectiveWorkOrder, openTasks),
+    changedFields
+  });
+});
+
+/* ${OPS_TASK_COMPLETE_MARKER} */
+app.post("/api/control/tasks/:id/complete-workflow", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const id = String(request.params.id || "").trim();
+  const data = readControlData();
+  const index = (data.tasks || []).findIndex(item => String(item?.id || "") === id);
+  if (index < 0) {
+    return reply.code(404).send({ ok: false, error: "Task not found." });
+  }
+
+  const now = new Date().toISOString();
+  const actor = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    request.body?.requestedBy ||
+    "Office"
+  ).trim() || "Office";
+  const task = {
+    ...data.tasks[index],
+    status: "closed",
+    closedAt: now,
+    completedAt: now,
+    completedBy: actor,
+    phase25HumanResolved: true,
+    phase25ResolvedAt: now,
+    updatedAt: now
+  };
+  data.tasks[index] = task;
+
+  const tracking = phase2853ResolveWorkOrderKey(data, task.trackingNumber || "");
+  const sourceWorkOrder = tracking ? data.workOrders[tracking] : null;
+  let workflowUpdate = "";
+
+  if (sourceWorkOrder) {
+    const workflowType = String(task.workflowType || "").trim().toLowerCase();
+    const title = String(task.title || "").trim().toLowerCase();
+    const officeStages = sourceWorkOrder.officeWorkflowStages && typeof sourceWorkOrder.officeWorkflowStages === "object"
+      ? { ...sourceWorkOrder.officeWorkflowStages }
+      : {};
+
+    if (workflowType === "proposal" || /prepare (?:and submit )?quote|prepare proposal/.test(title)) {
+      officeStages.proposal = "prepared";
+      if (!sourceWorkOrder.officeWorkflowStatus) sourceWorkOrder.officeWorkflowStatus = "pending_proposal";
+      workflowUpdate = "proposal_prepared";
+    } else if (workflowType === "billing" || /prepare (?:servicechannel )?invoice|review job for billing/.test(title)) {
+      officeStages.billing = "prepared";
+      sourceWorkOrder.officeWorkflowStatus = "ready_to_bill";
+      workflowUpdate = "invoice_prepared";
+    } else if (workflowType === "parts" || /order parts/.test(title)) {
+      officeStages.parts = "ordered";
+      sourceWorkOrder.officeWorkflowStatus = "return_trip";
+      workflowUpdate = "parts_ordered";
+    } else if (workflowType === "return_trip" || /schedule return/.test(title)) {
+      officeStages.returnTrip = "scheduled";
+      sourceWorkOrder.officeWorkflowStatus = "scheduled";
+      workflowUpdate = "return_visit_scheduled";
+    }
+
+    if (workflowUpdate) {
+      sourceWorkOrder.officeWorkflowStages = officeStages;
+      sourceWorkOrder.workflowUpdatedAt = now;
+      sourceWorkOrder.workflowUpdatedBy = actor;
+      sourceWorkOrder.updatedAt = now;
+      data.workOrders[tracking] = sourceWorkOrder;
+    }
+  }
+
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "task-completed-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: workflowUpdate || "task_completed",
+    level: "success",
+    trackingNumber: tracking || String(task.trackingNumber || "").trim(),
+    requestedBy: actor,
+    taskId: task.id,
+    createdAt: now
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  const overrides = sourceWorkOrder?.officeFieldOverrides && typeof sourceWorkOrder.officeFieldOverrides === "object"
+    ? sourceWorkOrder.officeFieldOverrides
+    : {};
+  const workOrder = sourceWorkOrder ? { ...sourceWorkOrder, ...overrides } : null;
+  const openTasks = tracking
+    ? (data.tasks || []).filter(item =>
+        String(item?.trackingNumber || "").trim() === String(tracking).trim() &&
+        String(item?.status || "open").toLowerCase() !== "closed"
+      )
+    : [];
+
+  return reply.send({
+    ok: true,
+    task,
+    workOrder,
+    sourceWorkOrder,
+    workflowUpdate,
+    workflow: workOrder ? phase2853WorkflowSnapshot(workOrder, openTasks) : null
+  });
+});
+
+app.post("/api/control/work-orders/:tracking/workflow", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const data = readControlData();
+  const tracking = phase2853ResolveWorkOrderKey(data, request.params.tracking);
+  if (!tracking || !data.workOrders[tracking]) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  const body = request.body || {};
+  const workflow = String(body.workflow || "").trim().toLowerCase();
+  const status = String(body.status || "").trim().toLowerCase().replace(/[\\s-]+/g, "_");
+  const allowed = {
+    proposal: new Set(["required", "prepared", "submitted", "approved"]),
+    authorization: new Set(["pending", "approved", "denied"]),
+    parts: new Set(["needed", "ordered", "received"]),
+    return_trip: new Set(["needed", "scheduled", "completed"]),
+    billing: new Set(["documentation_missing", "ready_for_review", "prepared", "submitted", "paid"])
+  };
+  if (!allowed[workflow] || !allowed[workflow].has(status)) {
+    return reply.code(400).send({ ok: false, error: "Invalid workflow update." });
+  }
+
+  const workOrder = data.workOrders[tracking];
+  const actor = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    body.requestedBy ||
+    "Office"
+  ).trim() || "Office";
+  const now = new Date().toISOString();
+
+  const officeStages = workOrder.officeWorkflowStages && typeof workOrder.officeWorkflowStages === "object"
+    ? { ...workOrder.officeWorkflowStages }
+    : {};
+  if (workflow === "proposal") {
+    officeStages.proposal = status;
+    if (status === "submitted") workOrder.officeWorkflowStatus = "awaiting_authorization";
+  } else if (workflow === "authorization") {
+    officeStages.authorization = status;
+    if (status === "approved" && ["awaiting_authorization", "pending_proposal", "waiting_for_quote"].includes(String(workOrder.officeWorkflowStatus || ""))) {
+      workOrder.officeWorkflowStatus = "scheduled";
+    }
+  } else if (workflow === "parts") {
+    officeStages.parts = status;
+    if (status === "ordered") workOrder.officeWorkflowStatus = "return_trip";
+  } else if (workflow === "return_trip") {
+    officeStages.returnTrip = status;
+    if (status === "scheduled") workOrder.officeWorkflowStatus = "scheduled";
+    if (status === "completed") workOrder.officeWorkflowStatus = "pending_confirmation";
+  } else if (workflow === "billing") {
+    officeStages.billing = status;
+    if (status === "prepared" || status === "ready_for_review") workOrder.officeWorkflowStatus = "ready_to_bill";
+    if (status === "submitted") workOrder.officeWorkflowStatus = "completed";
+    if (status === "paid") workOrder.officeWorkflowStatus = "paid";
+  }
+  workOrder.officeWorkflowStages = officeStages;
+
+  workOrder.workflowUpdatedAt = now;
+  workOrder.workflowUpdatedBy = actor;
+  workOrder.updatedAt = now;
+  data.workOrders[tracking] = workOrder;
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "workflow-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: workflow + "_" + status,
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: actor,
+    createdAt: now
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  const openTasks = (data.tasks || []).filter(task =>
+    String(task?.trackingNumber || "").trim() === String(tracking).trim() &&
+    String(task?.status || "open").toLowerCase() !== "closed"
+  );
+
+  const overrides = workOrder.officeFieldOverrides && typeof workOrder.officeFieldOverrides === "object"
+    ? workOrder.officeFieldOverrides
+    : {};
+  const effectiveWorkOrder = { ...workOrder, ...overrides };
+  return reply.send({
+    ok: true,
+    workOrder: effectiveWorkOrder,
+    sourceWorkOrder: workOrder,
+    workflow: phase2853WorkflowSnapshot(effectiveWorkOrder, openTasks)
+  });
+});
+
+`;
+    server = server.replace(workOrderRouteAnchor, routes + workOrderRouteAnchor);
+    changed = true;
+    console.log("Joshua Phase 28.53 installed canonical Work Order command-center routes.");
+  }
+
+
+  if (changed) fs.writeFileSync(SERVER_PATH, server);
+}
+
+
 function patchPanelSmartActions(html) {
   let out = html;
   out = out.replace('add("Create / Submit Quote","quote","")', 'add("Prepare Quote","quote","")');
@@ -1212,6 +1725,499 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
   return changed;
 }
 
+
+function patchOperationsOSPanel(fileUrl) {
+  if (!fs.existsSync(fileUrl)) return false;
+  let html = fs.readFileSync(fileUrl, "utf8");
+  let changed = false;
+
+  // Make every built-in status display prefer the office workflow override while
+  // retaining the live source state underneath it.
+  const statusReplacements = [
+    ['x.joshuaStatus||x.state||"unknown"', 'x.officeWorkflowStatus||x.joshuaStatus||x.state||"unknown"'],
+    ['x.joshuaStatus||x.state||"new"', 'x.officeWorkflowStatus||x.joshuaStatus||x.state||"new"'],
+    ['item.joshuaStatus||item.state||"new"', 'item.officeWorkflowStatus||item.joshuaStatus||item.state||"new"'],
+    ["o.joshuaStatus||o.state||'unknown'", "o.officeWorkflowStatus||o.joshuaStatus||o.state||'unknown'"],
+    ["selectedWorkOrder.joshuaStatus||selectedWorkOrder.state||'unknown'", "selectedWorkOrder.officeWorkflowStatus||selectedWorkOrder.joshuaStatus||selectedWorkOrder.state||'unknown'"]
+  ];
+  for (const [from, to] of statusReplacements) {
+    if (html.includes(from)) {
+      html = html.replaceAll(from, to);
+      changed = true;
+    }
+  }
+  // The patch runs both before and after the stable generator chain. Normalize
+  // any already-upgraded expressions so a second pass never duplicates the
+  // office authority prefix.
+  for (const [duplicate, single] of [
+    ['x.officeWorkflowStatus||x.officeWorkflowStatus||', 'x.officeWorkflowStatus||'],
+    ['item.officeWorkflowStatus||item.officeWorkflowStatus||', 'item.officeWorkflowStatus||'],
+    ['o.officeWorkflowStatus||o.officeWorkflowStatus||', 'o.officeWorkflowStatus||'],
+    ['selectedWorkOrder.officeWorkflowStatus||selectedWorkOrder.officeWorkflowStatus||', 'selectedWorkOrder.officeWorkflowStatus||']
+  ]) {
+    if (html.includes(duplicate)) {
+      html = html.replaceAll(duplicate, single);
+      changed = true;
+    }
+  }
+
+  // Phase 10 emits an escaped slash inside a template literal. After the final
+  // Office Suite generator runs, that can become an unescaped / inside this
+  // regular expression and invalidate the entire queue-routing script. Repair
+  // the final browser source here so all dashboard/queue handlers remain live.
+  const brokenCompletedRegex = "/completed(?:[ ]*/[ ]*|[ ]+)confirmed/";
+  const safeCompletedRegex = "/completed(?:[ ]*[/][ ]*|[ ]+)confirmed/";
+  if (html.includes(brokenCompletedRegex)) {
+    html = html.replaceAll(brokenCompletedRegex, safeCompletedRegex);
+    changed = true;
+  }
+
+  // Phase 28.29 continually rebuilds queue snapshots and badges from this
+  // state() function, so office workflow corrections must take precedence here
+  // too or the half-second snapshot loop would put a corrected job back into
+  // its old queue.
+  const atomicStateOld = 'function state(x){const base=norm(x?.joshuaStatus||x?.state||"");if(!isSC(x))return base;';
+  const atomicStateNew = 'function state(x){const office=norm(x?.officeWorkflowStatus||"");if(office)return office;const base=norm(x?.joshuaStatus||x?.state||"");if(!isSC(x))return base;';
+  if (html.includes(atomicStateOld)) {
+    html = html.replaceAll(atomicStateOld, atomicStateNew);
+    changed = true;
+  }
+
+  // Office workflow corrections must also drive the canonical dashboard queues.
+  const queueStateOld = "function officeCurrentState(item){const base=officeNorm(item?.joshuaStatus||item?.state||'');if(!officeIsServiceChannel(item))return base;";
+  const queueStateNew = "function officeCurrentState(item){const office=officeNorm(item?.officeWorkflowStatus||'');if(office)return office;const base=officeNorm(item?.joshuaStatus||item?.state||'');if(!officeIsServiceChannel(item))return base;";
+  if (html.includes(queueStateOld)) {
+    html = html.replaceAll(queueStateOld, queueStateNew);
+    changed = true;
+  }
+
+  // The dedicated Workflow card owns quote submission; Smart Actions only prepares it.
+  const quoteButtonsOld = 'if(/pending_proposal|waiting_for_quote/.test(status)){add("Prepare Quote","quote","");add("Mark Quote Submitted","quote_submitted");}';
+  const quoteButtonsNew = 'if(/pending_proposal|waiting_for_quote/.test(status)){add("Prepare Quote","quote","");}';
+  if (html.includes(quoteButtonsOld)) {
+    html = html.replaceAll(quoteButtonsOld, quoteButtonsNew);
+    changed = true;
+  }
+
+  // Workflow preparation is a preparation step, not a submission step.
+  if (html.includes('return "Mark Quote Submitted";')) {
+    html = html.replaceAll('return "Mark Quote Submitted";', 'return "Mark Quote Prepared";');
+    changed = true;
+  }
+  if (html.includes('return "Mark Ready to Bill";')) {
+    html = html.replaceAll('return "Mark Ready to Bill";', 'return "Mark Invoice Prepared";');
+    changed = true;
+  }
+
+  if (html.includes(OPS_PANEL_MARKER)) {
+    if (changed) fs.writeFileSync(fileUrl, html);
+    return changed;
+  }
+  if (!html.includes("</body>")) {
+    throw new Error("Phase 28.53: </body> not found in Control Panel.");
+  }
+
+  const runtime = `
+<style>
+/* ${OPS_PANEL_MARKER} */
+.j2853-card{padding:14px;border:1px solid #31506b;border-radius:12px;background:#0f1b28;min-width:0}
+.j2853-card h3{margin:0 0 8px;font-size:14px}
+.j2853-full{grid-column:1/-1}
+.j2853-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.j2853-form .full{grid-column:1/-1}
+.j2853-form input,.j2853-form select,.j2853-form textarea{width:100%;min-width:0;max-width:100%}
+.j2853-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.j2853-actions button{width:auto!important;min-width:130px}
+.j2853-message{min-height:18px;margin-top:7px;font-size:12px;color:#9fb0c7}
+.j2853-override-summary{font-size:11px;color:#f4c542;margin-top:7px;overflow-wrap:anywhere}
+.j2853-overridden{border-color:#d5a800!important;box-shadow:inset 0 0 0 1px rgba(234,179,8,.18)}
+.j2853-next{border:1px solid #315b4d;background:#10241e;border-radius:10px;padding:12px;margin:9px 0 11px}
+.j2853-next strong{display:block;font-size:16px;margin:3px 0}
+.j2853-next-owner{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#24415c;font-size:11px;font-weight:800}
+.j2853-workflow-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.j2853-stage{padding:9px;border:1px solid #2d4158;border-radius:9px;background:#0c1621;min-width:0}
+.j2853-stage span{display:block;font-size:10px;color:#91a3ba;text-transform:uppercase;letter-spacing:.04em}
+.j2853-stage strong{display:block;margin-top:4px;font-size:12px;overflow-wrap:anywhere}
+.j2853-stage.done{border-color:#2f7d5a;background:#10251e}
+.j2853-stage.active{border-color:#d2a20a;background:#251f0f}
+.j2853-workflow-buttons{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.j2853-workflow-buttons button{width:auto!important;padding:8px 10px!important;font-size:12px!important}
+.j2853-accountability{margin-top:14px}
+.j2853-accountability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.j2853-owner{padding:11px;border:1px solid #2d4158;border-radius:10px;background:#0f1925;cursor:pointer;position:relative;min-width:0}
+.j2853-owner:hover,.j2853-owner:focus{border-color:#eab308;outline:none}
+.j2853-owner strong{display:block;font-size:19px;margin-top:3px}
+.j2853-owner .small{overflow-wrap:anywhere}
+.j2853-owner::after{content:"›";position:absolute;right:9px;top:8px;color:#eab308;font-weight:900}
+.j2853-task-filter{display:none;align-items:center;justify-content:space-between;gap:8px;padding:9px 10px;margin-bottom:9px;border:1px solid #31506b;border-radius:9px;background:#102033}
+.j2853-task-filter.show{display:flex}
+.j2853-task-filter button{width:auto!important;padding:7px 10px!important}
+.j2853-source-row{display:flex;gap:8px;flex-wrap:wrap;margin:7px 0}
+.j2853-source-chip{display:inline-flex;padding:5px 8px;border-radius:999px;border:1px solid #2d4158;background:#142234;font-size:11px}
+@media(max-width:900px){.j2853-workflow-grid,.j2853-accountability-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.j2853-form,.j2853-workflow-grid,.j2853-accountability-grid{grid-template-columns:1fr}.j2853-form .full{grid-column:auto}.j2853-actions button,.j2853-workflow-buttons button{width:100%!important}}
+</style>
+<script>
+(function(){
+ var MARKER='${OPS_PANEL_MARKER}';
+ var snapshots={};
+ var taskFilter='';
+ function txt(v){return String(v==null?'':v).trim()}
+ function esc53(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+ function norm(v){return txt(v).toLowerCase().replace(/[\\s-]+/g,'_')}
+ function cdata(){try{if(typeof cache!=='undefined'&&cache)return cache}catch(_){ }return window.cache||{}}
+ function allOrders(){var w=cdata().workOrders;return Array.isArray(w)?w:(w&&typeof w==='object'?Object.values(w):[])}
+ function applyOfficeOverrides(item){if(!item||typeof item!=='object')return item;var o=item.officeFieldOverrides;if(o&&typeof o==='object')Object.keys(o).forEach(function(k){item[k]=o[k]});return item}
+ function applyOverridesToCache(){allOrders().forEach(applyOfficeOverrides)}
+ function rerenderCorrectedViews(){try{if(typeof renderOrders==='function')renderOrders()}catch(_){}try{if(typeof renderDispatch==='function')renderDispatch()}catch(_){}try{if(typeof renderBilling==='function')renderBilling()}catch(_){}try{if(typeof renderOnsite==='function')renderOnsite()}catch(_){}try{if(typeof officeUpdateChrome==='function')officeUpdateChrome()}catch(_){}try{var q=document.getElementById('officeQueueDialog');if(q&&q.open&&typeof officeRenderQueue==='function')officeRenderQueue()}catch(_){}}
+ function allTasks(){var t=cdata().openTasks;return Array.isArray(t)?t:[]}
+ function titleTracking(id){var el=document.getElementById(id);var m=txt(el&&el.textContent).match(/Work Order\\s*#\\s*(.+)$/i);return m?txt(m[1]):''}
+ function prefixTracking(prefix){return prefix==='j2853Home'?titleTracking('homeWorkOrderTitle'):titleTracking('phase12Title')}
+ function findOrder(tr){var target=txt(tr).toLowerCase();var item=allOrders().find(function(o){return [o&&o.trackingNumber,o&&o.workOrderNumber].some(function(v){return txt(v).toLowerCase()===target})})||null;return applyOfficeOverrides(item)}
+ function currentUser53(){var a=window.__JOSHUA_AUTH__||{},u=a.user||{};return txt(u.displayName||u.username||'Office')||'Office'}
+ function statusLabel(v){var s=txt(v||'').replaceAll('_',' ');return s?s.replace(/\\b\\w/g,function(c){return c.toUpperCase()}):'—'}
+ function workflowStatus(item){return norm(item&&item.officeWorkflowStatus)||norm(item&&(item.joshuaStatus||item.state))||'new'}
+ function sourceStatus(item){return norm(item&&(item.joshuaStatus||item.state))||'new'}
+ function workflowLocal(item){
+  var tr=txt(item&&item.trackingNumber),tasks=allTasks().filter(function(t){return txt(t&&t.trackingNumber)===tr&&norm(t&&t.status)!=='closed'});
+  var now=Date.now(),over=tasks.filter(function(t){var d=new Date(t&&t.dueAt||0).getTime();return Number.isFinite(d)&&d>0&&d<now}),urgent=tasks.filter(function(t){return norm(t&&t.priority)==='urgent'});
+  var stages=item&&item.officeWorkflowStages&&typeof item.officeWorkflowStages==='object'?item.officeWorkflowStages:{};
+  var st=workflowStatus(item),proposal=norm(stages.proposal||item&&item.proposalStatus),parts=norm(stages.parts||item&&item.partsStatus),ret=norm(stages.returnTrip||item&&(item.returnVisitStatus||item.returnTripStatus)),bill=norm(stages.billing||item&&item.invoiceStatus);
+  var next='',owner='',reason='',first=over[0]||urgent[0]||tasks[0];
+  if(first){next=txt(first.title)||'Complete open task';owner=txt(first.assignedTo)||'Office';reason=over.indexOf(first)>=0?'This assigned task is overdue.':urgent.indexOf(first)>=0?'This is the highest-priority open task.':'This is the next assigned task on the job.'}
+  else if(st==='pending_proposal'||st==='waiting_for_quote'){next=proposal==='prepared'?'Submit quote':'Prepare quote';owner='Travis';reason='This work order is waiting on a proposal.'}
+  else if(st==='awaiting_authorization'){next='Follow up on authorization';owner='Ariana';reason='The job is waiting on authorization.'}
+  else if(st==='parts_needed'){next=parts==='ordered'?'Schedule return visit':'Order parts';owner='Ariana';reason='Parts/return scheduling is blocking the job.'}
+  else if(st==='return_trip'||st==='return_visit'){next=ret==='scheduled'?'Monitor scheduled return visit':'Schedule return visit';owner='Ariana';reason='The job requires another visit.'}
+  else if(st==='ready_to_bill'){next=bill==='prepared'?'Review / submit invoice':'Prepare invoice';owner='Shellie';reason='The job is ready for billing.'}
+  else if(st==='pending_confirmation'){next='Confirm ServiceChannel completion';owner='Joshua';reason='Checkout is waiting on confirmation.'}
+  else if(st==='onsite'){next='Complete work and check out';owner=txt(item&&item.technician)||'Technician';reason='The technician is onsite.'}
+  else if(st==='scheduled'||st==='assigned'){next='Check in for the scheduled visit';owner=txt(item&&item.technician)||'Technician';reason='The job is assigned.'}
+  else if(st==='new'||st==='open'||st==='need_to_schedule'){next='Schedule and assign technician';owner='Ariana';reason='The work order is not scheduled.'}
+  else if(st==='completed'){next=bill==='submitted'?'Monitor payment':'Review billing readiness';owner='Shellie';reason='Field work is complete.'}
+  else if(st==='paid'){next='No action required';owner='Joshua';reason='The job is paid and complete.'}
+  else{next='Review work order';owner='Ariana';reason='Joshua needs an office review.'}
+  return{sourceStatus:sourceStatus(item),officeStatus:norm(item&&item.officeWorkflowStatus),effectiveStatus:st,proposal:proposal,parts:parts,returnVisit:ret,billing:bill,authorization:norm(stages.authorization||item&&item.authorizationStatus),nextAction:next,owner:owner,reason:reason,openTaskCount:tasks.length,overdueTaskCount:over.length,urgentTaskCount:urgent.length}
+ }
+ function workflowFor(item){var tr=txt(item&&item.trackingNumber);return (snapshots[tr]&&snapshots[tr].workflow)||workflowLocal(item)}
+ function ids(prefix){return{
+  host:prefix+'OpsHost',status:prefix+'OpsStatus',priority:prefix+'OpsPriority',nte:prefix+'OpsNte',
+  workOrderNumber:prefix+'OpsWorkOrderNumber',customer:prefix+'OpsCustomer',locationName:prefix+'OpsLocation',
+  address:prefix+'OpsAddress',trade:prefix+'OpsTrade',problemDescription:prefix+'OpsProblem',
+  message:prefix+'OpsMessage',override:prefix+'OpsOverride',
+  workflow:prefix+'WorkflowHost',next:prefix+'NextAction',stages:prefix+'WorkflowStages',buttons:prefix+'WorkflowButtons'
+ }}
+ function statusOptions(){return[
+  ['','Use live/source status'],['new','New'],['open','Open'],['need_to_schedule','Need to schedule'],
+  ['scheduled','Scheduled'],['assigned','Assigned'],['onsite','Onsite'],['pending_confirmation','Pending confirmation'],
+  ['pending_proposal','Pending proposal'],['awaiting_authorization','Awaiting authorization'],['parts_needed','Parts needed'],
+  ['return_trip','Return visit'],['ready_to_bill','Ready to bill'],['completed','Completed'],['paid','Paid']
+ ].map(function(x){return '<option value="'+x[0]+'">'+x[1]+'</option>'}).join('')}
+ function operationsMarkup(prefix){
+  var i=ids(prefix);
+  return '<div class="j2853-card j2853-full" id="'+i.host+'" data-j2853-prefix="'+prefix+'">'+
+   '<h3>OPERATIONS CONTROL</h3><div class="small muted">Correct office-facing job data here. Corrections stay authoritative in Joshua while live integrations continue updating the source value underneath.</div>'+
+   '<div class="j2853-form">'+
+    '<div><label>Office workflow status</label><select id="'+i.status+'">'+statusOptions()+'</select></div>'+
+    '<div><label>Priority</label><input id="'+i.priority+'" placeholder="Priority"></div>'+
+    '<div><label>NTE</label><input id="'+i.nte+'" type="number" step="0.01" min="0"></div>'+
+    '<div><label>Work-order number</label><input id="'+i.workOrderNumber+'"></div>'+
+    '<div><label>Customer</label><input id="'+i.customer+'"></div>'+
+    '<div><label>Location</label><input id="'+i.locationName+'"></div>'+
+    '<div class="full"><label>Address</label><input id="'+i.address+'"></div>'+
+    '<div><label>Trade</label><input id="'+i.trade+'"></div>'+
+    '<div class="full"><label>Problem / scope</label><textarea id="'+i.problemDescription+'" rows="4"></textarea></div>'+
+   '</div>'+
+   '<div id="'+i.override+'" class="j2853-override-summary"></div>'+
+   '<div class="j2853-actions"><button type="button" data-j2853-save-ops="1">Save Corrections</button><button type="button" class="secondary" data-j2853-restore-live="1">Restore Live Data</button></div>'+
+   '<div id="'+i.message+'" class="j2853-message"></div></div>'
+ }
+ function workflowMarkup(prefix){
+  var i=ids(prefix);
+  return '<div class="j2853-card j2853-full" id="'+i.workflow+'" data-j2853-prefix="'+prefix+'"><h3>WORKFLOW / NEXT ACTION</h3>'+
+   '<div id="'+i.next+'" class="j2853-next"></div><div id="'+i.stages+'" class="j2853-workflow-grid"></div><div id="'+i.buttons+'" class="j2853-workflow-buttons"></div></div>'
+ }
+ function mountPrefix(prefix,dialog){
+  if(!dialog)return;
+  var i=ids(prefix),grid=dialog.querySelector('.phase12-grid');
+  if(prefix==='j2853Phase12'){
+   var details=grid&&grid.querySelector('.phase12-card');
+   var tech=grid&&grid.querySelector('[data-j2850-tech-prefix="j2850Phase12"]');
+   if(!document.getElementById(i.host)){
+    var anchor=tech||details;
+    if(anchor)anchor.insertAdjacentHTML('afterend',operationsMarkup(prefix));
+    else if(grid)grid.insertAdjacentHTML('afterbegin',operationsMarkup(prefix));
+   }
+   if(!document.getElementById(i.workflow)){
+    var ops=document.getElementById(i.host);
+    if(ops)ops.insertAdjacentHTML('afterend',workflowMarkup(prefix));
+    else if(grid)grid.insertAdjacentHTML('afterbegin',workflowMarkup(prefix));
+   }
+  }else{
+   var techHome=dialog.querySelector('[data-j2850-tech-prefix="j2850Home"]');
+   var collab=dialog.querySelector('[data-j2850-prefix="j2850Home"]');
+   if(!document.getElementById(i.host)){
+    if(techHome)techHome.insertAdjacentHTML('afterend',operationsMarkup(prefix));
+    else if(collab)collab.insertAdjacentHTML('beforebegin',operationsMarkup(prefix));
+    else dialog.insertAdjacentHTML('beforeend',operationsMarkup(prefix));
+   }
+   if(!document.getElementById(i.workflow)){
+    var homeOps=document.getElementById(i.host);
+    if(homeOps)homeOps.insertAdjacentHTML('afterend',workflowMarkup(prefix));
+    else dialog.insertAdjacentHTML('beforeend',workflowMarkup(prefix));
+   }
+  }
+ }
+ function setField(id,value,override){
+  var el=document.getElementById(id);if(!el)return;
+  if(document.activeElement!==el)el.value=value==null?'':String(value);
+  el.classList.toggle('j2853-overridden',!!override);
+ }
+ function renderOperations(prefix,item,force){
+  if(!item)return;
+  var i=ids(prefix),host=document.getElementById(i.host);if(!host)return;
+  var tr=txt(item.trackingNumber),same=host.getAttribute('data-j2853-tracking')===tr;
+  if(same&&!force&&host.contains(document.activeElement))return;
+  host.setAttribute('data-j2853-tracking',tr);
+  var over=item.officeFieldOverrides&&typeof item.officeFieldOverrides==='object'?item.officeFieldOverrides:{};
+  var status=document.getElementById(i.status);if(status&&document.activeElement!==status)status.value=txt(item.officeWorkflowStatus||'');
+  setField(i.priority,item.priority,Object.prototype.hasOwnProperty.call(over,'priority'));
+  setField(i.nte,item.nte,Object.prototype.hasOwnProperty.call(over,'nte'));
+  setField(i.workOrderNumber,item.workOrderNumber,Object.prototype.hasOwnProperty.call(over,'workOrderNumber'));
+  setField(i.customer,item.customer,Object.prototype.hasOwnProperty.call(over,'customer'));
+  setField(i.locationName,item.locationName,Object.prototype.hasOwnProperty.call(over,'locationName'));
+  setField(i.address,item.address,Object.prototype.hasOwnProperty.call(over,'address'));
+  setField(i.trade,item.trade,Object.prototype.hasOwnProperty.call(over,'trade'));
+  setField(i.problemDescription,item.problemDescription,Object.prototype.hasOwnProperty.call(over,'problemDescription'));
+  var keys=Object.keys(over),summary=document.getElementById(i.override);
+  if(summary)summary.textContent=(keys.length?('Office corrections active: '+keys.join(', ')+'. '):'')+(item.officeWorkflowStatus?'Office workflow status override active.':'');
+ }
+ function stageClass(value,doneValues,activeValues){var n=norm(value);if(doneValues.indexOf(n)>=0)return'done';if(activeValues.indexOf(n)>=0)return'active';return''}
+ function renderWorkflow(prefix,item){
+  if(!item)return;
+  var i=ids(prefix),w=workflowFor(item),next=document.getElementById(i.next),stages=document.getElementById(i.stages),buttons=document.getElementById(i.buttons);
+  if(next){
+   next.innerHTML='<div class="j2853-source-row"><span class="j2853-source-chip">Live: '+esc53(statusLabel(w.sourceStatus))+'</span>'+
+    (w.officeStatus?'<span class="j2853-source-chip">Office: '+esc53(statusLabel(w.officeStatus))+'</span>':'')+
+    '<span class="j2853-source-chip">'+Number(w.openTaskCount||0)+' open task'+(Number(w.openTaskCount||0)===1?'':'s')+'</span>'+
+    (Number(w.overdueTaskCount||0)?'<span class="j2853-source-chip">🚨 '+Number(w.overdueTaskCount)+' overdue</span>':'')+'</div>'+
+    '<span class="small muted">NEXT ACTION</span><strong>'+esc53(w.nextAction||'Review work order')+'</strong>'+
+    '<span class="j2853-next-owner">'+esc53(w.owner||'Office')+'</span><div class="small muted" style="margin-top:6px">'+esc53(w.reason||'')+'</div>';
+  }
+  if(stages){
+   var arr=[
+    ['Quote',w.proposal||((w.effectiveStatus==='pending_proposal'||w.effectiveStatus==='waiting_for_quote')?'required':'not required'),['submitted','approved'],['required','prepared']],
+    ['Parts',w.parts||((w.effectiveStatus==='parts_needed')?'needed':'not needed'),['ordered','received'],['needed']],
+    ['Return visit',w.returnVisit||((w.effectiveStatus==='return_trip')?'needed':'not needed'),['scheduled','completed'],['needed']],
+    ['Billing',w.billing||((w.effectiveStatus==='ready_to_bill')?'ready for review':'not started'),['submitted','paid'],['ready_for_review','prepared','documentation_missing']]
+   ];
+   stages.innerHTML=arr.map(function(s){return '<div class="j2853-stage '+stageClass(s[1],s[2],s[3])+'"><span>'+esc53(s[0])+'</span><strong>'+esc53(statusLabel(s[1]))+'</strong></div>'}).join('');
+  }
+  if(buttons){
+   var b=[];
+   function add(label,workflow,status){b.push('<button type="button" class="secondary" data-j2853-workflow="'+workflow+'" data-j2853-workflow-status="'+status+'">'+label+'</button>')}
+   if(w.proposal==='prepared')add('Record Quote Submitted','proposal','submitted');
+   if(w.proposal==='submitted'||w.effectiveStatus==='awaiting_authorization')add('Record Authorization Approved','authorization','approved');
+   if(w.effectiveStatus==='parts_needed'&&w.parts!=='ordered'&&w.parts!=='received')add('Record Parts Ordered','parts','ordered');
+   if((w.effectiveStatus==='return_trip'||w.parts==='ordered')&&w.returnVisit!=='scheduled')add('Record Return Scheduled','return_trip','scheduled');
+   if(w.billing==='prepared')add('Record Invoice Submitted','billing','submitted');
+   if(w.billing==='submitted')add('Record Paid','billing','paid');
+   buttons.innerHTML=b.join('');
+  }
+ }
+ function replaceCacheOrder(item){
+  if(!item)return;var d=cdata(),tr=txt(item.trackingNumber),w=d.workOrders;
+  if(Array.isArray(w)){var ix=w.findIndex(function(o){return txt(o&&o.trackingNumber)===tr});if(ix>=0)Object.assign(w[ix],item);else w.unshift(item)}
+  else if(w&&typeof w==='object'){w[tr]=Object.assign(w[tr]||{},item)}
+  try{if(typeof phase12SelectedWorkOrder!=='undefined'&&phase12SelectedWorkOrder&&txt(phase12SelectedWorkOrder.trackingNumber)===tr)Object.assign(phase12SelectedWorkOrder,item)}catch(_){}
+ }
+ async function loadSnapshot(tr,render){
+  tr=txt(tr);if(!tr)return null;
+  try{
+   var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/command-center');
+   if(r&&r.workOrder){snapshots[txt(r.workOrder.trackingNumber)||tr]=r;replaceCacheOrder(r.workOrder);if(render!==false)renderAll(true)}
+   return r;
+  }catch(_){return null}
+ }
+ function renderPrefix(prefix,titleId,force){
+  var tr=titleTracking(titleId),item=findOrder(tr);if(!item)return;
+  renderOperations(prefix,item,force);renderWorkflow(prefix,item);
+ }
+ function renderAll(force){
+  applyOverridesToCache();if(force)rerenderCorrectedViews();
+  var p=document.getElementById('phase12WorkOrderDialog'),h=document.getElementById('homeWorkOrderDialog');
+  mountPrefix('j2853Phase12',p);mountPrefix('j2853Home',h);
+  if(p&&(p.open||p.hasAttribute('open')))renderPrefix('j2853Phase12','phase12Title',force);
+  if(h&&(h.open||h.hasAttribute('open')))renderPrefix('j2853Home','homeWorkOrderTitle',force);
+  renderAccountability();applyTaskFilter();
+  decorateWorkflowTaskButtons();
+ }
+ function readOps(prefix){
+  var i=ids(prefix),tr=prefixTracking(prefix),item=findOrder(tr)||{};
+  var map={priority:i.priority,nte:i.nte,workOrderNumber:i.workOrderNumber,customer:i.customer,locationName:i.locationName,address:i.address,trade:i.trade,problemDescription:i.problemDescription};
+  var payload={requestedBy:currentUser53()},changed=0;
+  Object.keys(map).forEach(function(field){
+   var el=document.getElementById(map[field]);if(!el)return;var value=txt(el.value),old=item[field]==null?'':String(item[field]);
+   if(field==='nte'){var oldN=item[field]===''||item[field]==null?'':String(Number(item[field]));var newN=value===''?'':String(Number(value));if(newN!==oldN){payload[field]=value;changed++}}
+   else if(value!==old){payload[field]=value;changed++}
+  });
+  var st=document.getElementById(i.status),sv=txt(st&&st.value),oldSt=txt(item.officeWorkflowStatus||'');
+  if(sv!==oldSt){payload.officeWorkflowStatus=sv;changed++}
+  return{tracking:tr,item:item,payload:payload,changed:changed}
+ }
+ async function saveOps(prefix){
+  var r=readOps(prefix),i=ids(prefix),msg=document.getElementById(i.message);
+  if(!r.tracking){if(msg)msg.textContent='⚠ Work order could not be identified.';return}
+  if(!r.changed){if(msg)msg.textContent='No changes to save.';return}
+  if(msg)msg.textContent='Saving corrections…';
+  try{
+   var result=await api('/api/control/work-orders/'+encodeURIComponent(r.tracking)+'/operations',{method:'POST',body:JSON.stringify(r.payload)});
+   if(result&&result.workOrder){replaceCacheOrder(result.workOrder);snapshots[txt(result.workOrder.trackingNumber)||r.tracking]={workOrder:result.workOrder,workflow:result.workflow}}
+   if(typeof refresh==='function')await refresh();
+   if(msg)msg.textContent='✅ Office corrections saved.';
+   try{if(typeof window.openPhase12WorkOrder==='function'&&prefix==='j2853Phase12')window.openPhase12WorkOrder(r.tracking)}catch(_){}
+   renderAll(true);loadSnapshot(r.tracking,true);
+  }catch(e){if(msg)msg.textContent='⚠ '+e.message}
+ }
+ async function restoreLive(prefix){
+  var tr=prefixTracking(prefix),i=ids(prefix),msg=document.getElementById(i.message);if(!tr)return;
+  if(msg)msg.textContent='Restoring live source data…';
+  try{
+   var result=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/operations',{method:'POST',body:JSON.stringify({clearAllFieldOverrides:true,officeWorkflowStatus:'',requestedBy:currentUser53()})});
+   if(result&&result.workOrder)replaceCacheOrder(result.workOrder);
+   if(typeof refresh==='function')await refresh();
+   if(msg)msg.textContent='✅ Live source data restored.';
+   try{if(typeof window.openPhase12WorkOrder==='function'&&prefix==='j2853Phase12')window.openPhase12WorkOrder(tr)}catch(_){}
+   renderAll(true);loadSnapshot(tr,true);
+  }catch(e){if(msg)msg.textContent='⚠ '+e.message}
+ }
+ async function setWorkflow(tr,workflow,status){
+  if(!tr)return;
+  try{
+   var result=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/workflow',{method:'POST',body:JSON.stringify({workflow:workflow,status:status,requestedBy:currentUser53()})});
+   if(result&&result.workOrder)replaceCacheOrder(result.workOrder);
+   if(typeof refresh==='function')await refresh();
+   renderAll(true);loadSnapshot(tr,true);
+  }catch(e){alert(e.message)}
+ }
+ async function completeWorkflowTask(id){
+  id=txt(id);if(!id)return null;
+  try{
+   var result=await api('/api/control/tasks/'+encodeURIComponent(id)+'/complete-workflow',{method:'POST',body:JSON.stringify({requestedBy:currentUser53()})});
+   if(result&&result.workOrder)replaceCacheOrder(result.workOrder);
+   if(typeof refresh==='function')await refresh();
+   var tr=txt(result&&result.workOrder&&result.workOrder.trackingNumber)||txt(result&&result.task&&result.task.trackingNumber);
+   renderAll(true);if(tr)loadSnapshot(tr,true);
+   return result;
+  }catch(e){alert(e.message);return null}
+ }
+ function taskOwner(task){return txt(task&&task.assignedTo)||'Unassigned'}
+ function isOverdue(task){var d=new Date(task&&task.dueAt||0).getTime();return Number.isFinite(d)&&d>0&&d<Date.now()}
+ function renderAccountability(){
+  var ex=document.getElementById('executive');if(!ex)return;
+  var host=document.getElementById('j2853Accountability');
+  if(!host){
+   host=document.createElement('div');host.id='j2853Accountability';host.className='card j2853-accountability';
+   var onsite=ex.querySelector('.card[style*="margin-top:14px"]');if(onsite)onsite.insertAdjacentElement('beforebegin',host);else ex.appendChild(host);
+  }
+  var tasks=allTasks().filter(function(t){return norm(t&&t.status)!=='closed'}),owners=['Ariana','Shellie','Travis'];
+  var cards=owners.map(function(owner){
+   var list=tasks.filter(function(t){return taskOwner(t).toLowerCase()===owner.toLowerCase()}),over=list.filter(isOverdue).length,urgent=list.filter(function(t){return norm(t&&t.priority)==='urgent'}).length;
+   return '<div class="j2853-owner" role="button" tabindex="0" data-j2853-owner="'+owner+'"><span class="muted">'+owner+'</span><strong>'+list.length+'</strong><div class="small muted">'+over+' overdue · '+urgent+' urgent</div></div>';
+  });
+  var overdue=tasks.filter(isOverdue);
+  cards.push('<div class="j2853-owner" role="button" tabindex="0" data-j2853-owner="__overdue__"><span class="muted">All overdue</span><strong>'+overdue.length+'</strong><div class="small muted">Across the office</div></div>');
+  host.innerHTML='<h2>Office Accountability</h2><div class="small muted">Who owns the next office work. Tap a person to open only their tasks.</div><div class="j2853-accountability-grid">'+cards.join('')+'</div>';
+ }
+ function ensureTaskFilterBar(){
+  var list=document.getElementById('taskList');if(!list||document.getElementById('j2853TaskFilterBar'))return;
+  var bar=document.createElement('div');bar.id='j2853TaskFilterBar';bar.className='j2853-task-filter';bar.innerHTML='<strong id="j2853TaskFilterLabel"></strong><button type="button" class="secondary" data-j2853-clear-task-filter="1">Show All</button>';list.insertAdjacentElement('beforebegin',bar);
+ }
+ function applyTaskFilter(){
+  ensureTaskFilterBar();var list=document.getElementById('taskList'),bar=document.getElementById('j2853TaskFilterBar'),label=document.getElementById('j2853TaskFilterLabel');if(!list||!bar)return;
+  var tasks=allTasks(),rows=Array.from(list.children).filter(function(r){return r.classList&&r.classList.contains('task')});
+  rows.forEach(function(row,index){var task=tasks[index],show=true;if(taskFilter==='__overdue__')show=!!task&&isOverdue(task);else if(taskFilter)show=!!task&&taskOwner(task).toLowerCase()===taskFilter.toLowerCase();row.style.display=show?'':'none'});
+  if(taskFilter){bar.classList.add('show');if(label)label.textContent=taskFilter==='__overdue__'?'Showing overdue tasks':'Showing '+taskFilter+' tasks'}else{bar.classList.remove('show')}
+ }
+ function openTasksFor(owner){
+  taskFilter=owner||'';var tab=document.querySelector('.tab[data-tab="tasks"],[data-office-tab="tasks"]');if(tab)tab.click();setTimeout(applyTaskFilter,0);setTimeout(applyTaskFilter,150)
+ }
+ function decorateWorkflowTaskButtons(){
+  allTasks().forEach(function(task){
+   var id=txt(task&&task.id),button=id&&Array.from(document.querySelectorAll('[data-j2850-complete-task]')).find(function(el){return txt(el.getAttribute('data-j2850-complete-task'))===id});if(!button)return;
+   var type=norm(task.workflowType),title=norm(task.title);
+   if(type==='proposal'||title.indexOf('prepare_quote')>=0)button.textContent='Mark Quote Prepared';
+   else if(type==='billing'||title.indexOf('prepare_invoice')>=0)button.textContent='Mark Invoice Prepared';
+   else if(type==='parts'||title.indexOf('order_parts')>=0)button.textContent='Mark Parts Ordered';
+   else if(type==='return_trip'||title.indexOf('schedule_return')>=0)button.textContent='Mark Return Scheduled';
+  })
+ }
+ // Make the existing work-order renderer treat the office workflow state as the visible state.
+ try{
+  if(typeof phase12Status==='function'&&!phase12Status.__j2853Wrapped){
+   var oldStatus=phase12Status;
+   phase12Status=function(item){return String(item&&item.officeWorkflowStatus||oldStatus(item)||'new').replaceAll('_',' ')};
+   phase12Status.__j2853Wrapped=true;
+  }
+  if(typeof phase12SmartActionButtons==='function'&&!phase12SmartActionButtons.__j2853Wrapped){
+   var oldButtons=phase12SmartActionButtons;
+   phase12SmartActionButtons=function(item){var copy=Object.assign({},item||{});if(copy.officeWorkflowStatus)copy.joshuaStatus=copy.officeWorkflowStatus;return oldButtons(copy)};
+   phase12SmartActionButtons.__j2853Wrapped=true;
+  }
+ }catch(_){}
+ try{
+  if(typeof renderTasks==='function'&&!renderTasks.__j2853Wrapped){
+   var oldRenderTasks=renderTasks;
+   renderTasks=function(){var out=oldRenderTasks.apply(this,arguments);setTimeout(applyTaskFilter,0);return out};
+   renderTasks.__j2853Wrapped=true;
+  }
+ }catch(_){}
+ if(typeof window.refresh==='function'&&!window.refresh.__j2853Wrapped){
+  var oldRefresh53=window.refresh;
+  var refresh53=async function(){var r=await oldRefresh53.apply(this,arguments);applyOverridesToCache();rerenderCorrectedViews();renderAccountability();setTimeout(applyTaskFilter,0);return r};
+  refresh53.__j2853Wrapped=true;
+  window.refresh=refresh53;
+  try{refresh=refresh53}catch(_){}
+ }
+ if(typeof window.closeTask==='function'&&!window.closeTask.__j2853Wrapped){
+  var close53=async function(id){return completeWorkflowTask(id)};
+  close53.__j2853Wrapped=true;
+  window.closeTask=close53;
+ }
+ if(typeof window.openPhase12WorkOrder==='function'&&!window.openPhase12WorkOrder.__j2853Wrapped){
+  var oldOpen=window.openPhase12WorkOrder;
+  var wrapped=function(){var args=arguments,tr=txt(args[0]),out=oldOpen.apply(this,args);setTimeout(function(){renderAll(true);loadSnapshot(tr,true)},0);return out};
+  wrapped.__j2853Wrapped=true;window.openPhase12WorkOrder=wrapped;
+ }
+ document.addEventListener('click',function(e){
+  var complete=e.target.closest&&e.target.closest('[data-j2850-complete-task]');
+  if(!complete)return;
+  e.preventDefault();e.stopImmediatePropagation();
+  completeWorkflowTask(complete.getAttribute('data-j2850-complete-task'));
+ },true);
+ document.addEventListener('click',function(e){
+  var save=e.target.closest&&e.target.closest('[data-j2853-save-ops]');if(save){var host=save.closest('[data-j2853-prefix]');saveOps(host&&host.getAttribute('data-j2853-prefix'));return}
+  var restore=e.target.closest&&e.target.closest('[data-j2853-restore-live]');if(restore){var host2=restore.closest('[data-j2853-prefix]');restoreLive(host2&&host2.getAttribute('data-j2853-prefix'));return}
+  var wf=e.target.closest&&e.target.closest('[data-j2853-workflow]');if(wf){var host3=wf.closest('[data-j2853-prefix]'),prefix=host3&&host3.getAttribute('data-j2853-prefix');setWorkflow(prefixTracking(prefix),wf.getAttribute('data-j2853-workflow'),wf.getAttribute('data-j2853-workflow-status'));return}
+  var owner=e.target.closest&&e.target.closest('[data-j2853-owner]');if(owner){openTasksFor(owner.getAttribute('data-j2853-owner'));return}
+  if(e.target.closest&&e.target.closest('[data-j2853-clear-task-filter]')){taskFilter='';applyTaskFilter();return}
+ });
+ document.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var owner=e.target.closest&&e.target.closest('[data-j2853-owner]');if(owner){e.preventDefault();openTasksFor(owner.getAttribute('data-j2853-owner'))}});
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){renderAll(true)});else renderAll(true);
+ setTimeout(function(){renderAll(true)},350);
+ setTimeout(function(){renderAll(false)},1400);
+ window.joshuaPhase2853Render=renderAll;
+ window.joshuaPhase2853LoadSnapshot=loadSnapshot;
+})();
+</script>`;
+
+  html = html.replace("</body>", runtime + "\n</body>");
+  changed = true;
+  fs.writeFileSync(fileUrl, html);
+  return changed;
+}
+
+
 // Prepare the ClockShark comment generator before Phase 21 builds its runtime backend.
 // This is intentionally fail-safe: a ClockShark schema mismatch must never take Joshua offline.
 patchClockSharkCommentsBootstrap();
@@ -1222,12 +2228,14 @@ patchFinalTechnicianAuthorityBootstrap();
 // The durable Office Notes API route must exist before the existing chain imports server.js.
 // IMPORTANT: do not rewrite the /control-panel route here. Phase 20 matches that route exactly during startup.
 patchServer();
+patchOperationsOSServer();
 
 // Patch once before import and again after the stable Phase 28.46 chain rebuilds the final panel.
 // This makes the UI survive Render restarts/redeploys even when an earlier phase regenerates HTML.
 let patchedBefore = 0;
 for (const panelPath of PANEL_PATHS) {
   if (patchPanel(panelPath)) patchedBefore += 1;
+  if (patchOperationsOSPanel(panelPath)) patchedBefore += 1;
 }
 
 await import("./phase28-46-verified-workorder-status-reconciliation.mjs");
@@ -1235,8 +2243,9 @@ await import("./phase28-46-verified-workorder-status-reconciliation.mjs");
 let patchedAfter = 0;
 for (const panelPath of PANEL_PATHS) {
   if (patchPanel(panelPath)) patchedAfter += 1;
+  if (patchOperationsOSPanel(panelPath)) patchedAfter += 1;
 }
 
 console.log(
-  `Joshua Phase 28.50 V11 active: every Work Order now has a durable Change Technician control, plus ClockShark Job Comments in TECHNICIAN COMMENTS, dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.53 V12 Operations OS active: canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
 );
