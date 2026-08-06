@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.53 V12 — Unified Work Order Operations OS
+ * Joshua Phase 28.55 V14 — Operations OS + Durable Job Sheets Sync
  *
  * Builds on the stable Phase 28.50 command center and keeps the live integration
  * fields intact while giving the office a durable, correctable operating layer:
@@ -51,6 +51,235 @@ const CLOCKSHARK_COMMENTS_MARKER = "JOSHUA_PHASE28_51_CLOCKSHARK_COMMENTS_V2";
 const OPS_SERVER_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_SERVER_V1";
 const OPS_TASK_COMPLETE_MARKER = "JOSHUA_PHASE28_53_WORKFLOW_TASK_COMPLETE_ROUTE_V1";
 const OPS_PANEL_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_UI_V1";
+
+const JOB_SHEETS_SYNC_RUNTIME_PATH = new URL("./search-sync-runtime.mjs", ROOT);
+const JOB_SHEETS_DURABLE_SYNC_MARKER = "JOSHUA_PHASE28_55_JOB_SHEETS_DURABLE_SYNC_V1";
+
+
+function patchDurableJobSheetsSyncRuntime() {
+  // search-sync-runtime generates the live ServiceChannel -> Job Sheets helper.
+  // Replace only that generated helper definition before the stable startup chain
+  // runs. This is fail-safe: if the expected generator moves, Joshua still boots.
+  try {
+    if (!fs.existsSync(JOB_SHEETS_SYNC_RUNTIME_PATH)) {
+      console.warn("Joshua Phase 28.55: search-sync-runtime.mjs not found; startup preserved.");
+      return false;
+    }
+
+    let source = fs.readFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, "utf8");
+    if (source.includes(JOB_SHEETS_DURABLE_SYNC_MARKER)) return false;
+
+    const blockStart = source.indexOf('  const newJobSheetsSync = `/* ${JOB_SHEETS_UPSERT_MARKER} */');
+    const blockEndAnchor = "\n\n  if (!server.includes(oldJobSheetsSync))";
+    const blockEnd = source.indexOf(blockEndAnchor, blockStart);
+    if (blockStart < 0 || blockEnd < 0) {
+      console.warn("Joshua Phase 28.55: Job Sheets upsert generator not recognized; startup preserved.");
+      return false;
+    }
+
+    const durableGenerated = String.raw`/* JOSHUA_JOB_SHEETS_UPSERT_V1 */
+/* JOSHUA_PHASE28_55_JOB_SHEETS_DURABLE_SYNC_V1 */
+const recentJobSheetsSyncKeys = new Map();
+
+function jobSheetsSyncIdentity(trackingNumber, payload = {}) {
+  const tracking = String(trackingNumber || "").replace(/\D/g, "");
+  const eventType = String(payload.event_type || payload.action || "servicechannel_update");
+  const eventTime = String(payload.check_in_at || payload.check_out_at || payload.updated_at || "");
+  const status = String(payload.status || "");
+  return [tracking, eventType, eventTime, status].join("|");
+}
+
+async function syncServiceChannelJobSheets(trackingNumber, payload = {}) {
+  const tracking = String(trackingNumber || "").replace(/\D/g, "");
+  if (!tracking) return { ok: false, skipped: true, error: "Tracking number is required." };
+
+  const syncKey = jobSheetsSyncIdentity(tracking, payload);
+  const previousSync = recentJobSheetsSyncKeys.get(syncKey);
+  if (previousSync && Date.now() - previousSync < 10 * 60 * 1000) {
+    return { ok: true, skipped: true, duplicateDelivery: true, upsertKey: tracking };
+  }
+
+  const eventType = String(payload.event_type || payload.action || "servicechannel_update");
+  const eventTime = String(
+    payload.check_in_at ||
+    payload.check_out_at ||
+    payload.updated_at ||
+    new Date().toISOString()
+  );
+
+  // Source payload FIRST. Explicit upsert fields LAST. Previously payload.action
+  // could overwrite "job_sheets_upsert" with "servicechannel_webhook".
+  const zapPayload = {
+    ...payload,
+    action: "job_sheets_upsert",
+    operation: "upsert",
+    create_if_missing: true,
+    update_if_found: true,
+    lookup_field: "tracking_number",
+    lookup_value: tracking,
+    upsert_key: tracking,
+    tracking_number: tracking,
+    idempotency_key: [tracking, eventType, eventTime].join("|"),
+    source_action: String(payload.action || "servicechannel_update")
+  };
+
+  const queueDurableWrite = (reason = "Job Sheets webhook unavailable", webhookStatus = 0) => {
+    try {
+      const data = readControlData();
+      const outbox = typeof ensureSheetOutbox === "function" ? ensureSheetOutbox(data) : [];
+      let queued = outbox.find(item =>
+        !item.acknowledgedAt &&
+        String(item.idempotencyKey || "") === String(zapPayload.idempotency_key)
+      );
+
+      if (!queued && typeof queueJobSheetWrite === "function") {
+        const updates = {
+          "Joshua Status": payload.workflow_state || payload.status,
+          "Joshua Documentation": payload.documentation_status,
+          "Assigned Technician": payload.technician,
+          "Check In": payload.check_in_at,
+          "Check Out": payload.check_out_at,
+          "Workflow Reason": payload.workflow_reason,
+          "Billing Eligible": payload.billing_eligible,
+          "Invoice Allowed": payload.invoice_allowed,
+          "Proposal Required": payload.proposal_required,
+          "NTE Exceeded": payload.nte_exceeded,
+          "ServiceChannel Primary Status": payload.servicechannel_primary_status,
+          "ServiceChannel Extended Status": payload.servicechannel_extended_status,
+          "Proposal Status": payload.proposal_status,
+          "Invoice Status": payload.invoice_status,
+          "Pinned Note": payload.pinned_note,
+          "ServiceChannel Assignee": payload.servicechannel_assignee,
+          "ServiceChannel Assignee Email": payload.servicechannel_assignee_email,
+          "ServiceChannel Assignee Phone": payload.servicechannel_assignee_phone
+        };
+
+        queued = queueJobSheetWrite(
+          data,
+          tracking,
+          Object.fromEntries(
+            Object.entries(updates).filter(([, value]) => value !== undefined && value !== "")
+          ),
+          "servicechannel_durable_fallback"
+        );
+        queued.idempotencyKey = zapPayload.idempotency_key;
+        queued.webhookStatus = Number(webhookStatus || 0);
+        queued.lastWebhookError = String(reason || "").slice(0, 500);
+        queued.sourceAction = zapPayload.source_action;
+        writeControlData(data);
+      }
+
+      recentJobSheetsSyncKeys.set(syncKey, Date.now());
+      app.log.warn(
+        {
+          trackingNumber: tracking,
+          webhookStatus: Number(webhookStatus || 0),
+          queued: Boolean(queued),
+          reason: String(reason || "").slice(0, 240)
+        },
+        "Job Sheets webhook unavailable; ServiceChannel update preserved in durable Job Sheets outbox"
+      );
+
+      return {
+        ok: true,
+        queued: true,
+        degraded: true,
+        operation: "durable_outbox",
+        upsertKey: tracking,
+        idempotencyKey: zapPayload.idempotency_key,
+        webhookStatus: Number(webhookStatus || 0),
+        error: String(reason || "")
+      };
+    } catch (queueError) {
+      app.log.error(
+        { err: queueError, trackingNumber: tracking, originalError: String(reason || "") },
+        "Job Sheets webhook failed and durable outbox could not be queued"
+      );
+      return {
+        ok: false,
+        error: String(reason || "Job Sheets sync failed") + " / outbox: " + queueError.message,
+        upsertKey: tracking
+      };
+    }
+  };
+
+  if (!jobSheetsZapierWebhookUrl) {
+    return queueDurableWrite("JOB_SHEETS_ZAPIER_WEBHOOK_URL is not configured", 0);
+  }
+
+  try {
+    let response = await fetch(jobSheetsZapierWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(zapPayload)
+    });
+    let responseText = response.ok ? "" : await response.text().catch(() => "");
+    let deliveryMode = "upsert";
+
+    // Older Job Sheets hooks may still accept the source action instead of the
+    // explicit upsert action. Retry once for compatibility before queueing.
+    if (!response.ok && (response.status === 404 || response.status === 405)) {
+      const legacyPayload = {
+        ...payload,
+        action: String(payload.action || "servicechannel_ivr_update"),
+        tracking_number: tracking,
+        upsert_key: tracking,
+        idempotency_key: zapPayload.idempotency_key
+      };
+      const legacyResponse = await fetch(jobSheetsZapierWebhookUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(legacyPayload)
+      });
+      const legacyText = legacyResponse.ok ? "" : await legacyResponse.text().catch(() => "");
+      if (legacyResponse.ok) {
+        response = legacyResponse;
+        responseText = "";
+        deliveryMode = "legacy_compatible";
+      } else {
+        return queueDurableWrite(
+          "upsert " + response.status + ": " + responseText.slice(0, 160) +
+          "; legacy " + legacyResponse.status + ": " + legacyText.slice(0, 160),
+          legacyResponse.status
+        );
+      }
+    }
+
+    if (!response.ok) {
+      return queueDurableWrite(
+        "Job Sheets upsert failed (" + response.status + "): " + responseText.slice(0, 220),
+        response.status
+      );
+    }
+
+    recentJobSheetsSyncKeys.set(syncKey, Date.now());
+    for (const [key, timestamp] of recentJobSheetsSyncKeys) {
+      if (Date.now() - timestamp > 60 * 60 * 1000) recentJobSheetsSyncKeys.delete(key);
+    }
+
+    return {
+      ok: true,
+      operation: deliveryMode,
+      upsertKey: tracking,
+      idempotencyKey: zapPayload.idempotency_key
+    };
+  } catch (error) {
+    return queueDurableWrite(error.message || "Job Sheets webhook request failed", 0);
+  }
+}`;
+
+    const replacement = "  const newJobSheetsSync = " + JSON.stringify(durableGenerated) + ";";
+    source = source.slice(0, blockStart) + replacement + source.slice(blockEnd);
+    fs.writeFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, source);
+    console.log(
+      "Joshua Phase 28.55 installed durable ServiceChannel -> Job Sheets sync: protected upsert action, legacy compatibility retry, and local outbox fallback."
+    );
+    return true;
+  } catch (error) {
+    console.warn(`Joshua Phase 28.55: Job Sheets durability patch skipped safely (${error.message}).`);
+    return false;
+  }
+}
 
 function patchClockSharkCommentsBootstrap() {
   // Phase 21 generates the live ClockShark backend into server.js during startup.
@@ -2218,6 +2447,9 @@ function patchOperationsOSPanel(fileUrl) {
 }
 
 
+// Repair the ServiceChannel -> Job Sheets generator before search-sync-runtime builds the live server.
+patchDurableJobSheetsSyncRuntime();
+
 // Prepare the ClockShark comment generator before Phase 21 builds its runtime backend.
 // This is intentionally fail-safe: a ClockShark schema mismatch must never take Joshua offline.
 patchClockSharkCommentsBootstrap();
@@ -2247,5 +2479,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.53 V12 Operations OS active: canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
+  `Joshua Phase 28.55 V14 Operations OS active: durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
 );
