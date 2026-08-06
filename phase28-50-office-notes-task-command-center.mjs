@@ -22,7 +22,7 @@ const PANEL_PATHS = [
 
 const SERVER_MARKER = "JOSHUA_PHASE28_50_OFFICE_NOTES_ROUTE_V1";
 const TASK_ROUTE_MARKER = "JOSHUA_PHASE28_50_SMART_TASK_DEDUPE_ROUTE_V1";
-const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V9";
+const PANEL_MARKER = "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V10";
 const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V1",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V2",
@@ -31,171 +31,54 @@ const OLD_PANEL_MARKERS = [
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V5",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V6",
   "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V7",
-  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V8"
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V8",
+  "JOSHUA_PHASE28_50_JOB_COLLABORATION_UI_V9"
 ];
 
-function patchServer() {
-  if (!fs.existsSync(SERVER_PATH)) {
-    throw new Error("Phase 28.50: server.js not found.");
-  }
 
-  let server = fs.readFileSync(SERVER_PATH, "utf8");
-  let changed = false;
+const CLOCKSHARK_BOOTSTRAP_PATH = new URL("./phase21-clockshark-bootstrap.mjs", ROOT);
+const CLOCKSHARK_COMMENTS_MARKER = "JOSHUA_PHASE28_51_CLOCKSHARK_COMMENTS_V2";
 
-  const anchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
-  const route = `/* ${SERVER_MARKER} */
-app.post("/api/control/work-orders/:tracking/office-notes", async (request, reply) => {
-  if (!controlAuthorized(request)) {
-    return reply.code(401).send({ ok: false, error: "Unauthorized" });
-  }
-
-  const tracking = String(request.params.tracking || "").replace(/\\D/g, "");
-  if (tracking.length < 4) {
-    return reply.code(400).send({ ok: false, error: "Invalid tracking number." });
-  }
-
-  const noteText = String(request.body?.note || request.body?.text || "").trim();
-  if (!noteText) {
-    return reply.code(400).send({ ok: false, error: "Office note is required." });
-  }
-  if (noteText.length > 5000) {
-    return reply.code(400).send({ ok: false, error: "Office note is too long." });
-  }
-
-  const data = readControlData();
-  const current = data.workOrders?.[tracking];
-  if (!current) {
-    return reply.code(404).send({ ok: false, error: "Work order not found." });
-  }
-
-  const now = new Date().toISOString();
-  const author = String(
-    request.phase20User?.displayName ||
-    request.phase20User?.username ||
-    request.body?.author ||
-    "Office"
-  ).trim() || "Office";
-
-  const officeNote = {
-    id: "office-note-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    text: noteText,
-    author,
-    createdAt: now
-  };
-
-  const prior = Array.isArray(current.officeNotes) ? current.officeNotes : [];
-  const officeNotes = [officeNote, ...prior]
-    .filter(item => item && typeof item === "object")
-    .slice(0, 150);
-
-  data.workOrders[tracking] = {
-    ...current,
-    officeNotes,
-    officeNotesUpdatedAt: now,
-    updatedAt: now
-  };
-  data.updatedAt = now;
-  data.events = Array.isArray(data.events) ? data.events : [];
-  data.events.unshift({
-    id: "office-note-event-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    type: "office_note_added",
-    level: "success",
-    trackingNumber: tracking,
-    requestedBy: author,
-    createdAt: now,
-    note: noteText.slice(0, 500)
-  });
-  data.events = data.events.slice(0, 500);
-  writeControlData(data);
-
-  return reply.send({
-    ok: true,
-    officeNote,
-    workOrder: data.workOrders[tracking]
-  });
-});
-
-`;
-
-  if (!server.includes(SERVER_MARKER)) {
-    if (!server.includes(anchor)) {
-      throw new Error("Phase 28.50: work-order update route anchor not found.");
+function patchClockSharkCommentsBootstrap() {
+  // Phase 21 generates the live ClockShark backend into server.js during startup.
+  // Patch the Phase 21 generator itself BEFORE the stable startup chain runs. This
+  // avoids depending on generated server.js anchors that do not exist yet on a
+  // fresh Render deploy.
+  try {
+    if (!fs.existsSync(CLOCKSHARK_BOOTSTRAP_PATH)) {
+      console.warn("Joshua Phase 28.51: phase21-clockshark-bootstrap.mjs not found; startup preserved.");
+      return false;
     }
-    server = server.replace(anchor, route + anchor);
-    changed = true;
-    console.log("Joshua Phase 28.50 installed durable office-note route.");
-  }
 
+    let source = fs.readFileSync(CLOCKSHARK_BOOTSTRAP_PATH, "utf8");
+    if (source.includes(CLOCKSHARK_COMMENTS_MARKER)) return false;
 
-  if (!server.includes(TASK_ROUTE_MARKER)) {
-    const taskStart = 'app.post("/api/control/tasks", async (request, reply) => {';
-    const taskEnd = 'app.post("/api/control/tasks/:id/close", async (request, reply) => {';
-    const startIndex = server.indexOf(taskStart);
-    const endIndex = server.indexOf(taskEnd, startIndex);
-    if (startIndex < 0 || endIndex < 0) {
-      throw new Error("Phase 28.50: task route anchors not found.");
+    const literalPrefix = "const helpers = ";
+    const literalStart = source.indexOf(literalPrefix);
+    const replaceAnchor = "\n\n  server = server.replace(";
+    const literalEnd = source.indexOf(replaceAnchor, literalStart + literalPrefix.length);
+    if (literalStart < 0 || literalEnd < 0) {
+      console.warn("Joshua Phase 28.51: Phase 21 helper generator not recognized; startup preserved.");
+      return false;
     }
-    const upgradedTaskRoute = `/* ${TASK_ROUTE_MARKER} */
-app.post("/api/control/tasks", async (request, reply) => {
-  if (!controlAuthorized(request)) {
-    return reply.code(401).send({ ok: false, error: "Unauthorized" });
-  }
-  const body = request.body || {};
-  const title = String(body.title || "").trim();
-  if (!title) return reply.code(400).send({ ok: false, error: "Task title is required." });
 
-  const trackingNumber = String(body.trackingNumber || "").trim();
-  const assignedTo = String(body.assignedTo || "").trim();
-  const dueAt = String(body.dueAt || "").trim();
-  const priority = String(body.priority || "normal");
-  const notes = String(body.notes || "").trim();
-  const workflowType = String(body.workflowType || "").trim().toLowerCase();
-  const actionLabel = String(body.actionLabel || "").trim();
+    let literal = source.slice(literalStart + literalPrefix.length, literalEnd).trim();
+    if (literal.endsWith(";")) literal = literal.slice(0, -1).trim();
 
-  // Smart Actions are idempotent: one open proposal/billing task per work order.
-  // Manual tasks (which do not send workflowType) are never collapsed.
-  if (trackingNumber && (workflowType === "proposal" || workflowType === "billing")) {
-    const taskData = readControlData();
-    const existing = (taskData.tasks || []).find(task => {
-      if (String(task.trackingNumber || "").trim() !== trackingNumber) return false;
-      if (String(task.status || "open").toLowerCase() === "closed") return false;
-      const existingWorkflow = String(task.workflowType || "").trim().toLowerCase();
-      const existingTitle = String(task.title || "").trim();
-      if (workflowType === "proposal") {
-        return existingWorkflow === "proposal" || /prepare (?:and submit )?quote|prepare or follow up on proposal/i.test(existingTitle);
-      }
-      return existingWorkflow === "billing" || /prepare (?:servicechannel )?invoice|review job for billing/i.test(existingTitle);
-    });
-    if (existing) {
-      return reply.send({ ok: true, task: existing, duplicate: true });
+    let helpers;
+    try {
+      helpers = JSON.parse(literal);
+    } catch (error) {
+      console.warn(`Joshua Phase 28.51: could not decode Phase 21 helpers (${error.message}); startup preserved.`);
+      return false;
     }
-  }
 
-  const task = addControlTask({
-    title,
-    trackingNumber,
-    assignedTo,
-    dueAt,
-    priority,
-    notes,
-    ...(workflowType ? { workflowType } : {}),
-    ...(actionLabel ? { actionLabel } : {})
-  });
-  return reply.send({ ok: true, task, duplicate: false });
-});
+    if (helpers.includes(CLOCKSHARK_COMMENTS_MARKER)) return false;
 
-`;
-    server = server.slice(0, startIndex) + upgradedTaskRoute + server.slice(endIndex);
-    changed = true;
-    console.log("Joshua Phase 28.50 installed Smart Action duplicate protection.");
-  }
-
-
-  const CLOCKSHARK_COMMENTS_MARKER = "JOSHUA_PHASE28_51_CLOCKSHARK_COMMENTS_V1";
-  if (!server.includes(CLOCKSHARK_COMMENTS_MARKER)) {
     const canonicalAnchor = "function phase21ClockSharkCanonicalType(";
-    if (!server.includes(canonicalAnchor)) {
-      throw new Error("Phase 28.51: ClockShark canonical-type anchor not found.");
+    if (!helpers.includes(canonicalAnchor)) {
+      console.warn("Joshua Phase 28.51: ClockShark canonical helper not found inside Phase 21 generator; startup preserved.");
+      return false;
     }
 
     const commentHelpers = `/* ${CLOCKSHARK_COMMENTS_MARKER} */
@@ -273,7 +156,6 @@ function phase2851ClockSharkCommentObjects(payload = {}) {
     "conversationComment","conversation_comment"
   ]) add(payload?.[key]);
 
-  // A dedicated comment event usually IS the comment object.
   const rawType = phase21ClockSharkCanonicalType(
     payload?.eventType || payload?.event_type || payload?.event ||
     payload?.type || payload?.trigger || ""
@@ -505,262 +387,266 @@ function phase2851ClockSharkApplyComment(data, state, payload = {}) {
 
 `;
 
-    server = server.replace(canonicalAnchor, commentHelpers + canonicalAnchor);
+    helpers = helpers.replace(canonicalAnchor, commentHelpers + canonicalAnchor);
 
-    // ClockShark's job-level field is "Comments", not timesheet/checkout Notes.
-    const canonicalCommentAnchor = `  if (
-    /clock_?in|new_?clock_?in|started_?shift/.test(`;
-    if (!server.includes(canonicalCommentAnchor)) {
-      throw new Error("Phase 28.51: ClockShark comment canonicalization anchor not found.");
+    const canonicalCommentAnchor = `  if (\n    /clock_?in|new_?clock_?in|started_?shift/.test(`;
+    if (helpers.includes(canonicalCommentAnchor)) {
+      helpers = helpers.replace(
+        canonicalCommentAnchor,
+        `  if (/comment|conversation/.test(value)) {\n    return "comment";\n  }\n\n  if (\n    /clock_?in|new_?clock_?in|started_?shift/.test(`
+      );
     }
-    server = server.replace(
-      canonicalCommentAnchor,
-      `  if (/comment|conversation/.test(value)) {
-    return "comment";
+
+    const eventIdAnchor = `          "timeEntryId",\n          "time_entry_id",\n          "id"`;
+    if (helpers.includes(eventIdAnchor)) {
+      helpers = helpers.replace(
+        eventIdAnchor,
+        `          "timeEntryId",\n          "time_entry_id",\n          "commentId",\n          "comment_id",\n          "conversationId",\n          "conversation_id",\n          "id"`
+      );
+    }
+
+    const eventNotesAnchor = `          "shiftNotes",\n          "shift_notes"\n        ]`;
+    if (helpers.includes(eventNotesAnchor)) {
+      helpers = helpers.replace(
+        eventNotesAnchor,
+        `          "shiftNotes",\n          "shift_notes",\n          "comments",\n          "Comments",\n          "comment",\n          "Comment",\n          "jobComments",\n          "job_comments",\n          "commentText",\n          "comment_text",\n          "text",\n          "Text",\n          "body",\n          "Body",\n          "message",\n          "Message",\n          "content",\n          "Content"\n        ]`
+      );
+    }
+
+    const shiftNotesAnchor = `            "clockOutNotes",\n            "clock_out_notes",\n            "description"`;
+    if (helpers.includes(shiftNotesAnchor)) {
+      helpers = helpers.replace(
+        shiftNotesAnchor,
+        `            "clockOutNotes",\n            "clock_out_notes",\n            "comments",\n            "Comments",\n            "comment",\n            "Comment",\n            "jobComments",\n            "job_comments",\n            "description"`
+      );
+    }
+
+    const recalcOld = `  const notes =\n    phase21ClockSharkUnique(\n      closed.map(shift =>\n        shift.notes\n      )\n    ).slice(-100);`;
+    if (helpers.includes(recalcOld)) {
+      helpers = helpers.replace(
+        recalcOld,
+        `  const currentCommentsWorkOrder =\n    data.workOrders[workOrderKey] || {};\n  const notes =\n    phase21ClockSharkUnique([\n      ...closed.map(shift => shift.notes),\n      ...phase2851ClockSharkFormatComments(\n        currentCommentsWorkOrder.clockSharkComments\n      )\n    ]).slice(-200);`
+      );
+    }
+
+    const applyShiftAnchor = `  phase21ClockSharkUpsertJob(\n    state,\n    job\n  );\n\n  let existing = null;`;
+    if (helpers.includes(applyShiftAnchor)) {
+      helpers = helpers.replace(
+        applyShiftAnchor,
+        `  phase21ClockSharkUpsertJob(\n    state,\n    job\n  );\n\n  // Job Comments are separate from timesheet notes in ClockShark.\n  phase2851ClockSharkApplyComment(\n    data,\n    state,\n    payload\n  );\n\n  let existing = null;`
+      );
+    }
+
+    const applyJobAnchor = `  phase22ClockSharkEnsureWorkOrder(\n    data,\n    state,\n    job,\n    { initialState: "new" }\n  );\n\n  if (`;
+    if (helpers.includes(applyJobAnchor)) {
+      helpers = helpers.replace(
+        applyJobAnchor,
+        `  phase22ClockSharkEnsureWorkOrder(\n    data,\n    state,\n    job,\n    { initialState: "new" }\n  );\n\n  phase2851ClockSharkApplyComment(\n    data,\n    state,\n    payload\n  );\n\n  if (`
+      );
+    }
+
+    const processBranchAnchor = `  } else if (\n    eventType === "job_added"\n  ) {`;
+    if (helpers.includes(processBranchAnchor)) {
+      helpers = helpers.replace(
+        processBranchAnchor,
+        `  } else if (\n    eventType === "comment"\n  ) {\n    result =\n      phase2851ClockSharkApplyComment(\n        data,\n        state,\n        { ...payload, eventType: "comment" }\n      );\n  } else if (\n    eventType === "job_added"\n  ) {`
+      );
+    }
+
+    const groupsAnchor = `      ["notifications", "notification"],\n      ["timeEntries", "snapshot"],`;
+    if (helpers.includes(groupsAnchor)) {
+      helpers = helpers.replace(
+        groupsAnchor,
+        `      ["notifications", "notification"],\n      ["comments", "comment"],\n      ["Comments", "comment"],\n      ["jobComments", "comment"],\n      ["job_comments", "comment"],\n      ["conversationComments", "comment"],\n      ["conversation_comments", "comment"],\n      ["timeEntries", "snapshot"],`
+      );
+    }
+
+    const groupedProcessAnchor = `            results.push(\n              phase21ClockSharkProcessOne(\n                data,\n                state,\n                item,\n                type ||\n                forcedType\n              )\n            );`;
+    if (helpers.includes(groupedProcessAnchor)) {
+      helpers = helpers.replace(
+        groupedProcessAnchor,
+        `            results.push(\n              phase21ClockSharkProcessOne(\n                data,\n                state,\n                type === "comment"\n                  ? {\n                      ...payload,\n                      eventId: undefined,\n                      event_id: undefined,\n                      zapId: undefined,\n                      zap_id: undefined,\n                      id: undefined,\n                      comments: undefined,\n                      Comments: undefined,\n                      jobComments: undefined,\n                      job_comments: undefined,\n                      conversationComments: undefined,\n                      conversation_comments: undefined,\n                      ...(item && typeof item === "object"\n                        ? item\n                        : { comment: item })\n                    }\n                  : item,\n                type ||\n                forcedType\n              )\n            );`
+      );
+    }
+
+    const rowsAnchor = `      "data",\n      "timeEntries",`;
+    if (helpers.includes(rowsAnchor)) {
+      helpers = helpers.replace(
+        rowsAnchor,
+        `      "data",\n      "comments",\n      "Comments",\n      "jobComments",\n      "job_comments",\n      "conversationComments",\n      "conversation_comments",\n      "timeEntries",`
+      );
+    }
+
+    // The helper insertion itself is the required core change. Optional anchors
+    // above are version-tolerant so a dashboard change can never take Joshua down.
+    const encoded = JSON.stringify(helpers);
+    source =
+      source.slice(0, literalStart + literalPrefix.length) +
+      encoded + ";" +
+      source.slice(literalEnd);
+    fs.writeFileSync(CLOCKSHARK_BOOTSTRAP_PATH, source);
+    console.log("Joshua Phase 28.51 prepared ClockShark Job Comments support in the Phase 21 startup generator.");
+    return true;
+  } catch (error) {
+    console.warn(`Joshua Phase 28.51 comments patch skipped safely: ${error.message}`);
+    return false;
+  }
+}
+
+function patchServer() {
+  if (!fs.existsSync(SERVER_PATH)) {
+    throw new Error("Phase 28.50: server.js not found.");
   }
 
-  if (
-    /clock_?in|new_?clock_?in|started_?shift/.test(`
-    );
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  let changed = false;
 
-    const eventIdAnchor = `          "timeEntryId",
-          "time_entry_id",
-          "id"`;
-    if (server.includes(eventIdAnchor)) {
-      server = server.replace(
-        eventIdAnchor,
-        `          "timeEntryId",
-          "time_entry_id",
-          "commentId",
-          "comment_id",
-          "conversationId",
-          "conversation_id",
-          "id"`
-      );
+  const anchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
+  const route = `/* ${SERVER_MARKER} */
+app.post("/api/control/work-orders/:tracking/office-notes", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+
+  const tracking = String(request.params.tracking || "").replace(/\\D/g, "");
+  if (tracking.length < 4) {
+    return reply.code(400).send({ ok: false, error: "Invalid tracking number." });
+  }
+
+  const noteText = String(request.body?.note || request.body?.text || "").trim();
+  if (!noteText) {
+    return reply.code(400).send({ ok: false, error: "Office note is required." });
+  }
+  if (noteText.length > 5000) {
+    return reply.code(400).send({ ok: false, error: "Office note is too long." });
+  }
+
+  const data = readControlData();
+  const current = data.workOrders?.[tracking];
+  if (!current) {
+    return reply.code(404).send({ ok: false, error: "Work order not found." });
+  }
+
+  const now = new Date().toISOString();
+  const author = String(
+    request.phase20User?.displayName ||
+    request.phase20User?.username ||
+    request.body?.author ||
+    "Office"
+  ).trim() || "Office";
+
+  const officeNote = {
+    id: "office-note-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    text: noteText,
+    author,
+    createdAt: now
+  };
+
+  const prior = Array.isArray(current.officeNotes) ? current.officeNotes : [];
+  const officeNotes = [officeNote, ...prior]
+    .filter(item => item && typeof item === "object")
+    .slice(0, 150);
+
+  data.workOrders[tracking] = {
+    ...current,
+    officeNotes,
+    officeNotesUpdatedAt: now,
+    updatedAt: now
+  };
+  data.updatedAt = now;
+  data.events = Array.isArray(data.events) ? data.events : [];
+  data.events.unshift({
+    id: "office-note-event-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    type: "office_note_added",
+    level: "success",
+    trackingNumber: tracking,
+    requestedBy: author,
+    createdAt: now,
+    note: noteText.slice(0, 500)
+  });
+  data.events = data.events.slice(0, 500);
+  writeControlData(data);
+
+  return reply.send({
+    ok: true,
+    officeNote,
+    workOrder: data.workOrders[tracking]
+  });
+});
+
+`;
+
+  if (!server.includes(SERVER_MARKER)) {
+    if (!server.includes(anchor)) {
+      throw new Error("Phase 28.50: work-order update route anchor not found.");
     }
-
-    const eventNotesAnchor = `          "shiftNotes",
-          "shift_notes"
-        ]`;
-    if (server.includes(eventNotesAnchor)) {
-      server = server.replace(
-        eventNotesAnchor,
-        `          "shiftNotes",
-          "shift_notes",
-          "comments",
-          "Comments",
-          "comment",
-          "Comment",
-          "jobComments",
-          "job_comments",
-          "commentText",
-          "comment_text",
-          "text",
-          "Text",
-          "body",
-          "Body",
-          "message",
-          "Message",
-          "content",
-          "Content"
-        ]`
-      );
-    }
-
-    const shiftNotesAnchor = `            "clockOutNotes",
-            "clock_out_notes",
-            "description"`;
-    if (server.includes(shiftNotesAnchor)) {
-      server = server.replace(
-        shiftNotesAnchor,
-        `            "clockOutNotes",
-            "clock_out_notes",
-            "comments",
-            "Comments",
-            "comment",
-            "Comment",
-            "jobComments",
-            "job_comments",
-            "description"`
-      );
-    }
-
-    const recalcOld = `  const notes =
-    phase21ClockSharkUnique(
-      closed.map(shift =>
-        shift.notes
-      )
-    ).slice(-100);`;
-    const recalcNew = `  const currentCommentsWorkOrder =
-    data.workOrders[workOrderKey] || {};
-  const notes =
-    phase21ClockSharkUnique([
-      ...closed.map(shift => shift.notes),
-      ...phase2851ClockSharkFormatComments(
-        currentCommentsWorkOrder.clockSharkComments
-      )
-    ]).slice(-200);`;
-    if (!server.includes(recalcOld)) {
-      throw new Error("Phase 28.51: ClockShark work-order notes recalculation anchor not found.");
-    }
-    server = server.replace(recalcOld, recalcNew);
-
-    const applyShiftAnchor = `  phase21ClockSharkUpsertJob(
-    state,
-    job
-  );
-
-  let existing = null;`;
-    if (!server.includes(applyShiftAnchor)) {
-      throw new Error("Phase 28.51: ClockShark shift comment anchor not found.");
-    }
-    server = server.replace(
-      applyShiftAnchor,
-      `  phase21ClockSharkUpsertJob(
-    state,
-    job
-  );
-
-  // Job Comments are separate from timesheet notes in ClockShark.
-  // Capture them whenever the live feed includes them.
-  phase2851ClockSharkApplyComment(
-    data,
-    state,
-    payload
-  );
-
-  let existing = null;`
-    );
-
-    const applyJobAnchor = `  phase22ClockSharkEnsureWorkOrder(
-    data,
-    state,
-    job,
-    { initialState: "new" }
-  );
-
-  if (`;
-    if (!server.includes(applyJobAnchor)) {
-      throw new Error("Phase 28.51: ClockShark job comment anchor not found.");
-    }
-    server = server.replace(
-      applyJobAnchor,
-      `  phase22ClockSharkEnsureWorkOrder(
-    data,
-    state,
-    job,
-    { initialState: "new" }
-  );
-
-  phase2851ClockSharkApplyComment(
-    data,
-    state,
-    payload
-  );
-
-  if (`
-    );
-
-    const processBranchAnchor = `  } else if (
-    eventType === "job_added"
-  ) {`;
-    if (!server.includes(processBranchAnchor)) {
-      throw new Error("Phase 28.51: ClockShark process branch anchor not found.");
-    }
-    server = server.replace(
-      processBranchAnchor,
-      `  } else if (
-    eventType === "comment"
-  ) {
-    result =
-      phase2851ClockSharkApplyComment(
-        data,
-        state,
-        { ...payload, eventType: "comment" }
-      );
-  } else if (
-    eventType === "job_added"
-  ) {`
-    );
-
-    const groupsAnchor = `      ["notifications", "notification"],
-      ["timeEntries", "snapshot"],`;
-    if (!server.includes(groupsAnchor)) {
-      throw new Error("Phase 28.51: ClockShark grouped payload anchor not found.");
-    }
-    server = server.replace(
-      groupsAnchor,
-      `      ["notifications", "notification"],
-      ["comments", "comment"],
-      ["Comments", "comment"],
-      ["jobComments", "comment"],
-      ["job_comments", "comment"],
-      ["conversationComments", "comment"],
-      ["conversation_comments", "comment"],
-      ["timeEntries", "snapshot"],`
-    );
-
-    const groupedProcessAnchor = `            results.push(
-              phase21ClockSharkProcessOne(
-                data,
-                state,
-                item,
-                type ||
-                forcedType
-              )
-            );`;
-    if (!server.includes(groupedProcessAnchor)) {
-      throw new Error("Phase 28.51: ClockShark grouped comment context anchor not found.");
-    }
-    server = server.replace(
-      groupedProcessAnchor,
-      `            results.push(
-              phase21ClockSharkProcessOne(
-                data,
-                state,
-                type === "comment"
-                  ? {
-                      ...payload,
-                      eventId: undefined,
-                      event_id: undefined,
-                      zapId: undefined,
-                      zap_id: undefined,
-                      id: undefined,
-                      comments: undefined,
-                      Comments: undefined,
-                      jobComments: undefined,
-                      job_comments: undefined,
-                      conversationComments: undefined,
-                      conversation_comments: undefined,
-                      ...(item && typeof item === "object"
-                        ? item
-                        : { comment: item })
-                    }
-                  : item,
-                type ||
-                forcedType
-              )
-            );`
-    );
-
-    const rowsAnchor = `      "data",
-      "timeEntries",`;
-    if (server.includes(rowsAnchor)) {
-      server = server.replace(
-        rowsAnchor,
-        `      "data",
-      "comments",
-      "Comments",
-      "jobComments",
-      "job_comments",
-      "conversationComments",
-      "conversation_comments",
-      "timeEntries",`
-      );
-    }
-
+    server = server.replace(anchor, route + anchor);
     changed = true;
-    console.log("Joshua Phase 28.51 installed ClockShark Job Comments authority.");
+    console.log("Joshua Phase 28.50 installed durable office-note route.");
+  }
+
+
+  if (!server.includes(TASK_ROUTE_MARKER)) {
+    const taskStart = 'app.post("/api/control/tasks", async (request, reply) => {';
+    const taskEnd = 'app.post("/api/control/tasks/:id/close", async (request, reply) => {';
+    const startIndex = server.indexOf(taskStart);
+    const endIndex = server.indexOf(taskEnd, startIndex);
+    if (startIndex < 0 || endIndex < 0) {
+      throw new Error("Phase 28.50: task route anchors not found.");
+    }
+    const upgradedTaskRoute = `/* ${TASK_ROUTE_MARKER} */
+app.post("/api/control/tasks", async (request, reply) => {
+  if (!controlAuthorized(request)) {
+    return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  }
+  const body = request.body || {};
+  const title = String(body.title || "").trim();
+  if (!title) return reply.code(400).send({ ok: false, error: "Task title is required." });
+
+  const trackingNumber = String(body.trackingNumber || "").trim();
+  const assignedTo = String(body.assignedTo || "").trim();
+  const dueAt = String(body.dueAt || "").trim();
+  const priority = String(body.priority || "normal");
+  const notes = String(body.notes || "").trim();
+  const workflowType = String(body.workflowType || "").trim().toLowerCase();
+  const actionLabel = String(body.actionLabel || "").trim();
+
+  // Smart Actions are idempotent: one open proposal/billing task per work order.
+  // Manual tasks (which do not send workflowType) are never collapsed.
+  if (trackingNumber && (workflowType === "proposal" || workflowType === "billing")) {
+    const taskData = readControlData();
+    const existing = (taskData.tasks || []).find(task => {
+      if (String(task.trackingNumber || "").trim() !== trackingNumber) return false;
+      if (String(task.status || "open").toLowerCase() === "closed") return false;
+      const existingWorkflow = String(task.workflowType || "").trim().toLowerCase();
+      const existingTitle = String(task.title || "").trim();
+      if (workflowType === "proposal") {
+        return existingWorkflow === "proposal" || /prepare (?:and submit )?quote|prepare or follow up on proposal/i.test(existingTitle);
+      }
+      return existingWorkflow === "billing" || /prepare (?:servicechannel )?invoice|review job for billing/i.test(existingTitle);
+    });
+    if (existing) {
+      return reply.send({ ok: true, task: existing, duplicate: true });
+    }
+  }
+
+  const task = addControlTask({
+    title,
+    trackingNumber,
+    assignedTo,
+    dueAt,
+    priority,
+    notes,
+    ...(workflowType ? { workflowType } : {}),
+    ...(actionLabel ? { actionLabel } : {})
+  });
+  return reply.send({ ok: true, task, duplicate: false });
+});
+
+`;
+    server = server.slice(0, startIndex) + upgradedTaskRoute + server.slice(endIndex);
+    changed = true;
+    console.log("Joshua Phase 28.50 installed Smart Action duplicate protection.");
   }
 
 
@@ -1067,6 +953,10 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
   return changed;
 }
 
+// Prepare the ClockShark comment generator before Phase 21 builds its runtime backend.
+// This is intentionally fail-safe: a ClockShark schema mismatch must never take Joshua offline.
+patchClockSharkCommentsBootstrap();
+
 // The durable Office Notes API route must exist before the existing chain imports server.js.
 // IMPORTANT: do not rewrite the /control-panel route here. Phase 20 matches that route exactly during startup.
 patchServer();
@@ -1086,5 +976,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.50 V9 active: ClockShark Job Comments now feed TECHNICIAN COMMENTS with author/timestamp, plus dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
+  `Joshua Phase 28.50 V10 active: ClockShark Job Comments now feed TECHNICIAN COMMENTS with author/timestamp, plus dashboard routing authority, responsive overflow containment, Smart Action feedback/deduplication, durable office notes/tasks, queue-to-work-order navigation, technician auto-selection, and popup performance fix (${patchedBefore} pre / ${patchedAfter} post panel patches).`
 );
