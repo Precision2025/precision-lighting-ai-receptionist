@@ -21,6 +21,28 @@ function patchFieldServer() {
     changed = true;
   }
 
+  // JOSHUA_PHASE28_62_V7_FIELD_DISPATCH_ROUTE_PATCH
+  // Existing Joshua office assignment controls become the authority for what a
+  // technician is allowed to see in Field. This prevents historical assignments
+  // from remaining on a technician's phone indefinitely.
+  const technicianAssignmentAnchor = `    manualTechnicianOverrideBy: actor,\n    updatedAt: now`;
+  if (server.includes(technicianAssignmentAnchor) && !server.includes('fieldDispatchBy: technicianName ? actor : ""')) {
+    server = server.replace(
+      technicianAssignmentAnchor,
+      `    manualTechnicianOverrideBy: actor,\n    fieldDispatchStatus: technicianName ? "dispatched" : "",\n    fieldDispatchedAt: technicianName ? now : "",\n    fieldDispatchBy: technicianName ? actor : "",\n    updatedAt: now`
+    );
+    changed = true;
+  }
+
+  const quickDispatchAnchor = `    state: body.state || "scheduled",\n    assignedAt: new Date().toISOString()`;
+  if (server.includes(quickDispatchAnchor) && !server.includes('fieldDispatchBy: "Control Panel"')) {
+    server = server.replace(
+      quickDispatchAnchor,
+      `    state: body.state || "scheduled",\n    assignedAt: new Date().toISOString(),\n    fieldDispatchStatus: "dispatched",\n    fieldDispatchedAt: new Date().toISOString(),\n    fieldDispatchBy: "Control Panel"`
+    );
+    changed = true;
+  }
+
   if (!server.includes(MARKER)) {
     const anchor = 'app.post("/api/control/work-orders/:tracking", async (request, reply) => {';
     if (!server.includes(anchor)) throw new Error("Joshua Field: work-order route anchor not found.");
@@ -260,8 +282,21 @@ function phase2862CanonicalFieldState(item = {}) {
 
 function phase2862FieldJobActionable(item = {}) {
   if (!item || typeof item !== "object") return false;
+
+  // A technician who is already actively clocked into a job must never lose it
+  // from Field just because another status changes while they are onsite.
   if (item.fieldClockStatus === "clocked_in" && item.fieldCheckInAt && !item.fieldCheckOutAt) return true;
-  return phase2862CanonicalFieldState(item) !== "post_field";
+
+  // Canonical completion / billing / proposal / parts truth always wins.
+  if (phase2862CanonicalFieldState(item) === "post_field") return false;
+
+  // Joshua Field uses an explicit dispatch authority. Historical technician
+  // assignments are NOT enough to keep a job on a tech's phone forever. The
+  // office must dispatch/re-dispatch the work order using Joshua's technician
+  // assignment controls. O'Reilly checkout stays visible while IVR confirmation
+  // is still pending so the tech can retry if necessary.
+  const dispatchStatus = phase2862Text(item.fieldDispatchStatus).toLowerCase();
+  return dispatchStatus === "dispatched" || dispatchStatus === "checkout_pending";
 }
 
 function phase2862IsServiceChannel(item = {}) {
@@ -1280,6 +1315,8 @@ app.post("/api/field/jobs/:tracking/check-out", async (request, reply) => {
   item.onsiteMilliseconds = Number(item.onsiteMilliseconds || 0) + elapsedMs;
   item.fieldState = "field_complete";
   item.fieldClockStatus = "clocked_out";
+  item.fieldDispatchStatus = requiresIvr ? "checkout_pending" : "completed";
+  item.fieldDispatchCompletedAt = requiresIvr ? "" : now;
   if (!phase2862IsServiceChannel(item)) {
     item.checkOutAt = now;
     item.state = "pending_confirmation";
@@ -1524,4 +1561,4 @@ app.get("/api/field/timecard", async (request, reply) => {
 
 patchFieldServer();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V5 Field active: technician PWA + GPS/timecards + actionable-job safety + O'Reilly phone IVR + direct ServiceChannel API check-in/out for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V7 Field active: explicit office dispatch authority + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API check-in/out for other ServiceChannel subscribers.");
