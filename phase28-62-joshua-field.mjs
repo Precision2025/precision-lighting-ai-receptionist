@@ -159,6 +159,111 @@ function phase2862JobAssignedTo(item, techName) {
   return phase2862Norm(phase2862AssignedName(item)) === phase2862Norm(techName);
 }
 
+function phase2862StateToken(value = "") {
+  return phase2862Norm(value).replace(/\s+/g, "_");
+}
+
+function phase2862CanonicalFieldState(item = {}) {
+  // Mirror Joshua's canonical office/billing truth so a stale item.state="open"
+  // cannot resurrect a completed or billed job in Joshua Field.
+  const invoiceSignals = [
+    item.paymentStatus,
+    item.invoiceStatus,
+    item.billingStatus,
+    item.invoiceState,
+    item.invoiceWorkflowStatus
+  ].map(phase2862StateToken).filter(Boolean);
+
+  const terminalInvoiceStates = new Set([
+    "paid",
+    "completed",
+    "complete",
+    "completed_confirmed",
+    "closed",
+    "submitted",
+    "invoice_submitted",
+    "invoiced",
+    "ready_for_review",
+    "ready_for_billing",
+    "ready_to_bill",
+    "documentation_missing"
+  ]);
+  if (invoiceSignals.some(value => terminalInvoiceStates.has(value))) return "post_field";
+
+  const workflowSignals = [
+    item.officeWorkflowStatus,
+    item.sheetStatus,
+    item.jobSheetStatus,
+    item.jobsSheetStatus,
+    item.officeStatus,
+    item.workflowStatus,
+    item.joshuaStatus,
+    item.state,
+    item.status
+  ].map(phase2862StateToken).filter(Boolean);
+
+  const blockedWorkflowStates = new Set([
+    "paid",
+    "completed",
+    "complete",
+    "completed_confirmed",
+    "closed",
+    "submitted",
+    "invoice_submitted",
+    "invoiced",
+    "ready_for_review",
+    "ready_for_billing",
+    "ready_to_bill",
+    "pending_confirmation",
+    "completed_pending_confirmation",
+    "pending_proposal",
+    "proposal_needed",
+    "quote_needed",
+    "waiting_for_quote",
+    "awaiting_authorization",
+    "authorization_needed",
+    "pending_authorization",
+    "waiting_for_authorization",
+    "parts_needed",
+    "parts_on_order",
+    "waiting_for_parts",
+    "waiting_on_parts",
+    "cancelled",
+    "canceled"
+  ]);
+  if (workflowSignals.some(value => blockedWorkflowStates.has(value))) return "post_field";
+
+  const sc = [
+    item.serviceChannelPrimaryStatus,
+    item.serviceChannelExtendedStatus,
+    item.primaryStatus,
+    item.extendedStatus,
+    item.statusDescription
+  ].map(value => phase2862Text(value).toLowerCase()).join(" ");
+
+  if (/completed\s*(?:\/|and|,)?\s*pending\s*confirmation/.test(sc)) return "post_field";
+  if (/completed\s*(?:\/|and|,)?\s*confirmed|\binvoiced\b|\bclosed\b|\bcancelled\b|\bcanceled\b/.test(sc)) return "post_field";
+  if (/parts?\s*(?:on\s*order|ordered|needed|required)|waiting\s*(?:on|for)\s*parts?/.test(sc)) return "post_field";
+  if (/proposal\s*(?:required|needed|pending)|quote\s*(?:required|needed|pending)|waiting\s*for\s*quote/.test(sc)) return "post_field";
+  if (/authorization\s*(?:required|needed|pending)|awaiting\s*authorization|waiting\s*for\s*authorization/.test(sc)) return "post_field";
+
+  const returnTrip = workflowSignals.some(value =>
+    ["need_to_schedule", "scheduled_return", "return_trip", "return_trip_needed", "reschedule"].includes(value)
+  ) || /return.*(?:visit|trip)|reschedule/.test(sc);
+
+  if (!returnTrip && (item.serviceChannelApiCheckOutAt || (item.ivrConfirmed === true && item.checkOutAt))) {
+    return "post_field";
+  }
+
+  return workflowSignals[0] || "open";
+}
+
+function phase2862FieldJobActionable(item = {}) {
+  if (!item || typeof item !== "object") return false;
+  if (item.fieldClockStatus === "clocked_in" && item.fieldCheckInAt && !item.fieldCheckOutAt) return true;
+  return phase2862CanonicalFieldState(item) !== "post_field";
+}
+
 function phase2862IsServiceChannel(item = {}) {
   const source = [item.source, item.sourceSystem, item.platform, item.integration]
     .map(phase2862Norm)
@@ -523,6 +628,8 @@ function phase2862JobView(key, item = {}, data = null) {
     priority: phase2862Text(item.priority || "normal"),
     nte: item.nte ?? "",
     state: phase2862Text(item.fieldState || item.officeWorkflowStatus || item.joshuaStatus || item.state || "open"),
+    fieldCanonicalState: phase2862CanonicalFieldState(item),
+    fieldActionable: phase2862FieldJobActionable(item),
     sourceSystem: phase2862Text(item.sourceSystem || item.source || item.platform || ""),
     technician: phase2862AssignedName(item),
     isServiceChannel: phase2862IsServiceChannel(item),
@@ -804,7 +911,7 @@ app.get("/api/field/me", async (request, reply) => {
   const auth = phase2862FieldAuth(request, reply);
   if (!auth) return;
   const jobs = Object.entries(auth.data.workOrders || {})
-    .filter(([, item]) => phase2862JobAssignedTo(item, auth.key))
+    .filter(([, item]) => phase2862JobAssignedTo(item, auth.key) && phase2862FieldJobActionable(item))
     .map(([key, item]) => phase2862JobView(key, item, auth.data));
   const current = jobs.find(item => item.fieldClockStatus === "clocked_in" && !item.fieldCheckOutAt) ||
     jobs.find(item => Boolean(item.checkInAt) && !item.checkOutAt && String(item.state || "").toLowerCase() === "onsite") || null;
@@ -826,7 +933,7 @@ app.get("/api/field/jobs", async (request, reply) => {
   const auth = phase2862FieldAuth(request, reply);
   if (!auth) return;
   const jobs = Object.entries(auth.data.workOrders || {})
-    .filter(([, item]) => phase2862JobAssignedTo(item, auth.key))
+    .filter(([, item]) => phase2862JobAssignedTo(item, auth.key) && phase2862FieldJobActionable(item))
     .map(([key, item]) => phase2862JobView(key, item, auth.data))
     .sort((a, b) => new Date(a.scheduledAt || 0) - new Date(b.scheduledAt || 0));
   return reply.send({ ok: true, jobs });
@@ -978,9 +1085,11 @@ app.post("/api/field/jobs/:tracking/check-in", async (request, reply) => {
   if (item.fieldClockStatus === "clocked_in" && item.fieldCheckInAt && !item.fieldCheckOutAt) {
     return reply.send({ ok: true, duplicate: true, job: phase2862JobView(key, item, auth.data) });
   }
-  const effectiveStatus = phase2862Norm(item.officeWorkflowStatus || item.joshuaStatus || item.state);
-  if (["paid", "completed", "ready to bill", "pending confirmation", "pending proposal", "waiting for quote", "awaiting authorization", "waiting for authorization", "parts needed", "cancelled", "canceled", "closed"].includes(effectiveStatus)) {
-    return reply.code(409).send({ ok: false, error: "This work order is closed and cannot be checked in." });
+  if (!phase2862FieldJobActionable(item)) {
+    return reply.code(409).send({
+      ok: false,
+      error: "This work order is already post-field, completed, billed, or otherwise not ready for technician check-in."
+    });
   }
 
   const activeTracking = phase2862Text(auth.tech.currentTrackingNumber);
