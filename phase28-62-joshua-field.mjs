@@ -1,14 +1,298 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V5 — Joshua Field + ServiceChannel API + Field Safety
+ * Joshua Phase 28.62 V8 — Joshua Field + ServiceChannel API + ClockShark Schedule Dispatch
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
 
 const ROOT = new URL("./", import.meta.url);
 const SERVER_PATH = new URL("./server.js", ROOT);
+const CLOCKSHARK_BOOTSTRAP_PATH = new URL("./phase21-clockshark-bootstrap.mjs", ROOT);
 const MARKER = "JOSHUA_PHASE28_62_FIELD_APP_V4_SC_API";
+
+
+function phase2863EscapeForDoubleQuotedJsString(value = "") {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
+}
+
+function patchClockSharkScheduleFieldDispatch() {
+  if (!fs.existsSync(CLOCKSHARK_BOOTSTRAP_PATH)) {
+    throw new Error("Joshua Field: ClockShark bootstrap file not found.");
+  }
+
+  let source = fs.readFileSync(CLOCKSHARK_BOOTSTRAP_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_63_CLOCKSHARK_SCHEDULE_FIELD_DISPATCH_V1";
+  if (source.includes(marker)) return;
+
+  const processAnchor = "function phase21ClockSharkProcessPayload(";
+  if (!source.includes(processAnchor)) {
+    throw new Error("Joshua Field: ClockShark process payload anchor not found.");
+  }
+
+  const helperCode = String.raw`/* JOSHUA_PHASE28_63_CLOCKSHARK_SCHEDULE_FIELD_DISPATCH_V1 */
+function phase2863ClockSharkScheduleNorm(value = "") {
+  return phase21ClockSharkText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function phase2863ClockSharkScheduleActive(schedule = {}) {
+  const now = Date.now();
+  const gracePast = now - 36 * 60 * 60 * 1000;
+  const futureLimit = now + 31 * 24 * 60 * 60 * 1000;
+  const start = schedule.startAt ? new Date(schedule.startAt).getTime() : 0;
+  const end = schedule.endAt ? new Date(schedule.endAt).getTime() : 0;
+  if (Number.isFinite(end) && end && end < gracePast) return false;
+  if (!end && Number.isFinite(start) && start && start < gracePast) return false;
+  if (Number.isFinite(start) && start && start > futureLimit) return false;
+  return true;
+}
+
+function phase2863ClockSharkUniqueNames(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = phase21ClockSharkText(value);
+    const key = phase2863ClockSharkScheduleNorm(text);
+    if (!text || !key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+function phase2863ClockSharkScheduleJob(schedule = {}) {
+  return {
+    id: phase21ClockSharkText(schedule.jobId),
+    number: phase21ClockSharkText(schedule.jobNumber),
+    trackingNumber: phase21ClockSharkText(schedule.trackingNumber),
+    name: phase21ClockSharkText(schedule.jobName)
+  };
+}
+
+function phase2863ClockSharkFallbackWorkOrder(data, schedule = {}) {
+  const entries = Object.entries(data.workOrders || {});
+  const tracking = phase21ClockSharkText(schedule.trackingNumber).replace(/\D/g, "");
+  const number = phase21ClockSharkText(schedule.jobNumber).toLowerCase();
+  const jobId = phase21ClockSharkText(schedule.jobId).toLowerCase();
+  const name = phase2863ClockSharkScheduleNorm(schedule.jobName);
+
+  return entries.find(([key, item]) => {
+    if (tracking.length >= 7) {
+      const direct = [key, item?.trackingNumber, item?.workOrderNumber, item?.serviceChannelTrackingNumber]
+        .some(value => String(value || "").replace(/\D/g, "") === tracking);
+      if (direct) return true;
+    }
+    if (jobId && phase21ClockSharkText(item?.clockSharkJobId).toLowerCase() === jobId) return true;
+    if (number && phase21ClockSharkText(item?.clockSharkJobNumber || item?.workOrderNumber).toLowerCase() === number) return true;
+    if (name.length >= 6) {
+      return [item?.clockSharkJobName, item?.locationName, item?.location, item?.jobName]
+        .map(phase2863ClockSharkScheduleNorm)
+        .includes(name);
+    }
+    return false;
+  }) || null;
+}
+
+function phase2863ClockSharkResolveScheduleWorkOrder(data, state, schedule = {}) {
+  const job = phase2863ClockSharkScheduleJob(schedule);
+  if (typeof phase22ClockSharkEnsureWorkOrder === "function") {
+    try {
+      const resolved = phase22ClockSharkEnsureWorkOrder(data, state, job, {
+        technician: schedule.employeeName,
+        initialState: "scheduled"
+      });
+      if (resolved?.key && resolved?.workOrder) return [resolved.key, resolved.workOrder];
+    } catch (error) {
+      app.log.warn({ err: error, scheduleId: schedule.id }, "ClockShark schedule could not ensure Joshua work order");
+    }
+  }
+  return phase2863ClockSharkFallbackWorkOrder(data, schedule);
+}
+
+function phase2863ClockSharkSyncFieldDispatch(data, state, { authoritativeSnapshot = false } = {}) {
+  const activeSchedules = Object.values(state.schedules || {})
+    .filter(schedule => schedule && phase2863ClockSharkScheduleActive(schedule));
+  const grouped = new Map();
+
+  for (const schedule of activeSchedules) {
+    const employeeName = phase21ClockSharkText(schedule.employeeName);
+    if (!employeeName) continue;
+    const resolved = phase2863ClockSharkResolveScheduleWorkOrder(data, state, schedule);
+    if (!resolved) continue;
+    const [key] = resolved;
+    const list = grouped.get(key) || [];
+    list.push(schedule);
+    grouped.set(key, list);
+  }
+
+  const now = phase21ClockSharkNow();
+  let dispatched = 0;
+  let cleared = 0;
+
+  for (const [key, schedules] of grouped.entries()) {
+    const item = data.workOrders?.[key];
+    if (!item) continue;
+    if (typeof phase2862CanonicalFieldState === "function" && phase2862CanonicalFieldState(item) === "post_field") continue;
+
+    // An explicit office dispatch wins until the office clears/reassigns it.
+    if (
+      phase21ClockSharkText(item.fieldDispatchSource).toLowerCase() === "manual" &&
+      phase21ClockSharkText(item.fieldDispatchStatus).toLowerCase() === "dispatched"
+    ) {
+      continue;
+    }
+
+    const ordered = [...schedules].sort((a, b) =>
+      new Date(a.startAt || 0).getTime() - new Date(b.startAt || 0).getTime()
+    );
+    const names = phase2863ClockSharkUniqueNames(ordered.map(schedule => schedule.employeeName));
+    const first = ordered[0] || {};
+    if (!names.length) continue;
+
+    item.clockSharkScheduledTechnicians = names;
+    item.clockSharkScheduledTechnician = names[0];
+    item.clockSharkSchedules = ordered.slice(0, 20).map(schedule => ({
+      id: schedule.id,
+      employeeName: schedule.employeeName,
+      startAt: schedule.startAt || "",
+      endAt: schedule.endAt || "",
+      task: schedule.task || "",
+      notes: schedule.notes || "",
+      jobId: schedule.jobId || "",
+      jobNumber: schedule.jobNumber || "",
+      trackingNumber: schedule.trackingNumber || ""
+    }));
+    item.clockSharkScheduleId = first.id || "";
+    item.clockSharkScheduleStartAt = first.startAt || "";
+    item.clockSharkScheduleEndAt = first.endAt || "";
+    item.clockSharkScheduleTask = first.task || "";
+    item.clockSharkScheduleNotes = first.notes || "";
+    item.fieldDispatchStatus = "dispatched";
+    item.fieldDispatchSource = "clockshark_schedule";
+    item.fieldDispatchedAt = now;
+    item.fieldDispatchBy = "ClockShark Schedule";
+    item.technician = names[0];
+    item.assignedTechnician = names[0];
+    if (first.startAt) item.scheduledAt = first.startAt;
+    item.updatedAt = now;
+    dispatched += 1;
+  }
+
+  if (authoritativeSnapshot) {
+    for (const [key, item] of Object.entries(data.workOrders || {})) {
+      if (!item || phase21ClockSharkText(item.fieldDispatchSource).toLowerCase() !== "clockshark_schedule") continue;
+      if (grouped.has(key)) continue;
+      if (item.fieldClockStatus === "clocked_in" && item.fieldCheckInAt && !item.fieldCheckOutAt) continue;
+
+      const oldNames = phase2863ClockSharkUniqueNames([
+        ...(Array.isArray(item.clockSharkScheduledTechnicians) ? item.clockSharkScheduledTechnicians : []),
+        item.clockSharkScheduledTechnician
+      ]);
+      if (oldNames.some(name => phase2863ClockSharkScheduleNorm(name) === phase2863ClockSharkScheduleNorm(item.technician))) {
+        item.technician = "";
+      }
+      if (oldNames.some(name => phase2863ClockSharkScheduleNorm(name) === phase2863ClockSharkScheduleNorm(item.assignedTechnician))) {
+        item.assignedTechnician = "";
+      }
+      item.clockSharkScheduledTechnicians = [];
+      item.clockSharkScheduledTechnician = "";
+      item.clockSharkSchedules = [];
+      item.clockSharkScheduleId = "";
+      item.clockSharkScheduleStartAt = "";
+      item.clockSharkScheduleEndAt = "";
+      item.clockSharkScheduleTask = "";
+      item.clockSharkScheduleNotes = "";
+      item.fieldDispatchStatus = "";
+      item.fieldDispatchSource = "";
+      item.fieldDispatchBy = "";
+      item.fieldDispatchedAt = "";
+      item.updatedAt = now;
+      cleared += 1;
+    }
+  }
+
+  state.sync.fieldScheduleDispatchAt = now;
+  state.sync.fieldScheduleDispatchCount = dispatched;
+  state.sync.fieldScheduleClearedCount = cleared;
+  return { dispatched, cleared, activeSchedules: activeSchedules.length };
+}
+`;
+
+  const escapedHelpers = phase2863EscapeForDoubleQuotedJsString(helperCode);
+  source = source.replace(processAnchor, escapedHelpers + "\\n\\n" + processAnchor);
+
+  // ClockShark all-day schedules may contain only a date (no explicit start time).
+  // Preserve that date so Field can sort and expire the schedule correctly.
+  source = source.replace(
+    "        payload.start\\n      ),\\n    endAt:",
+    "        payload.start ||\\n        payload.date ||\\n        payload.shiftDate ||\\n        payload.shift_date\\n      ),\\n    endAt:"
+  );
+
+  // Wrap the existing payload processor so a schedules[] feed is authoritative.
+  source = source.replace(
+    "function phase21ClockSharkProcessPayload(\\n  data,\\n  payload,\\n  forcedType = \\\"\\\"\\n) {",
+    "function phase21ClockSharkProcessPayloadBase(\\n  data,\\n  payload,\\n  forcedType = \\\"\\\"\\n) {"
+  );
+
+  const inboundAnchor = "function phase21ClockSharkInboundSecret() {";
+  const wrapperCode = String.raw`function phase21ClockSharkProcessPayload(
+  data,
+  payload,
+  forcedType = ""
+) {
+  const state = phase21ClockSharkEnsureData(data);
+  const authoritativeSnapshot = Boolean(
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    Array.isArray(payload.schedules)
+  );
+
+  const authoritativeSchedules = authoritativeSnapshot
+    ? payload.schedules
+        .map(item => phase21ClockSharkSchedule(item || {}))
+        .filter(schedule => schedule && schedule.id)
+    : [];
+
+  const results = phase21ClockSharkProcessPayloadBase(data, payload, forcedType);
+
+  // Rebuild from raw schedules[] after the base processor. ClockShark's duplicate
+  // guard is event-oriented, so a repeated snapshot may mark rows duplicate; the
+  // raw snapshot is still authoritative and must repopulate the schedule cache.
+  if (authoritativeSnapshot) {
+    state.schedules = Object.fromEntries(
+      authoritativeSchedules.map(schedule => [
+        schedule.id,
+        { ...schedule, updatedAt: phase21ClockSharkNow() }
+      ])
+    );
+  }
+
+  const rawType = phase21ClockSharkText(
+    forcedType || payload?.eventType || payload?.event_type || payload?.event || payload?.type || payload?.trigger
+  ).toLowerCase();
+  const scheduleRelevant = authoritativeSnapshot || /schedule/.test(rawType);
+  if (scheduleRelevant) {
+    phase2863ClockSharkSyncFieldDispatch(data, state, { authoritativeSnapshot });
+  }
+  return results;
+}
+`;
+  const escapedWrapper = phase2863EscapeForDoubleQuotedJsString(wrapperCode);
+  source = source.replace(inboundAnchor, escapedWrapper + "\\n\\n" + inboundAnchor);
+
+  if (!source.includes(marker)) {
+    throw new Error("Joshua Field: ClockShark schedule patch marker was not installed.");
+  }
+  fs.writeFileSync(CLOCKSHARK_BOOTSTRAP_PATH, source);
+}
 
 function patchFieldServer() {
   let server = fs.readFileSync(SERVER_PATH, "utf8");
@@ -38,7 +322,25 @@ function patchFieldServer() {
   if (server.includes(quickDispatchAnchor) && !server.includes('fieldDispatchBy: "Control Panel"')) {
     server = server.replace(
       quickDispatchAnchor,
-      `    state: body.state || "scheduled",\n    assignedAt: new Date().toISOString(),\n    fieldDispatchStatus: "dispatched",\n    fieldDispatchedAt: new Date().toISOString(),\n    fieldDispatchBy: "Control Panel"`
+      `    state: body.state || "scheduled",\n    assignedAt: new Date().toISOString(),\n    fieldDispatchStatus: "dispatched",\n    fieldDispatchedAt: new Date().toISOString(),\n    fieldDispatchBy: "Control Panel",
+    fieldDispatchSource: "manual"`
+    );
+    changed = true;
+  }
+
+
+  // V8: label any existing V7 office dispatch as an explicit manual override.
+  if (server.includes('fieldDispatchBy: technicianName ? actor : ""') && !server.includes('fieldDispatchSource: technicianName ? "manual" : ""')) {
+    server = server.replace(
+      '    fieldDispatchBy: technicianName ? actor : "",\\n    updatedAt: now',
+      '    fieldDispatchBy: technicianName ? actor : "",\\n    fieldDispatchSource: technicianName ? "manual" : "",\\n    updatedAt: now'
+    );
+    changed = true;
+  }
+  if (server.includes('fieldDispatchBy: "Control Panel"') && !server.includes('fieldDispatchSource: "manual"')) {
+    server = server.replace(
+      '    fieldDispatchBy: "Control Panel"',
+      '    fieldDispatchBy: "Control Panel",\\n    fieldDispatchSource: "manual"'
     );
     changed = true;
   }
@@ -167,7 +469,16 @@ function phase2862ResolveWorkOrder(data, requested = "") {
 }
 
 function phase2862AssignedName(item = {}) {
+  const source = phase2862Text(item.fieldDispatchSource).toLowerCase();
+  if (source === "manual" && phase2862Text(item.manualTechnicianOverride)) {
+    return phase2862Text(item.manualTechnicianOverride);
+  }
+  const scheduled = Array.isArray(item.clockSharkScheduledTechnicians)
+    ? item.clockSharkScheduledTechnicians.map(phase2862Text).filter(Boolean)
+    : [];
   return phase2862Text(
+    scheduled[0] ||
+    item.clockSharkScheduledTechnician ||
     item.manualTechnicianOverride ||
     item.technician ||
     item.assignedTechnician ||
@@ -178,7 +489,17 @@ function phase2862AssignedName(item = {}) {
 }
 
 function phase2862JobAssignedTo(item, techName) {
-  return phase2862Norm(phase2862AssignedName(item)) === phase2862Norm(techName);
+  const wanted = phase2862Norm(techName);
+  if (!wanted) return false;
+  const source = phase2862Text(item.fieldDispatchSource).toLowerCase();
+  if (source === "manual") {
+    return phase2862Norm(item.manualTechnicianOverride || item.technician || item.assignedTechnician) === wanted;
+  }
+  const scheduled = Array.isArray(item.clockSharkScheduledTechnicians)
+    ? item.clockSharkScheduledTechnicians
+    : [item.clockSharkScheduledTechnician].filter(Boolean);
+  if (scheduled.some(name => phase2862Norm(name) === wanted)) return true;
+  return phase2862Norm(phase2862AssignedName(item)) === wanted;
 }
 
 function phase2862StateToken(value = "") {
@@ -659,7 +980,12 @@ function phase2862JobView(key, item = {}, data = null) {
     contact: phase2862Text(item.contact || item.siteContact || item.contactName || ""),
     scope: phase2862Text(item.problemDescription || item.problem || item.scope || item.description || ""),
     trade: phase2862Text(item.trade || item.category || ""),
-    scheduledAt: phase2862Text(item.scheduledAt || item.scheduledDate || item.visitDate || ""),
+    scheduledAt: phase2862Text(item.clockSharkScheduleStartAt || item.scheduledAt || item.scheduledDate || item.visitDate || ""),
+    scheduledEndAt: phase2862Text(item.clockSharkScheduleEndAt || ""),
+    dispatchSource: phase2862Text(item.fieldDispatchSource || ""),
+    clockSharkScheduleTask: phase2862Text(item.clockSharkScheduleTask || ""),
+    clockSharkScheduleNotes: phase2862Text(item.clockSharkScheduleNotes || ""),
+    scheduledTechnicians: Array.isArray(item.clockSharkScheduledTechnicians) ? item.clockSharkScheduledTechnicians.map(phase2862Text).filter(Boolean) : [],
     priority: phase2862Text(item.priority || "normal"),
     nte: item.nte ?? "",
     state: phase2862Text(item.fieldState || item.officeWorkflowStatus || item.joshuaStatus || item.state || "open"),
@@ -1559,6 +1885,7 @@ app.get("/api/field/timecard", async (request, reply) => {
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
 
+patchClockSharkScheduleFieldDispatch();
 patchFieldServer();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V7 Field active: explicit office dispatch authority + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API check-in/out for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V8 Field active: ClockShark schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
