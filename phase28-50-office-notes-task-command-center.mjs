@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.59 V18 — Call Survival + Quiet Task Notifications
+ * Joshua Phase 28.60 V19 — Call Survival + Startup-Safe Quiet Task Notifications
  *
  * Builds on the stable Phase 28.50 command center and keeps the live integration
  * fields intact while giving the office a durable, correctable operating layer:
@@ -394,39 +394,11 @@ async function phase2856NotifyAssignedTask(task = {}, { source = "Joshua" } = {}
     if (!helpers.includes(createTaskAnchor)) throw new Error("automatic-task anchor not found.");
     helpers = helpers.replace(createTaskAnchor, createTaskReplacement);
 
-    // Hard-stop acknowledgement reminders, escalations and overdue nagging in
-    // quiet adoption mode. We still normalize task ownership/due fields, but the
-    // sweep does not create reminder/escalation events or send any SMS.
-    const sweepAnchor = `  const settings = accountability.settings;
-  const now = Date.now();
-  const graceUntil =`;
-    const quietSweep = `  const settings = accountability.settings;
-
-  if (!settings.enabled) {
-    for (const task of data.tasks) {
-      phase19EnsureTask(task, settings);
-    }
-    accountability.lastSweepAt = new Date().toISOString();
-    accountability.lastSweepSource = source;
-    accountability.lastSweepNotificationCount = 0;
-    writeControlData(data);
-    return {
-      ok: true,
-      quietAdoption: true,
-      notificationsPrepared: 0,
-      notificationsSent: 0,
-      graceActive: false,
-      notificationResults: []
-    };
-  }
-
-  const now = Date.now();
-  const graceUntil =`;
-    if (helpers.includes(sweepAnchor)) {
-      helpers = helpers.replace(sweepAnchor, quietSweep);
-    } else {
-      console.warn("Joshua Phase 28.59: accountability sweep anchor not found; master settings remain disabled.");
-    }
+    // Do NOT rewrite the accountability sweep here. Phase 28.4 owns that
+    // startup anchor and applies the existing master pause switch after Phase 19
+    // is installed. Keeping that sweep untouched preserves startup compatibility
+    // while phase24-pause-accountability-alerts.mjs keeps acknowledgement nags,
+    // escalations, and automatic briefings disabled.
 
     replaceLiteral("helpers", helpers);
 
@@ -2913,5 +2885,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.59 V18 active: call survival + quiet adoption task notifications + durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
+  `Joshua Phase 28.60 V19 active: call survival + quiet adoption task notifications + durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
 );
