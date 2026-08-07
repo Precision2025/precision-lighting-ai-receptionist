@@ -1,0 +1,11 @@
+{
+  "name": "Joshua Field",
+  "short_name": "Joshua",
+  "description": "Precision Lighting technician operations app",
+  "start_url": "/field/",
+  "scope": "/field/",
+  "display": "standalone",
+  "background_color": "#08111d",
+  "theme_color": "#08111d",
+  "orientation": "portrait-primary"
+}
