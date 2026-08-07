@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V4 — Joshua Field + ServiceChannel API Test
+ * Joshua Phase 28.62 V5 — Joshua Field + ServiceChannel API + Field Safety
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -979,7 +979,7 @@ app.post("/api/field/jobs/:tracking/check-in", async (request, reply) => {
     return reply.send({ ok: true, duplicate: true, job: phase2862JobView(key, item, auth.data) });
   }
   const effectiveStatus = phase2862Norm(item.officeWorkflowStatus || item.joshuaStatus || item.state);
-  if (["paid", "completed", "ready to bill", "cancelled", "canceled", "closed"].includes(effectiveStatus)) {
+  if (["paid", "completed", "ready to bill", "pending confirmation", "pending proposal", "waiting for quote", "awaiting authorization", "waiting for authorization", "parts needed", "cancelled", "canceled", "closed"].includes(effectiveStatus)) {
     return reply.code(409).send({ ok: false, error: "This work order is closed and cannot be checked in." });
   }
 
@@ -1415,4 +1415,4 @@ app.get("/api/field/timecard", async (request, reply) => {
 
 patchFieldServer();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V4 Field active: technician PWA + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API check-in/out for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V5 Field active: technician PWA + GPS/timecards + actionable-job safety + O'Reilly phone IVR + direct ServiceChannel API check-in/out for other ServiceChannel subscribers.");
