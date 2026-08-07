@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.60 V19 — Call Survival + Startup-Safe Quiet Task Notifications
+ * Joshua Phase 28.61 V20 — Operations OS + Call Survival + Direct Transfer Hotfix
  *
  * Builds on the stable Phase 28.50 command center and keeps the live integration
  * fields intact while giving the office a durable, correctable operating layer:
@@ -54,12 +54,10 @@ const OPS_PANEL_MARKER = "JOSHUA_PHASE28_53_UNIFIED_WORKORDER_OS_UI_V1";
 
 const JOB_SHEETS_SYNC_RUNTIME_PATH = new URL("./search-sync-runtime.mjs", ROOT);
 const JOB_SHEETS_DURABLE_SYNC_MARKER = "JOSHUA_PHASE28_55_JOB_SHEETS_DURABLE_SYNC_V1";
-const PHASE19_BOOTSTRAP_PATH = new URL("./phase19-accountability-bootstrap.mjs", ROOT);
-const QUIET_NOTIFY_MARKER = "JOSHUA_PHASE28_56_QUIET_ADOPTION_NOTIFICATIONS_V1";
-const TASK_NOTIFY_HOOK_MARKER = "JOSHUA_PHASE28_56_TASK_NOTIFY_HOOK_V1";
 
 const CALL_SURVIVAL_RUNTIME_MARKER = "JOSHUA_PHASE28_58_CONNECT_ACTION_SURVIVAL_GENERATOR_V1";
 const CALL_SURVIVAL_SERVER_MARKER = "JOSHUA_PHASE28_58_CONNECT_ACTION_SURVIVAL_V1";
+const DIRECT_TRANSFER_RUNTIME_MARKER = "JOSHUA_PHASE28_61_DIRECT_TRANSFER_NO_AMD_GENERATOR_V1";
 
 function patchConversationRelaySurvivalRuntime() {
   try {
@@ -179,246 +177,66 @@ function patchConversationRelaySurvivalRuntime() {
 }
 
 
-
-function patchQuietAdoptionNotificationsBootstrap() {
-  // Adoption mode: tasks should be useful, not noisy. Preserve automatic task
-  // creation, but suppress acknowledgement/escalation nagging and scheduled
-  // briefings. Newly created/reassigned office tasks get one useful text.
+function patchDirectTransferNoAmdRuntime() {
+  // Known office transfer destinations must bridge immediately when a person answers.
+  // Answering Machine Detection plus /screen-transfer was explicitly hanging up any
+  // called leg classified as unknown/machine. Remove that screening from both the
+  // primary office transfer and its fallback leg; keep the normal Dial result logic.
   try {
-    if (!fs.existsSync(PHASE19_BOOTSTRAP_PATH)) {
-      console.warn("Joshua Phase 28.56: Phase 19 bootstrap not found; notification patch skipped safely.");
+    if (!fs.existsSync(JOB_SHEETS_SYNC_RUNTIME_PATH)) {
+      console.warn("Joshua Phase 28.61: search-sync-runtime.mjs not found; direct-transfer hotfix skipped safely.");
       return false;
     }
 
-    let source = fs.readFileSync(PHASE19_BOOTSTRAP_PATH, "utf8");
-    if (source.includes(QUIET_NOTIFY_MARKER)) return false;
+    let source = fs.readFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, "utf8");
+    if (source.includes(DIRECT_TRANSFER_RUNTIME_MARKER)) return false;
 
-    function readLiteral(constName) {
-      const prefix = `const ${constName} = `;
-      const start = source.indexOf(prefix);
-      if (start < 0) throw new Error(`${constName} literal not found.`);
-      const valueStart = start + prefix.length;
-      const endAnchor = constName === "script"
-        ? "\n\n  if (!panel.includes"
-        : "\n\n  server = server.replace(";
-      const end = source.indexOf(endAnchor, valueStart);
-      if (end < 0) throw new Error(`${constName} literal end not found.`);
-      let literal = source.slice(valueStart, end).trim();
-      if (literal.endsWith(";")) literal = literal.slice(0, -1).trim();
-      return { valueStart, end, value: JSON.parse(literal) };
+    const importAnchor = 'await import("./contact-greeting-bootstrap.mjs");';
+    if (!source.includes(importAnchor)) {
+      console.warn("Joshua Phase 28.61: search-sync tail anchor not recognized; direct-transfer hotfix skipped safely.");
+      return false;
     }
 
-    function replaceLiteral(constName, value) {
-      const current = readLiteral(constName);
-      source = source.slice(0, current.valueStart) + JSON.stringify(value) + ";" + source.slice(current.end);
-    }
+    const primaryScreening = '    <Number\n      url="${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(stage)}"\n      method="POST"\n      machineDetection="Enable"\n      machineDetectionTimeout="18"\n      machineDetectionSpeechThreshold="1800"\n      machineDetectionSpeechEndThreshold="2000"\n      machineDetectionSilenceTimeout="6000">${xmlEscape(destinationNumber)}</Number>';
+    const primaryBridge = '    <Number>${xmlEscape(destinationNumber)}</Number>';
 
-    let helpers = readLiteral("helpers").value;
+    const fallbackScreening = '    <Number\n      url="${publicBaseUrl}/screen-transfer?department=${encodeURIComponent(department)}&amp;stage=${encodeURIComponent(fallback.stage)}"\n      method="POST"\n      machineDetection="Enable"\n      machineDetectionTimeout="18"\n      machineDetectionSpeechThreshold="1800"\n      machineDetectionSpeechEndThreshold="2000"\n      machineDetectionSilenceTimeout="6000">${xmlEscape(fallback.destinationNumber)}</Number>';
+    const fallbackBridge = '    <Number>${xmlEscape(fallback.destinationNumber)}</Number>';
 
-    const ensureDataAnchor = `  accountability.autoBriefingsBeginDate =
-    accountability.autoBriefingsBeginDate ||
-    phase19TomorrowLocalDate();
+    const runtimePatch = [
+      "",
+      "/* " + DIRECT_TRANSFER_RUNTIME_MARKER + " */",
+      "{",
+      "  let directTransferServer = fs.readFileSync(serverPath, \"utf8\");",
+      "  const primaryScreening = " + JSON.stringify(primaryScreening) + ";",
+      "  const primaryBridge = " + JSON.stringify(primaryBridge) + ";",
+      "  const fallbackScreening = " + JSON.stringify(fallbackScreening) + ";",
+      "  const fallbackBridge = " + JSON.stringify(fallbackBridge) + ";",
+      "  let directTransferChanges = 0;",
+      "  if (directTransferServer.includes(primaryScreening)) {",
+      "    directTransferServer = directTransferServer.replace(primaryScreening, primaryBridge);",
+      "    directTransferChanges += 1;",
+      "  }",
+      "  if (directTransferServer.includes(fallbackScreening)) {",
+      "    directTransferServer = directTransferServer.replace(fallbackScreening, fallbackBridge);",
+      "    directTransferChanges += 1;",
+      "  }",
+      "  if (directTransferChanges > 0) {",
+      "    fs.writeFileSync(serverPath, directTransferServer);",
+      "    console.log(\"Joshua Phase 28.61 direct office transfer bridge installed; AMD screening removed from \" + directTransferChanges + \" transfer leg(s).\");",
+      "  } else if (directTransferServer.includes('machineDetection=\"Enable\"') && directTransferServer.includes('/screen-transfer?department=')) {",
+      "    console.warn(\"Joshua Phase 28.61: transfer screening shape changed; server preserved for inspection.\");",
+      "  }",
+      "}",
+      ""
+    ].join("\n");
 
-  return accountability;`;
-    const ensureDataReplacement = `  accountability.autoBriefingsBeginDate =
-    accountability.autoBriefingsBeginDate ||
-    phase19TomorrowLocalDate();
-
-  /* ${QUIET_NOTIFY_MARKER} */
-  if (!accountability.phase2856QuietAdoptionActivatedAt) {
-    const activatedAt = new Date();
-    accountability.phase2856QuietAdoptionActivatedAt = activatedAt.toISOString();
-    accountability.phase2856TaskTextsBeginAt = phase19MinutesFrom(activatedAt, 2);
-    for (const task of data.tasks) {
-      if (!task || ["closed", "completed"].includes(String(task.status || "").toLowerCase())) continue;
-      task.phase2856NotificationBaseline = true;
-      task.phase2856NotificationBaselineAt = activatedAt.toISOString();
-    }
-  }
-
-  accountability.phase2856QuietAdoptionMode = true;
-  accountability.settings.enabled = false;
-  accountability.settings.morningBriefingEnabled = false;
-  accountability.settings.endOfDayBriefingEnabled = false;
-
-  return accountability;`;
-    if (!helpers.includes(ensureDataAnchor)) throw new Error("accountability settings anchor not found.");
-    helpers = helpers.replace(ensureDataAnchor, ensureDataReplacement);
-
-    const ownerLabelAnchor = `function phase19OwnerLabel(task) {`;
-    if (!helpers.includes(ownerLabelAnchor)) throw new Error("owner-label anchor not found.");
-
-    const quietHelpers = `/* ${QUIET_NOTIFY_MARKER} */
-const PHASE2856_TASK_TEXT_IN_FLIGHT = new Set();
-
-function phase2856ControlPanelUrl() {
-  const base = String(
-    process.env.PUBLIC_BASE_URL ||
-    process.env.RENDER_EXTERNAL_URL ||
-    "https://precision-lighting-ai-receptionist.onrender.com"
-  ).replace(/\\/+$/, "");
-  return base + "/control-panel";
-}
-
-function phase2856OfficeAssignee(name = "") {
-  return ["ariana", "shellie", "travis"].includes(
-    String(name || "").trim().toLowerCase()
-  );
-}
-
-function phase2856LocalDue(value = "") {
-  const date = phase19Date(value);
-  if (!date) return "";
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: PHASE19_TIME_ZONE,
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  }).format(date);
-}
-
-async function phase2856NotifyAssignedTask(task = {}, { source = "Joshua" } = {}) {
-  const taskId = String(task?.id || "").trim();
-  const assignedTo = String(task?.assignedTo || "").trim();
-  if (!taskId || !phase2856OfficeAssignee(assignedTo)) {
-    return { ok: false, skipped: true, reason: "Task is not assigned to Ariana, Shellie, or Travis." };
-  }
-
-  if (PHASE2856_TASK_TEXT_IN_FLIGHT.has(taskId)) {
-    return { ok: true, queued: true, duplicate: true };
-  }
-  PHASE2856_TASK_TEXT_IN_FLIGHT.add(taskId);
-
-  try {
-    const data = readControlData();
-    const accountability = phase19EnsureData(data);
-    const liveTask = (data.tasks || []).find(item => String(item?.id || "") === taskId) || task;
-
-    // Never blast the backlog when adoption mode first comes online.
-    if (liveTask.phase2856NotificationBaseline === true) {
-      return { ok: false, skipped: true, baseline: true, reason: "Existing task was present before quiet task notifications were activated." };
-    }
-    const textsBeginAt = phase19Date(accountability.phase2856TaskTextsBeginAt)?.getTime() || 0;
-    if (textsBeginAt && Date.now() < textsBeginAt) {
-      return { ok: false, skipped: true, baselinePending: true, reason: "Quiet task notifications are still in the startup safety window." };
-    }
-
-    if (liveTask.phase2856TaskTextSentAt || liveTask.assignmentNotificationSentAt) {
-      return { ok: true, duplicate: true, sentAt: liveTask.phase2856TaskTextSentAt || liveTask.assignmentNotificationSentAt };
-    }
-
-    const to = phase19PhoneForAssignee(data, assignedTo);
-    if (!to) {
-      return { ok: false, skipped: true, reason: "No phone number is configured for " + assignedTo + "." };
-    }
-
-    const priority = String(liveTask.priority || "normal").toLowerCase();
-    const tracking = String(liveTask.trackingNumber || "").trim();
-    const notes = String(liveTask.notes || "").trim();
-    const due = phase2856LocalDue(liveTask.dueAt);
-    const lines = [
-      priority === "urgent" ? "🚨 JOSHUA TASK" : "JOSHUA TASK",
-      String(liveTask.title || "Task").trim()
-    ];
-    if (tracking) lines.push("Work order: " + tracking);
-    if (due) lines.push("Due: " + due);
-    if (notes) lines.push("Notes: " + notes.slice(0, 320));
-    lines.push("Open Joshua: " + phase2856ControlPanelUrl());
-
-    const result = await phase19SendSms(to, lines.join("\\n"));
-    const latest = readControlData();
-    const stored = (latest.tasks || []).find(item => String(item?.id || "") === taskId);
-    if (stored) {
-      stored.phase2856TaskTextAttemptedAt = new Date().toISOString();
-      stored.phase2856TaskTextSource = source;
-      if (result.ok) {
-        stored.phase2856TaskTextSentAt = new Date().toISOString();
-        stored.phase2856TaskTextTo = result.to || to;
-      }
-    }
-    phase19RecordHistory(latest, {
-      type: result.ok ? "task_assignment_text_sent" : "task_assignment_text_failed",
-      taskId,
-      trackingNumber: tracking,
-      assignedTo,
-      message: result.ok
-        ? "Joshua texted " + assignedTo + " the assigned task: " + String(liveTask.title || "")
-        : "Joshua could not text " + assignedTo + " the assigned task: " + String(liveTask.title || ""),
-      level: result.ok ? "success" : "warning",
-      source
-    });
-    writeControlData(latest);
-    return result;
-  } finally {
-    PHASE2856_TASK_TEXT_IN_FLIGHT.delete(taskId);
-  }
-}
-`;
-    helpers = helpers.replace(ownerLabelAnchor, quietHelpers + "\n" + ownerLabelAnchor);
-
-    // Auto-generated workflow tasks are real tasks too. Text them once, but only
-    // after the startup baseline has been prepared.
-    const createTaskAnchor = `  phase19RecordHistory(data, {
-    type: "task_created",
-    taskId: task.id,
-    trackingNumber: task.trackingNumber,
-    assignedTo: task.assignedTo,
-    message: \`\${task.title} was automatically assigned to \${task.assignedTo}.\`,
-    level:
-      task.priority === "urgent"
-        ? "warning"
-        : "info"
-  });
-
-  return task;`;
-    const createTaskReplacement = `  phase19RecordHistory(data, {
-    type: "task_created",
-    taskId: task.id,
-    trackingNumber: task.trackingNumber,
-    assignedTo: task.assignedTo,
-    message: \`\${task.title} was automatically assigned to \${task.assignedTo}.\`,
-    level:
-      task.priority === "urgent"
-        ? "warning"
-        : "info"
-  });
-
-  setImmediate(() => {
-    phase2856NotifyAssignedTask(task, { source: "Joshua Workflow" }).catch(error =>
-      app.log.error(error, "Phase 28.56 workflow task text failed")
-    );
-  });
-
-  return task;`;
-    if (!helpers.includes(createTaskAnchor)) throw new Error("automatic-task anchor not found.");
-    helpers = helpers.replace(createTaskAnchor, createTaskReplacement);
-
-    // Do NOT rewrite the accountability sweep here. Phase 28.4 owns that
-    // startup anchor and applies the existing master pause switch after Phase 19
-    // is installed. Keeping that sweep untouched preserves startup compatibility
-    // while phase24-pause-accountability-alerts.mjs keeps acknowledgement nags,
-    // escalations, and automatic briefings disabled.
-
-    replaceLiteral("helpers", helpers);
-
-    // Make the Accountability panel explain why there are no nagging reminders.
-    let script = readLiteral("script").value;
-    const scheduleText = `    scheduleNote.textContent =
-      \`Automatic briefings begin \${data.autoBriefingsBeginDate}. \` +
-      \`Last accountability sweep: \${phase19DateTime(data.lastSweepAt)}.\`;`;
-    const quietScheduleText = `    scheduleNote.textContent =
-      data.settings?.enabled === false
-        ? \`Quiet adoption mode: new assigned-task texts only. Acknowledgement reminders, escalations and automatic briefings are paused.\`
-         : \`Automatic briefings begin \${data.autoBriefingsBeginDate}. Last accountability sweep: \${phase19DateTime(data.lastSweepAt)}.\`;`;
-    if (script.includes(scheduleText)) script = script.replace(scheduleText, quietScheduleText);
-    replaceLiteral("script", script);
-
-    fs.writeFileSync(PHASE19_BOOTSTRAP_PATH, source);
-    console.log("Joshua Phase 28.56 prepared quiet adoption notifications: one useful task text, no acknowledgement nagging.");
+    source = source.replace(importAnchor, runtimePatch + "\n" + importAnchor);
+    fs.writeFileSync(JOB_SHEETS_SYNC_RUNTIME_PATH, source);
+    console.log("Joshua Phase 28.61 prepared post-routing direct office transfer bridge.");
     return true;
   } catch (error) {
-    console.warn(`Joshua Phase 28.56 notification patch skipped safely: ${error.message}`);
+    console.warn("Joshua Phase 28.61: direct-transfer hotfix skipped safely:", error.message);
     return false;
   }
 }
@@ -1419,31 +1237,6 @@ app.post("/api/control/work-orders/:tracking/technician", async (request, reply)
   }
 
 
-  if (!server.includes(TASK_NOTIFY_HOOK_MARKER)) {
-    const taskFunctionAnchor = `function addControlTask(task) {`;
-    const taskFunctionStart = server.indexOf(taskFunctionAnchor);
-    const taskFunctionEnd = taskFunctionStart >= 0
-      ? server.indexOf("\n}\n\nfunction updateControlTask", taskFunctionStart)
-      : -1;
-
-    if (taskFunctionStart >= 0 && taskFunctionEnd >= 0) {
-      const functionText = server.slice(taskFunctionStart, taskFunctionEnd + 2);
-      const returnAnchor = `  writeControlData(data);\n  return item;`;
-      if (functionText.includes(returnAnchor)) {
-        const upgraded = functionText.replace(
-          returnAnchor,
-          `  writeControlData(data);\n\n  /* ${TASK_NOTIFY_HOOK_MARKER} */\n  if (typeof phase2856NotifyAssignedTask === "function") {\n    setImmediate(() => {\n      phase2856NotifyAssignedTask(item, { source: "Joshua Task Creation" }).catch(error =>\n        app.log.error(error, "Phase 28.56 task assignment text failed")\n      );\n    });\n  }\n\n  return item;`
-        );
-        server = server.slice(0, taskFunctionStart) + upgraded + server.slice(taskFunctionEnd + 2);
-        changed = true;
-        console.log("Joshua Phase 28.56 installed useful-task text hook.");
-      }
-    } else {
-      console.warn("Joshua Phase 28.56: addControlTask hook not found; manual task route still works.");
-    }
-  }
-
-
   if (!server.includes(TASK_ROUTE_MARKER)) {
     const taskStart = 'app.post("/api/control/tasks", async (request, reply) => {';
     const taskEnd = 'app.post("/api/control/tasks/:id/close", async (request, reply) => {';
@@ -1498,13 +1291,7 @@ app.post("/api/control/tasks", async (request, reply) => {
     ...(workflowType ? { workflowType } : {}),
     ...(actionLabel ? { actionLabel } : {})
   });
-
-  const notification =
-    typeof phase2856NotifyAssignedTask === "function"
-      ? await phase2856NotifyAssignedTask(task, { source: "Control Panel Task Assignment" })
-      : { ok: false, skipped: true, reason: "Quiet task notification runtime is unavailable." };
-
-  return reply.send({ ok: true, task, duplicate: false, notification });
+  return reply.send({ ok: true, task, duplicate: false });
 });
 
 `;
@@ -2298,7 +2085,7 @@ main,.panel,.card,.office-welcome,.phase12-dialog,.phase12-grid,.phase12-card,.j
  function setMsg(id,msg,error){var e=document.getElementById(id);if(!e)return;e.textContent=msg||'';e.className=error?'j2850-msg warnText':'j2850-msg'}
  async function changeTechnician(prefix){var i=ids(prefix),select=document.getElementById(i.technician),tr=prefixTracking(prefix),chosen=text(select&&select.value)||'Office / Unassigned';if(!tr){setMsg(i.technicianMsg,'Work order could not be identified.',true);return}setMsg(i.technicianMsg,'Updating technician…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/technician',{method:'POST',body:JSON.stringify({technician:chosen,requestedBy:currentUser()})});if(typeof refresh==='function')await refresh();var item=(r&&r.workOrder)||orderByTracking(tr)||{};try{if(typeof phase12SelectedWorkOrder!=='undefined'&&phase12SelectedWorkOrder&&text(phase12SelectedWorkOrder.trackingNumber)===text(tr)){Object.assign(phase12SelectedWorkOrder,item)}}catch(_){ }renderTechnicianControl(prefix,item);selectAssignedTech(item);setMsg(i.technicianMsg,'✅ Technician updated to '+(r&&r.technician?r.technician:chosen)+'.');if(prefix==='j2850Phase12'&&typeof window.openPhase12WorkOrder==='function'){setTimeout(function(){try{window.openPhase12WorkOrder(tr);renderOpen()}catch(_){ }},0)}else{renderOpen()}}catch(e){setMsg(i.technicianMsg,'⚠ '+e.message,true)}}
   async function addNote(prefix){var i=ids(prefix),input=document.getElementById(i.noteInput),note=text(input&&input.value),tr=prefixTracking(prefix);if(!note){setMsg(i.noteMsg,'Enter an office note first.',true);return}setMsg(i.noteMsg,'Saving office note…');try{var r=await api('/api/control/work-orders/'+encodeURIComponent(tr)+'/office-notes',{method:'POST',body:JSON.stringify({note:note,author:currentUser()})});if(input)input.value='';setMsg(i.noteMsg,'✅ Office note saved.');if(typeof refresh==='function')await refresh();renderNotes(prefix,(r&&r.workOrder)||orderByTracking(tr)||{});renderOpen()}catch(e){setMsg(i.noteMsg,'⚠ '+e.message,true)}}
- async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{var result=await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';var notice=result&&result.notification;var suffix=notice&&notice.ok?' · Text sent.':notice&&notice.skipped?' · Text not sent: '+(notice.reason||'notification skipped')+'.':' · Task saved.';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+suffix);if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
+ async function createTask(prefix){var i=ids(prefix),titleEl=document.getElementById(i.taskTitle),assignedEl=document.getElementById(i.taskAssigned),raw=text(titleEl&&titleEl.value),auto=mentioned(raw),title=cleanMention(raw),tr=prefixTracking(prefix);if(auto&&assignedEl)assignedEl.value=auto;if(!title){setMsg(i.taskMsg,'Enter a task first.',true);return}var payload={title:title,trackingNumber:tr,assignedTo:text(assignedEl&&assignedEl.value)||auto||'Ariana',priority:text(document.getElementById(i.taskPriority)&&document.getElementById(i.taskPriority).value)||'normal',dueAt:text(document.getElementById(i.taskDue)&&document.getElementById(i.taskDue).value),notes:text(document.getElementById(i.taskNotes)&&document.getElementById(i.taskNotes).value)};setMsg(i.taskMsg,'Creating task…');try{await api('/api/control/tasks',{method:'POST',body:JSON.stringify(payload)});if(titleEl)titleEl.value='';var notesEl=document.getElementById(i.taskNotes);if(notesEl)notesEl.value='';var dueEl=document.getElementById(i.taskDue);if(dueEl)dueEl.value='';setMsg(i.taskMsg,'✅ Task assigned to '+payload.assignedTo+'.');if(typeof refresh==='function')await refresh();renderOpen()}catch(e){setMsg(i.taskMsg,'⚠ '+e.message,true)}}
  async function completeTask(id){if(!id)return;try{await api('/api/control/tasks/'+encodeURIComponent(id)+'/close',{method:'POST',body:'{}'});if(typeof refresh==='function')await refresh();renderOpen()}catch(e){alert(e.message)}}
  function dashboardMetricCard(id){var el=document.getElementById(id);return el&&el.closest?el.closest('.card'):null}
  function markDashboardRouteCard(id,label){var card=dashboardMetricCard(id);if(!card)return null;card.classList.remove('dashboard-clickable');card.removeAttribute('data-dashboard-action');card.removeAttribute('data-dashboard-value');card.classList.add('j2850-route-card');card.setAttribute('role','button');card.setAttribute('tabindex','0');if(label)card.setAttribute('aria-label',label);return card}
@@ -2849,9 +2636,9 @@ function patchOperationsOSPanel(fileUrl) {
 // edits have consumed their original server anchors.
 patchConversationRelaySurvivalRuntime();
 
-// Quiet adoption mode: one useful text for new assigned tasks only.
-// No acknowledgement nagging, overdue escalation loop, or scheduled briefings yet.
-patchQuietAdoptionNotificationsBootstrap();
+// After all existing transfer-routing edits run, remove the Travis-only AMD/screening leg
+// so a human answer bridges immediately instead of being dropped by /screen-transfer.
+patchDirectTransferNoAmdRuntime();
 
 // Repair the ServiceChannel -> Job Sheets generator before search-sync-runtime builds the live server.
 patchDurableJobSheetsSyncRuntime();
@@ -2885,5 +2672,5 @@ for (const panelPath of PANEL_PATHS) {
 }
 
 console.log(
-  `Joshua Phase 28.60 V19 active: call survival + quiet adoption task notifications + durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
+  `Joshua Phase 28.61 V20 Operations OS + call survival + direct transfer active: durable Job Sheets synchronization + canonical Work Order command-center snapshots, durable office corrections with live-source preservation, visible workflow stages + next action, workflow-aware task completion, Office Accountability, Change Technician, ClockShark Comments, Office Notes/tasks, queue navigation, responsive containment, and popup performance authority (${patchedBefore} pre / ${patchedAfter} post patches).`
 );
