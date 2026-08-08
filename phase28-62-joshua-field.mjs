@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V17 — Joshua Field + PDF Attachments + Sunday-Saturday Workweek + ServiceChannel + ClockShark
+ * Joshua Phase 28.62 V18 — Joshua Field + Post-Checkout Documentation + PDF Attachments + Sunday-Saturday Workweek + ServiceChannel + ClockShark
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -2814,12 +2814,109 @@ app.get("/api/field/jobs/:tracking/attachment/:file", async (request, reply) => 
   fs.writeFileSync(SERVER_PATH, server);
 }
 
+
+function patchPostCheckoutDocumentationV18() {
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_68_POST_CHECKOUT_DOCUMENTATION_V1";
+  if (server.includes(marker)) return;
+
+  const helperAnchor = 'app.post("/api/field/jobs/:tracking/note", async (request, reply) => {';
+  if (!server.includes(helperAnchor)) {
+    throw new Error("Joshua Field V18: documentation route anchor not found.");
+  }
+
+  const helper = String.raw`
+/* JOSHUA_PHASE28_68_POST_CHECKOUT_DOCUMENTATION_V1 */
+function phase2868TechCanDocumentJob(data, key, item, technician) {
+  if (phase2862JobAssignedTo(item, technician)) return true;
+  if (typeof phase2865TechCanViewJob !== "function" || !phase2865TechCanViewJob(data, key, item, technician)) return false;
+
+  const now = Date.now();
+  const graceMs = 12 * 60 * 60 * 1000;
+  const candidates = [
+    item?.fieldCheckOutAt,
+    item?.checkOutAt,
+    ...(Array.isArray(item?.fieldTimeEntries) ? item.fieldTimeEntries
+      .filter(row => phase2862Norm(row?.technician) === phase2862Norm(technician))
+      .map(row => row?.endAt || row?.startAt) : [])
+  ].filter(Boolean)
+    .map(value => new Date(value).getTime())
+    .filter(Number.isFinite);
+
+  if (!candidates.length) return false;
+  const lastActivity = Math.max(...candidates);
+  return lastActivity > 0 && now >= lastActivity && (now - lastActivity) <= graceMs;
+}
+
+`;
+  server = server.replace(helperAnchor, helper + helperAnchor, 1);
+
+  // Permit recent post-checkout documentation on the tech's own job.
+  const authLine = 'if (!phase2862JobAssignedTo(item, auth.key)) return reply.code(403).send({ ok: false, error: "This job is not assigned to you." });';
+
+  // Note route
+  const noteStart = server.indexOf('app.post("/api/field/jobs/:tracking/note"');
+  const materialStart = server.indexOf('app.post("/api/field/jobs/:tracking/material"');
+  if (noteStart < 0 || materialStart < 0) throw new Error("Joshua Field V18: note/material route not found.");
+  let noteBlock = server.slice(noteStart, materialStart);
+  if (!noteBlock.includes(authLine)) throw new Error("Joshua Field V18: note authorization anchor not found.");
+  noteBlock = noteBlock.replace(authLine, 'if (!phase2868TechCanDocumentJob(auth.data, key, item, auth.key)) return reply.code(403).send({ ok:false, error:"Documentation window is closed for this job." });', 1);
+  server = server.slice(0, noteStart) + noteBlock + server.slice(materialStart);
+
+  // Material route
+  const materialStart2 = server.indexOf('app.post("/api/field/jobs/:tracking/material"');
+  const helpStart = server.indexOf('app.post("/api/field/jobs/:tracking/help"');
+  let materialBlock = server.slice(materialStart2, helpStart);
+  if (!materialBlock.includes(authLine)) throw new Error("Joshua Field V18: material authorization anchor not found.");
+  materialBlock = materialBlock.replace(authLine, 'if (!phase2868TechCanDocumentJob(auth.data, key, item, auth.key)) return reply.code(403).send({ ok:false, error:"Documentation window is closed for this job." });', 1);
+  server = server.slice(0, materialStart2) + materialBlock + server.slice(helpStart);
+
+  // Photo upload route
+  const photoStart = server.indexOf('app.post("/api/field/jobs/:tracking/photo"');
+  const photoGetStart = server.indexOf('app.get("/api/field/jobs/:tracking/photo/:file"');
+  let photoBlock = server.slice(photoStart, photoGetStart);
+  if (!photoBlock.includes(authLine)) throw new Error("Joshua Field V18: photo authorization anchor not found.");
+  photoBlock = photoBlock.replace(authLine, 'if (!phase2868TechCanDocumentJob(auth.data, key, item, auth.key)) return reply.code(403).send({ ok:false, error:"Documentation window is closed for this job." });', 1);
+  server = server.slice(0, photoStart) + photoBlock + server.slice(photoGetStart);
+
+  // PDF attachment route added by V17.
+  const attachmentStart = server.indexOf('app.post("/api/field/jobs/:tracking/attachment"');
+  const attachmentGetStart = server.indexOf('app.get("/api/field/jobs/:tracking/attachment/:file"');
+  if (attachmentStart < 0 || attachmentGetStart < 0) throw new Error("Joshua Field V18: PDF attachment route not found.");
+  let attachmentBlock = server.slice(attachmentStart, attachmentGetStart);
+  const oldAttachmentAuth = `if (!phase2862JobAssignedTo(item, auth.key)) {
+    return reply.code(403).send({ ok:false, error:"This job is not assigned to you." });
+  }`;
+  if (!attachmentBlock.includes(oldAttachmentAuth)) throw new Error("Joshua Field V18: PDF authorization anchor not found.");
+  attachmentBlock = attachmentBlock.replace(
+    oldAttachmentAuth,
+    `if (!phase2868TechCanDocumentJob(auth.data, key, item, auth.key)) {
+    return reply.code(403).send({ ok:false, error:"Documentation window is closed for this job." });
+  }`,
+    1
+  );
+  server = server.slice(0, attachmentStart) + attachmentBlock + server.slice(attachmentGetStart);
+
+  // PDF uploads themselves should also establish history visibility.
+  const canViewAnchor = 'if ((item?.fieldPhotos || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;';
+  if (server.includes(canViewAnchor) && !server.includes('fieldAttachments || []).some(row => phase2862Norm(row?.technician) === wanted')) {
+    server = server.replace(
+      canViewAnchor,
+      canViewAnchor + '\n  if ((item?.fieldAttachments || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;',
+      1
+    );
+  }
+
+  fs.writeFileSync(SERVER_PATH, server);
+}
+
 patchClockSharkScheduleFieldDispatch();
 patchClockSharkCalendarAuthority();
 patchFieldScheduleHistoryV11();
 patchFieldServer();
 patchFieldTimeAndHistoryV11();
 patchFieldPdfAttachmentsV17();
+patchPostCheckoutDocumentationV18();
 patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
 console.log("Joshua Phase 28.62 V17 Field active: photos + PDF attachments + separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
