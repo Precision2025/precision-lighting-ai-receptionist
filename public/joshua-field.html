@@ -9,7 +9,37 @@
 <style>
 :root{--bg:#08111d;--panel:#101d2d;--panel2:#13243a;--line:#27435f;--text:#f5f7fb;--muted:#9eb0c6;--gold:#f4c542;--green:#34d399;--red:#fb7185;--blue:#60a5fa;--r:18px}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}button,input,textarea,select{font:inherit}button{border:0}
-body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))}.wrap{max-width:760px;margin:0 auto;padding:16px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.brand{font-weight:900;font-size:22px}.brand span{color:var(--gold)}.pill{font-size:12px;padding:7px 10px;border-radius:999px;background:#0c2d27;color:#8cf3cf;border:1px solid #185444}.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0;box-shadow:0 12px 32px rgba(0,0,0,.2)}.muted{color:var(--muted)}.small{font-size:12px}.big{font-size:27px;font-weight:900}.job-title{font-size:20px;font-weight:900;line-height:1.2}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.btn{width:100%;padding:14px 15px;border-radius:14px;background:var(--gold);color:#151515;font-weight:900;cursor:pointer}.btn.secondary{background:#18314a;color:#eef5ff;border:1px solid #315476}.btn.success{background:var(--green);color:#06251d}.btn.danger{background:#48202a;color:#ffd8e0;border:1px solid #7d3444}.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}.btn:disabled{opacity:.45}.label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin:10px 0 6px}.input{width:100%;padding:13px;border-radius:13px;border:1px solid var(--line);background:#091522;color:var(--text);outline:none}.input:focus{border-color:var(--gold)}textarea.input{min-height:95px;resize:vertical}.status{display:inline-flex;padding:6px 9px;border-radius:999px;background:#193047;color:#cfe4ff;font-size:11px;font-weight:800;text-transform:uppercase}.job{cursor:pointer}.job+.job{margin-top:10px}.job-row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.meta{display:grid;gap:5px;margin-top:10px;font-size:13px}.section-title{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900;margin-bottom:8px}.hide{display:none!important}.nav{position:fixed;z-index:50;bottom:0;left:0;right:0;background:rgba(8,17,29,.96);border-top:1px solid var(--line);padding:8px 10px calc(8px + env(safe-area-inset-bottom));backdrop-filter:blur(15px)}.nav-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.nav button{background:transparent;color:var(--muted);padding:10px 4px;border-radius:12px;font-size:12px;font-weight:800}.nav button.active{color:#151515;background:var(--gold)}.login{max-width:420px;margin:12vh auto 0}.login h1{font-size:34px;margin:0 0 6px}.alert{padding:12px 13px;border:1px solid #614451;border-radius:12px;background:#28151d;color:#ffc4d0;margin:10px 0;font-size:13px}.good{border-color:#245846;background:#0f2b22;color:#9af3d3}.sheet{position:fixed;z-index:100;inset:0;background:rgba(0,0,0,.64);display:flex;align-items:flex-end}.sheet-box{width:100%;max-height:92vh;overflow:auto;background:var(--bg);border-radius:24px 24px 0 0;border-top:1px solid var(--line);padding:18px 16px calc(26px + env(safe-area-inset-bottom))}.sheet-inner{max-width:760px;margin:0 auto}.close{float:right;background:#17283b;color:white;width:38px;height:38px;border-radius:50%;font-size:20px}.timeline{display:grid;gap:8px}.entry{padding:10px 12px;border-radius:12px;background:#0b1725;border:1px solid #1f3850}.time-type{text-transform:uppercase;font-size:10px;font-weight:900;letter-spacing:.07em;color:var(--gold)}.week-head{margin:18px 2px 8px;font-size:12px;color:var(--muted);font-weight:900;text-transform:uppercase;letter-spacing:.08em}.photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.photo-grid img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;border:1px solid var(--line)}@media(max-width:460px){.grid{grid-template-columns:1fr}.wrap{padding:13px}.big{font-size:24px}}
+body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))}.wrap{max-width:760px;margin:0 auto;padding:16px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.brand{font-weight:900;font-size:22px}.brand span{color:var(--gold)}.pill{font-size:12px;padding:7px 10px;border-radius:999px;background:#0c2d27;color:#8cf3cf;border:1px solid #185444}.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0;box-shadow:0 12px 32px rgba(0,0,0,.2)}.muted{color:var(--muted)}.small{font-size:12px}.big{font-size:27px;font-weight:900}.job-title{font-size:20px;font-weight:900;line-height:1.2}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.btn{width:100%;padding:14px 15px;border-radius:14px;background:var(--gold);color:#151515;font-weight:900;cursor:pointer}.btn.secondary{background:#18314a;color:#eef5ff;border:1px solid #315476}.btn.success{background:var(--green);color:#06251d}.btn.danger{background:#48202a;color:#ffd8e0;border:1px solid #7d3444}.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}.btn:disabled{opacity:.45}.label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin:10px 0 6px}.input{width:100%;padding:13px;border-radius:13px;border:1px solid var(--line);background:#091522;color:var(--text);outline:none}.input:focus{border-color:var(--gold)}textarea.input{min-height:95px;resize:vertical}.status{display:inline-flex;padding:6px 9px;border-radius:999px;background:#193047;color:#cfe4ff;font-size:11px;font-weight:800;text-transform:uppercase}.job{cursor:pointer}.job+.job{margin-top:10px}.job-row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.meta{display:grid;gap:5px;margin-top:10px;font-size:13px}.section-title{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:900;margin-bottom:8px}.hide{display:none!important}.nav{position:fixed;z-index:50;bottom:0;left:0;right:0;background:rgba(8,17,29,.96);border-top:1px solid var(--line);padding:8px 10px calc(8px + env(safe-area-inset-bottom));backdrop-filter:blur(15px)}.nav-inner{max-width:760px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr);gap:7px}.nav button{background:transparent;color:var(--muted);padding:10px 4px;border-radius:12px;font-size:12px;font-weight:800}.nav button.active{color:#151515;background:var(--gold)}.login{max-width:420px;margin:12vh auto 0}.login h1{font-size:34px;margin:0 0 6px}.alert{padding:12px 13px;border:1px solid #614451;border-radius:12px;background:#28151d;color:#ffc4d0;margin:10px 0;font-size:13px}.good{border-color:#245846;background:#0f2b22;color:#9af3d3}.sheet{position:fixed;z-index:100;inset:0;background:rgba(0,0,0,.64);display:flex;align-items:flex-end}.sheet-box{width:100%;max-height:92vh;overflow:auto;background:var(--bg);border-radius:24px 24px 0 0;border-top:1px solid var(--line);padding:18px 16px calc(26px + env(safe-area-inset-bottom))}.sheet-inner{max-width:760px;margin:0 auto}.close{float:right;background:#17283b;color:white;width:38px;height:38px;border-radius:50%;font-size:20px}.timeline{display:grid;gap:8px}.entry{padding:10px 12px;border-radius:12px;background:#0b1725;border:1px solid #1f3850}.time-type{text-transform:uppercase;font-size:10px;font-weight:900;letter-spacing:.07em;color:var(--gold)}.week-head{margin:18px 2px 8px;font-size:12px;color:var(--muted);font-weight:900;text-transform:uppercase;letter-spacing:.08em}.photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.photo-grid img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;border:1px solid var(--line)}
+.schedule-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.schedule-toolbar .btn{width:auto;padding:10px 13px;border-radius:12px}
+.schedule-mode{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:10px 0}
+.schedule-mode button{padding:10px;border-radius:11px;background:#0b1725;color:var(--muted);font-weight:900;border:1px solid var(--line)}
+.schedule-mode button.active{background:var(--gold);color:#151515;border-color:var(--gold)}
+.schedule-range{font-size:20px;font-weight:900;line-height:1.2;flex:1;min-width:190px}
+.schedule-day{border:1px solid var(--line);border-radius:15px;background:#0b1725;margin:9px 0;overflow:hidden}
+.schedule-day-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;background:#102238;border-bottom:1px solid var(--line)}
+.schedule-day-head.today{box-shadow:inset 4px 0 0 var(--gold)}
+.schedule-day-date{font-weight:900}
+.schedule-day-count{font-size:11px;color:var(--muted)}
+.schedule-event{display:block;width:100%;text-align:left;background:transparent;color:var(--text);padding:12px;border:0;border-bottom:1px solid #193047;cursor:pointer}
+.schedule-event:last-child{border-bottom:0}
+.schedule-event:hover{background:#102238}
+.schedule-event-time{font-size:12px;font-weight:900;color:var(--gold);margin-bottom:3px}
+.schedule-event-title{font-weight:900;font-size:15px;line-height:1.2}
+.schedule-event-meta{font-size:12px;color:var(--muted);margin-top:4px}
+.schedule-empty{padding:14px 12px;color:var(--muted);font-size:13px}
+.month-scroll{overflow-x:auto;padding-bottom:4px}
+.month-grid{min-width:650px;display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.month-dow{font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:900;text-align:center;padding:5px}
+.month-cell{min-height:112px;border:1px solid var(--line);border-radius:12px;background:#0b1725;padding:7px;overflow:hidden}
+.month-cell.outside{opacity:.42}
+.month-cell.today{border-color:var(--gold);box-shadow:inset 0 0 0 1px var(--gold)}
+.month-num{font-size:12px;font-weight:900;margin-bottom:5px}
+.month-event{display:block;width:100%;text-align:left;background:#13243a;color:var(--text);border:1px solid #27435f;border-radius:7px;padding:5px 6px;margin:4px 0;font-size:10px;line-height:1.15;cursor:pointer;overflow:hidden}
+.month-more{font-size:10px;color:var(--muted);padding:2px 3px}
+.schedule-key{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--muted)}
+.schedule-key span:before{content:'•';color:var(--gold);font-size:18px;vertical-align:-2px;margin-right:4px}
+@media(max-width:460px){.grid{grid-template-columns:1fr}.wrap{padding:13px}.big{font-size:24px}}
 </style>
 </head>
 <body>
@@ -41,6 +71,24 @@ body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))
     </section>
 
     <section id="jobsTab" class="hide"><div class="card"><div class="section-title">Current & Upcoming</div><div id="jobList"></div></div><div class="card"><div class="section-title">History</div><div class="small muted" style="margin-bottom:8px">Previous schedules and completed field records are read-only. Request a correction if something needs to change.</div><div id="historyList"></div></div></section>
+    <section id="scheduleTab" class="hide">
+      <div class="card">
+        <div class="section-title">My Schedule</div>
+        <div class="schedule-mode">
+          <button id="scheduleTodayMode" onclick="setScheduleMode('today')">Today</button>
+          <button id="scheduleWeekMode" class="active" onclick="setScheduleMode('week')">Week</button>
+          <button id="scheduleMonthMode" onclick="setScheduleMode('month')">Month</button>
+        </div>
+        <div class="schedule-toolbar">
+          <button class="btn secondary" onclick="moveSchedule(-1)" aria-label="Previous">‹</button>
+          <div id="scheduleRange" class="schedule-range"></div>
+          <button class="btn secondary" onclick="moveSchedule(1)" aria-label="Next">›</button>
+          <button class="btn ghost" onclick="scheduleGoToday()">Today</button>
+        </div>
+        <div id="scheduleContent"></div>
+        <div class="schedule-key"><span>Tap any scheduled job to open the work order.</span><span>Workweek: Sunday–Saturday.</span></div>
+      </div>
+    </section>
     <section id="timeTab" class="hide"><div class="card"><div class="section-title">Current Activity</div><div id="activityCard"></div></div><div class="card"><div class="section-title">Timecard</div><div id="timecard"></div></div></section>
     <section id="moreTab" class="hide">
       <div class="card"><div class="section-title">Technician</div><div id="profileName" class="job-title"></div><p class="muted">Joshua Field keeps your assigned jobs, time, job notes, materials and office requests together.</p><button id="sendLocation" class="btn secondary">Update My GPS</button></div>
@@ -48,7 +96,7 @@ body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))
     </section>
   </div>
 
-  <nav class="nav"><div class="nav-inner"><button data-tab="home" class="active">Home</button><button data-tab="jobs">Jobs</button><button data-tab="time">Time</button><button data-tab="more">More</button></div></nav>
+  <nav class="nav"><div class="nav-inner"><button data-tab="home" class="active">Home</button><button data-tab="jobs">Jobs</button><button data-tab="schedule">Schedule</button><button data-tab="time">Time</button><button data-tab="more">More</button></div></nav>
 </div>
 
 <div id="sheet" class="sheet hide"><div class="sheet-box"><div class="sheet-inner"><button id="closeSheet" class="close">×</button><div id="sheetContent"></div></div></div></div>
@@ -56,8 +104,8 @@ body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))
 <input id="photoUploadInput" class="hide" type="file" accept="image/*" multiple>
 <input id="documentUploadInput" class="hide" type="file" accept="application/pdf,.pdf" multiple>
 <script>
-/* JOSHUA FIELD V21 — CLEAN NAVIGATION + COMPLETED VISIT GUARD */
-const state={me:null,current:null,jobs:[],history:[],timecard:null,activeJob:null,photoJob:null,documentJob:null,postCheckoutJob:null,documentationMode:''};
+/* JOSHUA FIELD V22 — TECHNICIAN SCHEDULE CALENDAR + V21 FIXES */
+const state={me:null,current:null,jobs:[],history:[],timecard:null,activeJob:null,photoJob:null,documentJob:null,postCheckoutJob:null,documentationMode:'',scheduleMode:'week',scheduleAnchor:new Date()};
 const $=id=>document.getElementById(id); const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function fmtDate(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
 function mins(v){const n=Number(v||0);return n<60?`${n} min`:`${Math.floor(n/60)}h ${n%60}m`}
@@ -148,7 +196,7 @@ function render(){
   const upcoming=activeJobs.filter(j=>!state.current||j.key!==state.current.key).slice(0,4);
   $('nextJobs').innerHTML=upcoming.length?upcoming.map(jobCard).join(''):'<div class="muted">No additional field-ready jobs.</div>';
   $('jobList').innerHTML=activeJobs.length?activeJobs.map(jobCard).join(''):'<div class="muted">No field-ready jobs assigned.</div>';
-  $('activityCard').innerHTML=activityHtml();
+  $('activityCard').innerHTML=activityHtml();if(!$('scheduleTab').classList.contains('hide'))renderSchedule();
   const t=state.timecard||{},today=t.today||{},week=t.week||{},sessions=t.sessions||[];
   $('timecard').innerHTML=`<div class="section-title">Today</div><div class="grid">${timeSummaryBox('Job',today.jobMinutes)}${timeSummaryBox('Travel',today.travelMinutes)}${timeSummaryBox('Lunch',today.lunchMinutes)}${timeSummaryBox('Break',today.breakMinutes)}</div><div class="small muted" style="margin:10px 0 18px">Total recorded: ${mins(today.totalRecordedMinutes||0)}</div><div class="section-title">This Week</div><div class="grid">${timeSummaryBox('Job',week.jobMinutes)}${timeSummaryBox('Travel',week.travelMinutes)}${timeSummaryBox('Lunch',week.lunchMinutes)}${timeSummaryBox('Break',week.breakMinutes)}</div><div class="small muted" style="margin:10px 0 18px">Total recorded: ${mins(week.totalRecordedMinutes||0)}</div><div class="section-title">Activity</div><div class="timeline">${sessions.length?sessions.slice(0,80).map(s=>`<div class="entry"><div class="time-type">${esc(timeTypeLabel(s.type))}</div><strong>${s.trackingNumber?'#'+esc(s.trackingNumber):''}</strong> ${esc(s.locationName||s.customer||'')}<div class="small muted">${fmtDate(s.startAt)} → ${!s.endAt?'NOW':fmtDate(s.endAt)} • ${mins(s.minutes)}</div></div>`).join(''):'<div class="muted">No time entries yet.</div>'}</div>`;
   document.querySelectorAll('[data-job]').forEach(el=>el.onclick=()=>openJob(el.dataset.job));
@@ -161,7 +209,112 @@ async function refresh(){
 }
 async function login(){const btn=$('loginButton');btn.disabled=true;$('loginMessage').innerHTML='';try{await api('/api/field/login',{method:'POST',body:JSON.stringify({name:$('loginName').value,pin:$('loginPin').value})});$('loginView').classList.add('hide');$('appView').classList.remove('hide');await refresh()}catch(e){$('loginMessage').innerHTML=`<div class="alert">${esc(e.message)}</div>`}finally{btn.disabled=false}}
 async function bootstrap(){try{await refresh();$('loginView').classList.add('hide');$('appView').classList.remove('hide')}catch(_){$('appView').classList.add('hide');$('loginView').classList.remove('hide')}}
-function showTab(tab){['home','jobs','time','more'].forEach(x=>$(x+'Tab').classList.toggle('hide',x!==tab));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab))}
+
+function startOfDay(d){const x=new Date(d);x.setHours(0,0,0,0);return x}
+function addDays(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x}
+function sundayStart(d){const x=startOfDay(d);x.setDate(x.getDate()-x.getDay());return x}
+function sameDate(a,b){const x=new Date(a),y=new Date(b);return x.getFullYear()===y.getFullYear()&&x.getMonth()===y.getMonth()&&x.getDate()===y.getDate()}
+function scheduleDateKey(d){const x=new Date(d);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`}
+function scheduleTimeLabel(j){
+  const s=j?.scheduledAt?new Date(j.scheduledAt):null,e=j?.scheduledEndAt?new Date(j.scheduledEndAt):null;
+  if(!s||isNaN(s))return 'Scheduled';
+  const allDay=e&&!isNaN(e)&&s.getHours()===0&&s.getMinutes()===0&&e.getHours()===0&&e.getMinutes()===0&&(e-s)>=23*60*60*1000;
+  if(allDay)return 'All Day';
+  const one=s.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+  if(!e||isNaN(e))return one;
+  return one+' – '+e.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+}
+function scheduleSourceLabel(j){
+  if(j?.dispatchSource==='clockshark_schedule')return 'ClockShark';
+  const source=String(j?.sourceSystem||j?.source||j?.platform||'').trim();
+  return source||'Joshua';
+}
+function scheduleEvents(){
+  const rows=[...(state.jobs||[]),...(state.history||[])].filter(j=>j&&j.scheduledAt);
+  const seen=new Set(),out=[];
+  for(const j of rows){
+    const key=[j.key||'',j.scheduledAt||'',j.scheduledEndAt||''].join('|');
+    if(seen.has(key))continue;
+    seen.add(key);
+    out.push(j);
+  }
+  return out.sort((a,b)=>new Date(a.scheduledAt)-new Date(b.scheduledAt));
+}
+function scheduleEventsForDay(day){
+  const start=startOfDay(day),end=addDays(start,1);
+  return scheduleEvents().filter(j=>{
+    const s=new Date(j.scheduledAt);if(isNaN(s))return false;
+    const e=j.scheduledEndAt?new Date(j.scheduledEndAt):null;
+    const finish=e&&!isNaN(e)?e:new Date(s.getTime()+1);
+    return s<end&&finish>start;
+  });
+}
+function scheduleEventHtml(j){
+  const address=fullAddress(j);
+  const status=String(j.state||j.joshuaStatus||'scheduled').replace(/_/g,' ');
+  return `<button class="schedule-event" onclick="openJob('${esc(j.key)}')"><div class="schedule-event-time">${esc(scheduleTimeLabel(j))}</div><div class="schedule-event-title">${esc(j.locationName||j.customer||'Work Order')}</div><div class="schedule-event-meta">${j.trackingNumber?'#'+esc(j.trackingNumber)+' • ':''}${esc(scheduleSourceLabel(j))}${address?' • '+esc(address):''} • ${esc(status)}</div></button>`;
+}
+function scheduleDayHtml(day){
+  const events=scheduleEventsForDay(day),today=sameDate(day,new Date());
+  const label=new Date(day).toLocaleDateString([], {weekday:'long',month:'short',day:'numeric'});
+  return `<div class="schedule-day"><div class="schedule-day-head ${today?'today':''}"><div class="schedule-day-date">${esc(label)}${today?' • TODAY':''}</div><div class="schedule-day-count">${events.length} job${events.length===1?'':'s'}</div></div>${events.length?events.map(scheduleEventHtml).join(''):'<div class="schedule-empty">No jobs scheduled.</div>'}</div>`;
+}
+function renderScheduleToday(){
+  const day=startOfDay(state.scheduleAnchor||new Date());
+  $('scheduleRange').textContent=day.toLocaleDateString([], {weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  $('scheduleContent').innerHTML=scheduleDayHtml(day);
+}
+function renderScheduleWeek(){
+  const start=sundayStart(state.scheduleAnchor||new Date()),end=addDays(start,6);
+  $('scheduleRange').textContent=`${start.toLocaleDateString([], {month:'short',day:'numeric'})} – ${end.toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'})}`;
+  let html='';
+  for(let i=0;i<7;i++)html+=scheduleDayHtml(addDays(start,i));
+  $('scheduleContent').innerHTML=html;
+}
+function monthCellHtml(day,month){
+  const events=scheduleEventsForDay(day);
+  const outside=day.getMonth()!==month,today=sameDate(day,new Date());
+  const shown=events.slice(0,3);
+  return `<div class="month-cell ${outside?'outside':''} ${today?'today':''}"><div class="month-num">${day.getDate()}</div>${shown.map(j=>`<button class="month-event" onclick="openJob('${esc(j.key)}')" title="${esc(j.locationName||j.customer||'Work Order')}">${esc(scheduleTimeLabel(j))} ${esc(j.locationName||j.customer||'Job')}</button>`).join('')}${events.length>3?`<div class="month-more">+${events.length-3} more</div>`:''}</div>`;
+}
+function renderScheduleMonth(){
+  const anchor=new Date(state.scheduleAnchor||new Date()),year=anchor.getFullYear(),month=anchor.getMonth();
+  const first=new Date(year,month,1),gridStart=sundayStart(first);
+  $('scheduleRange').textContent=anchor.toLocaleDateString([], {month:'long',year:'numeric'});
+  const dows=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(x=>`<div class="month-dow">${x}</div>`).join('');
+  let cells='';
+  for(let i=0;i<42;i++)cells+=monthCellHtml(addDays(gridStart,i),month);
+  $('scheduleContent').innerHTML=`<div class="month-scroll"><div class="month-grid">${dows}${cells}</div></div>`;
+}
+function renderSchedule(){
+  if(!$('scheduleContent'))return;
+  ['today','week','month'].forEach(mode=>{
+    const b=$('schedule'+mode[0].toUpperCase()+mode.slice(1)+'Mode');
+    if(b)b.classList.toggle('active',state.scheduleMode===mode);
+  });
+  if(state.scheduleMode==='today')renderScheduleToday();
+  else if(state.scheduleMode==='month')renderScheduleMonth();
+  else renderScheduleWeek();
+}
+function setScheduleMode(mode){
+  if(!['today','week','month'].includes(mode))return;
+  state.scheduleMode=mode;
+  renderSchedule();
+}
+function moveSchedule(direction){
+  const d=new Date(state.scheduleAnchor||new Date());
+  if(state.scheduleMode==='month')d.setMonth(d.getMonth()+direction);
+  else if(state.scheduleMode==='week')d.setDate(d.getDate()+7*direction);
+  else d.setDate(d.getDate()+direction);
+  state.scheduleAnchor=d;
+  renderSchedule();
+}
+function scheduleGoToday(){
+  state.scheduleAnchor=new Date();
+  renderSchedule();
+}
+
+function showTab(tab){['home','jobs','schedule','time','more'].forEach(x=>$(x+'Tab').classList.toggle('hide',x!==tab));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='schedule')renderSchedule()}
 function navigateTo(encoded){
   const address=cleanAddressText(decodeURIComponent(encoded||''));
   if(!address){alert('Joshua does not have a valid address for this job.');return}
