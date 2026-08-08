@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V11 — Joshua Field + Time/History Authority + ServiceChannel + ClockShark
+ * Joshua Phase 28.62 V12 — Joshua Field + History/Travel Identity Fix + ServiceChannel + ClockShark
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -815,10 +815,23 @@ function phase2862FieldAuth(request, reply) {
 
 function phase2862ResolveWorkOrder(data, requested = "") {
   const text = phase2862Text(requested);
+  if (!text) return null;
+  const workOrders = data.workOrders || {};
+
+  // V12: Field sends Joshua's internal work-order key. Resolve that exact key
+  // before attempting any tracking/WO-number fallback. This is critical when
+  // two separate jobs have similar names or overlapping numeric identifiers.
+  if (Object.prototype.hasOwnProperty.call(workOrders, text)) {
+    return [text, workOrders[text]];
+  }
+
+  const entries = Object.entries(workOrders);
+  const exactKey = entries.find(([key]) => phase2862Text(key).toLowerCase() === text.toLowerCase());
+  if (exactKey) return exactKey;
+
   const digits = text.replace(/\D/g, "");
-  const entries = Object.entries(data.workOrders || {});
   return entries.find(([key, item]) => {
-    const candidates = [key, item?.trackingNumber, item?.workOrderNumber, item?.serviceChannelTrackingNumber];
+    const candidates = [item?.trackingNumber, item?.workOrderNumber, item?.serviceChannelTrackingNumber];
     return candidates.some(value => {
       const candidate = phase2862Text(value);
       if (!candidate) return false;
@@ -2313,6 +2326,7 @@ function patchFieldTimeAndHistoryV11() {
   if (!server.includes(helperAnchor)) throw new Error("Joshua Field V11: timecard helper anchor not found.");
 
   const helpers = String.raw`/* JOSHUA_PHASE28_65_TIME_HISTORY_AUTHORITY_V1 */
+/* JOSHUA_PHASE28_66_HISTORY_TRAVEL_IDENTITY_FIX_V1 */
 function phase2865TimeData(data) {
   data.fieldTimeSegments = Array.isArray(data.fieldTimeSegments) ? data.fieldTimeSegments : [];
   return data.fieldTimeSegments;
@@ -2509,10 +2523,17 @@ function phase2865History(data, technician, weeks = 12) {
   for (const [key, item] of Object.entries(data.workOrders || {})) {
     if (!phase2865TechCanViewJob(data, key, item, technician)) continue;
     const schedules = scheduleRows.filter(row => phase2862Text(row?.workOrderKey) === phase2862Text(key));
+    const nowMs = Date.now();
+    const pastSchedules = schedules.filter(row => {
+      const start = new Date(row?.startAt || 0).getTime();
+      const end = new Date(row?.endAt || row?.startAt || 0).getTime();
+      const boundary = Number.isFinite(end) && end ? end : start;
+      return Number.isFinite(boundary) && boundary > 0 && boundary <= nowMs;
+    });
     const segments = phase2865TimeData(data).filter(row => phase2862Norm(row?.technician) === phase2862Norm(technician) && phase2862Text(row?.trackingNumber) === phase2862Text(key));
     const candidates = [
       item.fieldCheckOutAt, item.checkOutAt, item.fieldCheckInAt, item.checkInAt,
-      ...schedules.flatMap(row => [row.endAt, row.startAt]),
+      ...pastSchedules.flatMap(row => [row.endAt, row.startAt]),
       ...segments.flatMap(row => [row.endAt, row.startAt]),
       ...(item.fieldNotes || []).filter(row=>phase2862Norm(row?.technician)===phase2862Norm(technician)).map(row=>row.createdAt),
       ...(item.fieldPhotos || []).filter(row=>phase2862Norm(row?.technician)===phase2862Norm(technician)).map(row=>row.createdAt)
@@ -2527,12 +2548,15 @@ function phase2865History(data, technician, weeks = 12) {
       const a = new Date(firstIn).getTime(), b = new Date(lastOut).getTime();
       if (Number.isFinite(a) && Number.isFinite(b) && b >= a) onsiteMinutes = Math.round((b-a)/60000);
     }
+    const breakdown = phase2865JobBreakdown(data, key, technician);
+    const categorizedTimeAvailable = Array.isArray(breakdown.segments) && breakdown.segments.length > 0;
     results.push({
       ...view,
       readOnly: true,
       historyDate: historyMs ? new Date(historyMs).toISOString() : "",
-      scheduleHistory: schedules.slice().sort((a,b)=>new Date(b.startAt||0)-new Date(a.startAt||0)),
-      timeBreakdown: phase2865JobBreakdown(data, key, technician),
+      scheduleHistory: pastSchedules.slice().sort((a,b)=>new Date(b.startAt||0)-new Date(a.startAt||0)),
+      timeBreakdown: breakdown,
+      categorizedTimeAvailable,
       onsiteMinutes
     });
   }
@@ -2672,4 +2696,4 @@ patchFieldServer();
 patchFieldTimeAndHistoryV11();
 patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V11 Field active: separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
+console.log("Joshua Phase 28.62 V12 Field active: separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
