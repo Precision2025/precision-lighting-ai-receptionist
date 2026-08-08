@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V10 — Joshua Field + ServiceChannel API + ClockShark Calendar Cleanup
+ * Joshua Phase 28.62 V11 — Joshua Field + Time/History Authority + ServiceChannel + ClockShark
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -2252,9 +2252,424 @@ app.get("/api/field/timecard", async (request, reply) => {
   if (changed) fs.writeFileSync(SERVER_PATH, server);
 }
 
+
+function patchFieldScheduleHistoryV11() {
+  if (!fs.existsSync(CLOCKSHARK_BOOTSTRAP_PATH)) return;
+  let source = fs.readFileSync(CLOCKSHARK_BOOTSTRAP_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_65_FIELD_SCHEDULE_HISTORY_V1";
+  if (source.includes(marker)) return;
+  const anchor = String.raw`  for (const [key, schedules] of grouped.entries()) {\n    const item = data.workOrders?.[key];\n    if (!item) continue;`;
+  if (!source.includes(anchor)) throw new Error("Joshua Field V11: ClockShark grouped schedule anchor not found.");
+  const insertRaw = String.raw`  /* JOSHUA_PHASE28_65_FIELD_SCHEDULE_HISTORY_V1 */
+  data.fieldScheduleHistory = Array.isArray(data.fieldScheduleHistory) ? data.fieldScheduleHistory : [];
+  for (const [historyKey, historySchedules] of grouped.entries()) {
+    for (const schedule of historySchedules || []) {
+      const employeeName = phase21ClockSharkText(schedule?.employeeName);
+      const startAt = phase21ClockSharkText(schedule?.startAt);
+      const identity = [
+        phase21ClockSharkText(schedule?.id),
+        phase2863ClockSharkScheduleNorm(employeeName),
+        startAt,
+        phase21ClockSharkText(historyKey)
+      ].join("|");
+      if (!employeeName || !startAt) continue;
+      const prior = data.fieldScheduleHistory.find(row => row?.identity === identity);
+      const entry = {
+        identity,
+        workOrderKey: phase21ClockSharkText(historyKey),
+        scheduleId: phase21ClockSharkText(schedule?.id),
+        employeeName,
+        jobId: phase21ClockSharkText(schedule?.jobId),
+        jobNumber: phase21ClockSharkText(schedule?.jobNumber),
+        jobName: phase21ClockSharkText(schedule?.jobName),
+        startAt,
+        endAt: phase21ClockSharkText(schedule?.endAt),
+        task: phase21ClockSharkText(schedule?.task),
+        notes: phase21ClockSharkText(schedule?.notes),
+        allDay: schedule?.calendarAllDay === true,
+        lastSeenAt: phase21ClockSharkNow()
+      };
+      if (prior) Object.assign(prior, entry);
+      else data.fieldScheduleHistory.push({ ...entry, archivedAt: phase21ClockSharkNow() });
+    }
+  }
+  data.fieldScheduleHistory = data.fieldScheduleHistory
+    .sort((a, b) => new Date(b.startAt || 0).getTime() - new Date(a.startAt || 0).getTime())
+    .slice(0, 5000);
+
+`;
+  const escapedInsert = phase2863EscapeForDoubleQuotedJsString(insertRaw);
+  source = source.replace(anchor, escapedInsert + anchor);
+  if (!source.includes(marker)) throw new Error("Joshua Field V11: schedule history patch did not install.");
+  fs.writeFileSync(CLOCKSHARK_BOOTSTRAP_PATH, source);
+}
+
+function patchFieldTimeAndHistoryV11() {
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_65_TIME_HISTORY_AUTHORITY_V1";
+  if (server.includes(marker)) return;
+
+  const helperAnchor = "function phase2862FinalizeApiCheckoutWorkflow(tracking, statusText, mechanicId = \"\") {";
+  if (!server.includes(helperAnchor)) throw new Error("Joshua Field V11: timecard helper anchor not found.");
+
+  const helpers = String.raw`/* JOSHUA_PHASE28_65_TIME_HISTORY_AUTHORITY_V1 */
+function phase2865TimeData(data) {
+  data.fieldTimeSegments = Array.isArray(data.fieldTimeSegments) ? data.fieldTimeSegments : [];
+  return data.fieldTimeSegments;
+}
+
+function phase2865SegmentMinutes(segment = {}, nowMs = Date.now()) {
+  const start = new Date(segment.startAt || 0).getTime();
+  const end = segment.endAt ? new Date(segment.endAt).getTime() : nowMs;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.max(0, Math.round((end - start) / 60000));
+}
+
+function phase2865ActiveSegment(data, technician) {
+  const wanted = phase2862Norm(technician);
+  return phase2865TimeData(data)
+    .filter(row => phase2862Norm(row?.technician) === wanted && !row?.endAt)
+    .sort((a, b) => new Date(b.startAt || 0).getTime() - new Date(a.startAt || 0).getTime())[0] || null;
+}
+
+function phase2865CloseActiveSegment(data, technician, { at = new Date().toISOString(), location = null, reason = "" } = {}) {
+  const segment = phase2865ActiveSegment(data, technician);
+  if (!segment) return null;
+  segment.endAt = at;
+  segment.endLocation = location || null;
+  segment.closedReason = phase2862Text(reason);
+  segment.minutes = phase2865SegmentMinutes(segment, new Date(at).getTime());
+  segment.updatedAt = at;
+  return segment;
+}
+
+function phase2865StartSegment(data, technician, type, {
+  trackingNumber = "",
+  location = null,
+  travelKind = "",
+  at = new Date().toISOString()
+} = {}) {
+  const allowed = new Set(["job", "travel", "lunch", "break"]);
+  const normalizedType = phase2862Text(type).toLowerCase();
+  if (!allowed.has(normalizedType)) throw new Error("Invalid Field time type.");
+  phase2865CloseActiveSegment(data, technician, { at, location, reason: "state_change" });
+  const segment = {
+    id: "ftime-" + Date.now() + "-" + crypto.randomBytes(3).toString("hex"),
+    technician: phase2862Text(technician),
+    type: normalizedType,
+    trackingNumber: phase2862Text(trackingNumber),
+    travelKind: normalizedType === "travel" ? phase2862Text(travelKind || "to_job") : "",
+    startAt: at,
+    endAt: "",
+    startLocation: location || null,
+    endLocation: null,
+    source: "Joshua Field",
+    createdAt: at,
+    updatedAt: at
+  };
+  phase2865TimeData(data).push(segment);
+  data.fieldTimeSegments = data.fieldTimeSegments.slice(-10000);
+  return segment;
+}
+
+function phase2865CurrentFieldJob(data, technician) {
+  const wanted = phase2862Norm(technician);
+  return Object.entries(data.workOrders || {}).find(([key, item]) =>
+    phase2862JobAssignedTo(item, technician) &&
+    item?.fieldClockStatus === "clocked_in" && item?.fieldCheckInAt && !item?.fieldCheckOutAt
+  ) || null;
+}
+
+function phase2865JobBreakdown(data, tracking, technician = "") {
+  const wantedTracking = phase2862Text(tracking);
+  const wantedTech = phase2862Norm(technician);
+  const rows = phase2865TimeData(data).filter(row =>
+    phase2862Text(row?.trackingNumber) === wantedTracking &&
+    (!wantedTech || phase2862Norm(row?.technician) === wantedTech)
+  );
+  const totals = { jobMinutes: 0, travelMinutes: 0, lunchMinutes: 0, breakMinutes: 0, totalRecordedMinutes: 0 };
+  for (const row of rows) {
+    const minutes = phase2865SegmentMinutes(row);
+    if (row.type === "job") totals.jobMinutes += minutes;
+    if (row.type === "travel") totals.travelMinutes += minutes;
+    if (row.type === "lunch") totals.lunchMinutes += minutes;
+    if (row.type === "break") totals.breakMinutes += minutes;
+    totals.totalRecordedMinutes += minutes;
+  }
+  return { ...totals, segments: rows.slice().sort((a,b)=>new Date(b.startAt||0)-new Date(a.startAt||0)).slice(0,200) };
+}
+
+function phase2865LegacyJobSessions(data, technician) {
+  const events = (data.events || []).filter(event =>
+    phase2862Norm(event?.technician) === phase2862Norm(technician) &&
+    ["field_checkin", "field_checkout"].includes(String(event?.type || ""))
+  ).slice().sort((a,b)=>new Date(a.createdAt||0)-new Date(b.createdAt||0));
+  const open = new Map();
+  const out = [];
+  for (const event of events) {
+    const tracking = phase2862Text(event.trackingNumber);
+    if (!tracking) continue;
+    if (event.type === "field_checkin") open.set(tracking, event);
+    if (event.type === "field_checkout") {
+      const start = open.get(tracking);
+      if (!start) continue;
+      const startMs = new Date(start.createdAt).getTime();
+      const endMs = new Date(event.createdAt).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+      const overlapsNew = phase2865TimeData(data).some(row =>
+        row.type === "job" &&
+        phase2862Norm(row.technician) === phase2862Norm(technician) &&
+        phase2862Text(row.trackingNumber) === tracking &&
+        new Date(row.startAt || 0).getTime() < endMs &&
+        new Date(row.endAt || Date.now()).getTime() > startMs
+      );
+      if (!overlapsNew) out.push({
+        id: "legacy-" + tracking + "-" + startMs,
+        technician,
+        type: "job",
+        trackingNumber: tracking,
+        startAt: start.createdAt,
+        endAt: event.createdAt,
+        minutes: Math.max(0, Math.round((endMs-startMs)/60000)),
+        legacy: true,
+        customer: start.customer || "",
+        locationName: start.locationName || ""
+      });
+      open.delete(tracking);
+    }
+  }
+  return out;
+}
+
+function phase2865Timecard(data, technician) {
+  const now = Date.now();
+  const rows = phase2865TimeData(data)
+    .filter(row => phase2862Norm(row?.technician) === phase2862Norm(technician))
+    .map(row => ({ ...row, minutes: phase2865SegmentMinutes(row, now) }));
+  rows.push(...phase2865LegacyJobSessions(data, technician));
+  rows.sort((a,b)=>new Date(b.startAt||0)-new Date(a.startAt||0));
+  const todayKey = phase2862LocalDate();
+  const weekStart = phase2862WeekStartDate();
+  const summarize = predicate => {
+    const totals = { jobMinutes:0, travelMinutes:0, lunchMinutes:0, breakMinutes:0, totalRecordedMinutes:0 };
+    for (const row of rows.filter(predicate)) {
+      const minutes = Number(row.minutes || 0);
+      if (row.type === "job") totals.jobMinutes += minutes;
+      if (row.type === "travel") totals.travelMinutes += minutes;
+      if (row.type === "lunch") totals.lunchMinutes += minutes;
+      if (row.type === "break") totals.breakMinutes += minutes;
+      totals.totalRecordedMinutes += minutes;
+    }
+    return totals;
+  };
+  const today = summarize(row => phase2862LocalDate(row.startAt) === todayKey);
+  const week = summarize(row => {
+    const key = phase2862LocalDate(row.startAt);
+    return Boolean(key && key >= weekStart);
+  });
+  const active = phase2865ActiveSegment(data, technician);
+  const h = minutes => Math.round(Number(minutes || 0) / 6) / 10;
+  return {
+    sessions: rows.slice(0, 250),
+    activeSegment: active ? { ...active, minutes: phase2865SegmentMinutes(active, now) } : null,
+    today,
+    week,
+    todayMinutes: today.totalRecordedMinutes,
+    weekMinutes: week.totalRecordedMinutes,
+    todayHours: h(today.totalRecordedMinutes),
+    weekHours: h(week.totalRecordedMinutes),
+    todayJobHours: h(today.jobMinutes),
+    todayTravelHours: h(today.travelMinutes),
+    todayLunchHours: h(today.lunchMinutes),
+    todayBreakHours: h(today.breakMinutes),
+    weekJobHours: h(week.jobMinutes),
+    weekTravelHours: h(week.travelMinutes),
+    weekLunchHours: h(week.lunchMinutes),
+    weekBreakHours: h(week.breakMinutes)
+  };
+}
+
+function phase2865TechCanViewJob(data, key, item, technician) {
+  const wanted = phase2862Norm(technician);
+  if (!wanted) return false;
+  if (phase2862Norm(phase2862AssignedName(item)) === wanted) return true;
+  if ((item?.fieldTimeEntries || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;
+  if ((item?.fieldNotes || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;
+  if ((item?.fieldMaterials || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;
+  if ((item?.fieldPhotos || []).some(row => phase2862Norm(row?.technician) === wanted)) return true;
+  if (phase2865TimeData(data).some(row => phase2862Norm(row?.technician) === wanted && phase2862Text(row?.trackingNumber) === phase2862Text(key))) return true;
+  if ((data.fieldScheduleHistory || []).some(row => phase2862Norm(row?.employeeName) === wanted && phase2862Text(row?.workOrderKey) === phase2862Text(key))) return true;
+  return false;
+}
+
+function phase2865History(data, technician, weeks = 12) {
+  const cutoff = Date.now() - Math.max(1, Math.min(104, Number(weeks || 12))) * 7 * 24 * 60 * 60 * 1000;
+  const scheduleRows = (data.fieldScheduleHistory || []).filter(row => phase2862Norm(row?.employeeName) === phase2862Norm(technician));
+  const results = [];
+  for (const [key, item] of Object.entries(data.workOrders || {})) {
+    if (!phase2865TechCanViewJob(data, key, item, technician)) continue;
+    const schedules = scheduleRows.filter(row => phase2862Text(row?.workOrderKey) === phase2862Text(key));
+    const segments = phase2865TimeData(data).filter(row => phase2862Norm(row?.technician) === phase2862Norm(technician) && phase2862Text(row?.trackingNumber) === phase2862Text(key));
+    const candidates = [
+      item.fieldCheckOutAt, item.checkOutAt, item.fieldCheckInAt, item.checkInAt,
+      ...schedules.flatMap(row => [row.endAt, row.startAt]),
+      ...segments.flatMap(row => [row.endAt, row.startAt]),
+      ...(item.fieldNotes || []).filter(row=>phase2862Norm(row?.technician)===phase2862Norm(technician)).map(row=>row.createdAt),
+      ...(item.fieldPhotos || []).filter(row=>phase2862Norm(row?.technician)===phase2862Norm(technician)).map(row=>row.createdAt)
+    ].filter(Boolean).map(value=>new Date(value).getTime()).filter(Number.isFinite);
+    const historyMs = candidates.length ? Math.max(...candidates) : 0;
+    if (historyMs && historyMs < cutoff) continue;
+    const view = phase2862JobView(key, item, data);
+    const firstIn = item.fieldCheckInAt || item.checkInAt || "";
+    const lastOut = item.fieldCheckOutAt || item.checkOutAt || "";
+    let onsiteMinutes = 0;
+    if (firstIn && lastOut) {
+      const a = new Date(firstIn).getTime(), b = new Date(lastOut).getTime();
+      if (Number.isFinite(a) && Number.isFinite(b) && b >= a) onsiteMinutes = Math.round((b-a)/60000);
+    }
+    results.push({
+      ...view,
+      readOnly: true,
+      historyDate: historyMs ? new Date(historyMs).toISOString() : "",
+      scheduleHistory: schedules.slice().sort((a,b)=>new Date(b.startAt||0)-new Date(a.startAt||0)),
+      timeBreakdown: phase2865JobBreakdown(data, key, technician),
+      onsiteMinutes
+    });
+  }
+  return results.sort((a,b)=>new Date(b.historyDate||0)-new Date(a.historyDate||0)).slice(0,500);
+}
+
+`;
+  server = server.replace(helperAnchor, helpers + helperAnchor);
+
+  server = server.replace(
+    "timecard: phase2862Timecard(auth.data, auth.key)",
+    "timecard: phase2865Timecard(auth.data, auth.key)"
+  );
+  server = server.replace(
+    "return reply.send({ ok: true, timecard: phase2862Timecard(auth.data, auth.key) });",
+    "return reply.send({ ok: true, timecard: phase2865Timecard(auth.data, auth.key) });"
+  );
+
+  const checkInNow = `  const now = new Date().toISOString();\n  const location = phase2862Location(request.body || {});\n  item.fieldCheckInAt = now;`;
+  if (!server.includes(checkInNow)) throw new Error("Joshua Field V11: check-in timing anchor not found.");
+  server = server.replace(checkInNow, `  const now = new Date().toISOString();\n  const location = phase2862Location(request.body || {});\n  phase2865CloseActiveSegment(auth.data, auth.key, { at: now, location, reason: "arrived_at_job" });\n  phase2865StartSegment(auth.data, auth.key, "job", { trackingNumber: key, location, at: now });\n  item.fieldCheckInAt = now;`, 1);
+
+  const checkoutNow = `  const now = new Date().toISOString();\n  const location = phase2862Location(request.body || {});\n  const started = new Date(item.fieldCheckInAt || item.checkInAt || now).getTime();`;
+  if (!server.includes(checkoutNow)) throw new Error("Joshua Field V11: check-out timing anchor not found.");
+  server = server.replace(checkoutNow, `  const now = new Date().toISOString();\n  const location = phase2862Location(request.body || {});\n  phase2865CloseActiveSegment(auth.data, auth.key, { at: now, location, reason: "job_checkout" });\n  const started = new Date(item.fieldCheckInAt || item.checkInAt || now).getTime();`, 1);
+
+  const photoAuth = `  if (!phase2862JobAssignedTo(item, auth.key)) return reply.code(403).send("Forbidden");`;
+  server = server.replace(photoAuth, `  if (!phase2865TechCanViewJob(auth.data, key, item, auth.key)) return reply.code(403).send("Forbidden");`);
+
+  const routeAnchor = `app.get("/api/field/timecard", async (request, reply) => {`;
+  if (!server.includes(routeAnchor)) throw new Error("Joshua Field V11: route insertion anchor not found.");
+  const routes = String.raw`
+app.post("/api/field/time/action", async (request, reply) => {
+  const auth = phase2862FieldAuth(request, reply);
+  if (!auth) return;
+  const action = phase2862Text(request.body?.action).toLowerCase();
+  const location = phase2862Location(request.body || {});
+  const now = new Date().toISOString();
+  const current = phase2865CurrentFieldJob(auth.data, auth.key);
+  let segment = null;
+
+  if (action === "start_travel") {
+    if (current) return reply.code(409).send({ ok:false, error:"Check out of the current job before starting travel." });
+    const tracking = phase2862Text(request.body?.trackingNumber);
+    const requestedKind = phase2862Text(request.body?.travelKind || (tracking ? "to_job" : "other_business"));
+    let key = "";
+    if (tracking) {
+      const resolved = phase2862ResolveWorkOrder(auth.data, tracking);
+      if (!resolved) return reply.code(404).send({ ok:false, error:"Destination job not found." });
+      const item = resolved[1];
+      key = resolved[0];
+      if (!phase2862JobAssignedTo(item, auth.key) || !phase2862FieldJobActionable(item)) {
+        return reply.code(403).send({ ok:false, error:"That destination is not currently dispatched to you." });
+      }
+    } else if (!["to_shop","return_home","other_business"].includes(requestedKind)) {
+      return reply.code(400).send({ ok:false, error:"Choose a destination job or a valid travel type." });
+    }
+    segment = phase2865StartSegment(auth.data, auth.key, "travel", {
+      trackingNumber:key, location, travelKind:requestedKind, at:now
+    });
+    auth.tech.status = "traveling";
+    auth.tech.currentTravelTrackingNumber = key;
+  } else if (action === "start_lunch" || action === "start_break") {
+    const key = current ? current[0] : "";
+    segment = phase2865StartSegment(auth.data, auth.key, action === "start_lunch" ? "lunch" : "break", { trackingNumber:key, location, at:now });
+    auth.tech.status = action === "start_lunch" ? "lunch" : "break";
+  } else if (action === "resume_job") {
+    if (!current) return reply.code(409).send({ ok:false, error:"There is no active job to resume." });
+    const [key] = current;
+    segment = phase2865StartSegment(auth.data, auth.key, "job", { trackingNumber:key, location, at:now });
+    auth.tech.status = "onsite";
+  } else if (action === "end_pause") {
+    const active = phase2865ActiveSegment(auth.data, auth.key);
+    if (!active || !["lunch","break"].includes(active.type)) return reply.code(409).send({ ok:false, error:"Lunch or break is not currently running." });
+    segment = phase2865CloseActiveSegment(auth.data, auth.key, { at:now, location, reason:"pause_ended" });
+    auth.tech.status = "available";
+  } else if (action === "stop_travel") {
+    const active = phase2865ActiveSegment(auth.data, auth.key);
+    if (!active || active.type !== "travel") return reply.code(409).send({ ok:false, error:"Travel time is not currently running." });
+    segment = phase2865CloseActiveSegment(auth.data, auth.key, { at:now, location, reason:"travel_stopped" });
+    auth.tech.status = "available";
+    auth.tech.currentTravelTrackingNumber = "";
+  } else {
+    return reply.code(400).send({ ok:false, error:"Invalid time action." });
+  }
+
+  auth.tech.lastFieldLocation = location || auth.tech.lastFieldLocation;
+  auth.tech.lastFieldLocationAt = location?.capturedAt || auth.tech.lastFieldLocationAt;
+  auth.data.technicians[auth.key] = auth.tech;
+  phase2862AddEvent(auth.data, {
+    type:"field_time_action", level:"info", technician:auth.key,
+    trackingNumber:segment?.trackingNumber || "", message:action, activityType:segment?.type || ""
+  });
+  writeControlData(auth.data);
+  return reply.send({ ok:true, segment, timecard:phase2865Timecard(auth.data, auth.key) });
+});
+
+app.get("/api/field/history", async (request, reply) => {
+  const auth = phase2862FieldAuth(request, reply);
+  if (!auth) return;
+  const weeks = Math.max(1, Math.min(104, Number(request.query?.weeks || 12)));
+  return reply.send({ ok:true, history:phase2865History(auth.data, auth.key, weeks) });
+});
+
+app.post("/api/field/history/:tracking/correction", async (request, reply) => {
+  const auth = phase2862FieldAuth(request, reply);
+  if (!auth) return;
+  const resolved = phase2862ResolveWorkOrder(auth.data, request.params.tracking);
+  if (!resolved) return reply.code(404).send({ ok:false, error:"Work order not found." });
+  const [key, item] = resolved;
+  if (!phase2865TechCanViewJob(auth.data, key, item, auth.key)) return reply.code(403).send({ ok:false, error:"You do not have history access to this job." });
+  const message = phase2862Text(request.body?.message);
+  if (!message) return reply.code(400).send({ ok:false, error:"Describe the correction needed." });
+  const task = {
+    id:"field-correction-" + Date.now() + "-" + Math.random().toString(36).slice(2,8),
+    createdAt:new Date().toISOString(), status:"open", title:"Technician time/job history correction",
+    trackingNumber:key, assignedTo:"Ariana", priority:"normal", workflowType:"field_history_correction",
+    actionLabel:"Review Correction", notes:"From " + auth.key + ": " + message.slice(0,1200)
+  };
+  auth.data.tasks = Array.isArray(auth.data.tasks) ? auth.data.tasks : [];
+  auth.data.tasks.unshift(task);
+  phase2862AddEvent(auth.data, { type:"field_history_correction", level:"info", technician:auth.key, trackingNumber:key, message:message.slice(0,500) });
+  writeControlData(auth.data);
+  return reply.send({ ok:true, task });
+});
+
+`;
+  server = server.replace(routeAnchor, routes + routeAnchor);
+  if (!server.includes(marker)) throw new Error("Joshua Field V11: time/history patch marker not installed.");
+  fs.writeFileSync(SERVER_PATH, server);
+}
+
 patchClockSharkScheduleFieldDispatch();
 patchClockSharkCalendarAuthority();
+patchFieldScheduleHistoryV11();
 patchFieldServer();
+patchFieldTimeAndHistoryV11();
 patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V10 Field active: ClockShark calendar cleanup + authoritative schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V11 Field active: separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
