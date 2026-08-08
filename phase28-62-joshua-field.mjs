@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V9 — Joshua Field + ServiceChannel API + ClockShark Calendar Authority
+ * Joshua Phase 28.62 V10 — Joshua Field + ServiceChannel API + ClockShark Calendar Cleanup
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -44,7 +44,7 @@ function phase2863ClockSharkScheduleNorm(value = "") {
 
 function phase2863ClockSharkScheduleActive(schedule = {}) {
   const now = Date.now();
-  const gracePast = now - 36 * 60 * 60 * 1000;
+  const gracePast = now - 6 * 60 * 60 * 1000;
   const futureLimit = now + 31 * 24 * 60 * 60 * 1000;
   const start = schedule.startAt ? new Date(schedule.startAt).getTime() : 0;
   const end = schedule.endAt ? new Date(schedule.endAt).getTime() : 0;
@@ -101,6 +101,9 @@ function phase2863ClockSharkFallbackWorkOrder(data, schedule = {}) {
 }
 
 function phase2863ClockSharkResolveScheduleWorkOrder(data, state, schedule = {}) {
+  const existing = phase2863ClockSharkFallbackWorkOrder(data, schedule);
+  if (existing) return existing;
+
   const job = phase2863ClockSharkScheduleJob(schedule);
   if (typeof phase22ClockSharkEnsureWorkOrder === "function") {
     try {
@@ -167,13 +170,17 @@ function phase2863ClockSharkSyncFieldDispatch(data, state, { authoritativeSnapsh
       notes: schedule.notes || "",
       jobId: schedule.jobId || "",
       jobNumber: schedule.jobNumber || "",
-      trackingNumber: schedule.trackingNumber || ""
+      trackingNumber: schedule.trackingNumber || "",
+      allDay: schedule.calendarAllDay === true
     }));
     item.clockSharkScheduleId = first.id || "";
     item.clockSharkScheduleStartAt = first.startAt || "";
     item.clockSharkScheduleEndAt = first.endAt || "";
     item.clockSharkScheduleTask = first.task || "";
     item.clockSharkScheduleNotes = first.notes || "";
+    item.clockSharkScheduleAllDay = first.calendarAllDay === true;
+    if (first.jobName) item.clockSharkJobName = first.jobName;
+    if (first.jobNumber) item.clockSharkJobNumber = first.jobNumber;
     item.fieldDispatchStatus = "dispatched";
     item.fieldDispatchSource = "clockshark_schedule";
     item.fieldDispatchedAt = now;
@@ -209,6 +216,7 @@ function phase2863ClockSharkSyncFieldDispatch(data, state, { authoritativeSnapsh
       item.clockSharkScheduleEndAt = "";
       item.clockSharkScheduleTask = "";
       item.clockSharkScheduleNotes = "";
+      item.clockSharkScheduleAllDay = false;
       item.fieldDispatchStatus = "";
       item.fieldDispatchSource = "";
       item.fieldDispatchBy = "";
@@ -460,13 +468,27 @@ function phase2864ParseClockSharkIcs(text = "", technicianName = "", feedKey = "
   for (const event of events) {
     const first = name => event[name]?.[0] || null;
     const uid = phase21ClockSharkText(first("UID")?.value || first("RECURRENCE-ID")?.value);
-    const summary = phase2864IcsUnescape(first("SUMMARY")?.value || "");
+    const rawSummary = phase2864IcsUnescape(first("SUMMARY")?.value || "");
+    let summary = rawSummary;
+    const scheduledAtMarker = " scheduled at ";
+    const markerIndex = summary.toLowerCase().indexOf(scheduledAtMarker);
+    if (markerIndex >= 0 && markerIndex < 90) {
+      summary = phase21ClockSharkText(summary.slice(markerIndex + scheduledAtMarker.length));
+    }
     const description = phase2864IcsUnescape(first("DESCRIPTION")?.value || "");
     const location = phase2864IcsUnescape(first("LOCATION")?.value || "");
     const dtStart = first("DTSTART");
     const dtEnd = first("DTEND");
     const startAt = phase2864IcsDate(dtStart?.value || "", dtStart?.params || {});
-    const endAt = phase2864IcsDate(dtEnd?.value || "", dtEnd?.params || {});
+    let endAt = phase2864IcsDate(dtEnd?.value || "", dtEnd?.params || {});
+    const allDay = String(dtStart?.params?.VALUE || "").toUpperCase() === "DATE";
+    if (allDay && startAt) {
+      const startMs = new Date(startAt).getTime();
+      const endMs = endAt ? new Date(endAt).getTime() : 0;
+      if (!Number.isFinite(endMs) || !endMs || endMs <= startMs) {
+        endAt = new Date(startMs + 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
     if (!uid || !summary || !startAt) continue;
 
     let jobNumber = "";
@@ -499,10 +521,31 @@ function phase2864ParseClockSharkIcs(text = "", technicianName = "", feedKey = "
       task: "",
       notes: [description, location ? "Location: " + location : ""].filter(Boolean).join("\n"),
       source: "ClockShark Calendar",
-      calendarFeedKey: feedKey || ""
+      calendarFeedKey: feedKey || "",
+      calendarRawSummary: rawSummary,
+      calendarAllDay: allDay
     });
   }
-  return out;
+
+  // ClockShark can expose more than one calendar VEVENT for the same technician
+  // and exact schedule slot. One technician cannot perform two copies of the same
+  // shift, so choose the richer event and prevent duplicate Field cards.
+  const bySlot = new Map();
+  const eventScore = item =>
+    (phase21ClockSharkText(item.jobNumber) ? 20 : 0) +
+    (phase21ClockSharkText(item.jobName).length >= 8 ? 10 : 0) +
+    (phase21ClockSharkText(item.notes) ? 4 : 0) +
+    (phase21ClockSharkText(item.calendarRawSummary).includes("|") ? 6 : 0);
+  for (const item of out) {
+    const slot = [
+      phase2864CalendarNorm(item.employeeName),
+      phase21ClockSharkText(item.startAt),
+      phase21ClockSharkText(item.endAt)
+    ].join("|");
+    const current = bySlot.get(slot);
+    if (!current || eventScore(item) > eventScore(current)) bySlot.set(slot, item);
+  }
+  return [...bySlot.values()];
 }
 
 async function phase2864PullClockSharkCalendars() {
@@ -1288,7 +1331,11 @@ function phase2862JobView(key, item = {}, data = null) {
     trackingNumber: phase2862Text(item.trackingNumber || key),
     workOrderNumber: phase2862Text(item.workOrderNumber || item.serviceChannelWorkOrderNumber || ""),
     customer: phase2862Text(item.customer || item.customerName || ""),
-    locationName: phase2862Text(item.locationName || item.location || item.jobName || ""),
+    locationName: phase2862Text(
+      phase2862Text(item.fieldDispatchSource).toLowerCase() === "clockshark_schedule"
+        ? (item.clockSharkJobName || item.locationName || item.location || item.jobName || "")
+        : (item.locationName || item.location || item.jobName || "")
+    ),
     address: phase2862Text(item.address || item.serviceAddress || ""),
     city: phase2862Text(item.city || ""),
     state: phase2862Text(item.stateCode || item.locationState || ""),
@@ -1302,6 +1349,8 @@ function phase2862JobView(key, item = {}, data = null) {
     dispatchSource: phase2862Text(item.fieldDispatchSource || ""),
     clockSharkScheduleTask: phase2862Text(item.clockSharkScheduleTask || ""),
     clockSharkScheduleNotes: phase2862Text(item.clockSharkScheduleNotes || ""),
+    clockSharkScheduleId: phase2862Text(item.clockSharkScheduleId || ""),
+    clockSharkScheduleAllDay: item.clockSharkScheduleAllDay === true,
     scheduledTechnicians: Array.isArray(item.clockSharkScheduledTechnicians) ? item.clockSharkScheduledTechnicians.map(phase2862Text).filter(Boolean) : [],
     priority: phase2862Text(item.priority || "normal"),
     nte: item.nte ?? "",
@@ -1590,7 +1639,8 @@ app.get("/api/field/me", async (request, reply) => {
   if (!auth) return;
   const jobs = Object.entries(auth.data.workOrders || {})
     .filter(([, item]) => phase2862JobAssignedTo(item, auth.key) && phase2862FieldJobActionable(item))
-    .map(([key, item]) => phase2862JobView(key, item, auth.data));
+    .map(([key, item]) => phase2862JobView(key, item, auth.data))
+    .sort((a, b) => new Date(a.scheduledAt || 0) - new Date(b.scheduledAt || 0));
   const current = jobs.find(item => item.fieldClockStatus === "clocked_in" && !item.fieldCheckOutAt) ||
     jobs.find(item => Boolean(item.checkInAt) && !item.checkOutAt && String(item.state || "").toLowerCase() === "onsite") || null;
   return reply.send({
@@ -2207,4 +2257,4 @@ patchClockSharkCalendarAuthority();
 patchFieldServer();
 patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V9 Field active: ClockShark calendar authority + schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V10 Field active: ClockShark calendar cleanup + authoritative schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
