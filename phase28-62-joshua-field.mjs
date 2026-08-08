@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V18 — Joshua Field + Post-Checkout Documentation + PDF Attachments + Sunday-Saturday Workweek + ServiceChannel + ClockShark
+ * Joshua Phase 28.62 V20 — Joshua Field + Source Authority + Post-Checkout Documentation + PDF Attachments + Sunday-Saturday Workweek
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -994,10 +994,64 @@ function phase2862FieldJobActionable(item = {}) {
 }
 
 function phase2862IsServiceChannel(item = {}) {
-  const source = [item.source, item.sourceSystem, item.platform, item.integration]
-    .map(phase2862Norm)
-    .join(" ");
-  return Boolean(item.isServiceChannel === true || item.serviceChannelTrackingNumber || /service channel|servicechannel/.test(source));
+  const source = [
+    item.source,
+    item.sourceSystem,
+    item.platform,
+    item.integration,
+    item.integrationSource,
+    item.provider
+  ].map(phase2862Norm).join(" ");
+
+  const explicitServiceChannelSource = /service channel|servicechannel/.test(source);
+  const explicitNestSource = /\bnest\b|facil[- ]?it/i.test(source);
+
+  const clockSharkEvidence = Boolean(
+    /clockshark/.test(source) ||
+    item.isInternalWorkOrder === true ||
+    item.clockSharkJobId ||
+    item.clockSharkJobNumber ||
+    item.clockSharkJobName ||
+    item.clockSharkSourceJobId ||
+    item.clockSharkSourceJobNumber ||
+    item.clockSharkSourceJobName ||
+    phase2862Text(item.fieldDispatchSource).toLowerCase() === "clockshark_schedule"
+  );
+
+  const operationalServiceChannelEvidence = Boolean(
+    item.serviceChannelSourceOfTruth === true ||
+    item.serviceChannelPrimaryStatus ||
+    item.serviceChannelExtendedStatus ||
+    item.serviceChannelCheckInEventAt ||
+    item.serviceChannelCheckOutEventAt ||
+    item.serviceChannelOnsiteConfirmed === true ||
+    item.serviceChannelCheckoutNeeded === true ||
+    item.ivrConfirmed === true ||
+    item.ivrConfirmationTranscript ||
+    item.serviceChannelApiCheckInAt ||
+    item.serviceChannelApiCheckOutAt
+  );
+
+  const identifierOnlyEvidence = Boolean(
+    item.serviceChannelTrackingNumber ||
+    item.scTrackingNumber ||
+    item.serviceChannelWorkOrderNumber ||
+    item.scWorkOrderNumber
+  );
+
+  // Match Joshua's main source-authority rule: a ClockShark/internal or NEST job
+  // cannot become ServiceChannel merely because a stale SC identifier/flag was
+  // copied onto the work order. Genuine SC source/operational evidence still wins.
+  if (clockSharkEvidence || explicitNestSource) {
+    return Boolean(explicitServiceChannelSource || operationalServiceChannelEvidence);
+  }
+
+  return Boolean(
+    explicitServiceChannelSource ||
+    operationalServiceChannelEvidence ||
+    item.isServiceChannel === true ||
+    identifierOnlyEvidence
+  );
 }
 
 function phase2862CustomerBrand(item = {}) {
