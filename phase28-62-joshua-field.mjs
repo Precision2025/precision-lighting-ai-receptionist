@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V12 — Joshua Field + History/Travel Identity Fix + ServiceChannel + ClockShark
+ * Joshua Phase 28.62 V14 — Joshua Field + Sunday-Saturday Workweek + ServiceChannel + ClockShark
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -1431,7 +1431,7 @@ function phase2862WeekStartDate() {
   const today = phase2862LocalDate();
   const date = new Date(today + "T12:00:00Z");
   const day = date.getUTCDay();
-  const offset = day === 0 ? -6 : 1 - day;
+  const offset = -day; // Precision Lighting payroll week: Sunday through Saturday
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
 }
