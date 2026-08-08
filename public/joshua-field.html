@@ -86,7 +86,7 @@ body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))
           <button class="btn ghost" onclick="scheduleGoToday()">Today</button>
         </div>
         <div id="scheduleContent"></div>
-        <div class="schedule-key"><span>Tap any scheduled job to open the work order.</span><span>Workweek: Sunday–Saturday.</span></div>
+        <div class="schedule-key"><span>Tap a job: upcoming opens live; past opens read-only History.</span><span>Workweek: Sunday–Saturday.</span></div>
       </div>
     </section>
     <section id="timeTab" class="hide"><div class="card"><div class="section-title">Current Activity</div><div id="activityCard"></div></div><div class="card"><div class="section-title">Timecard</div><div id="timecard"></div></div></section>
@@ -104,7 +104,7 @@ body{padding:env(safe-area-inset-top) 0 calc(86px + env(safe-area-inset-bottom))
 <input id="photoUploadInput" class="hide" type="file" accept="image/*" multiple>
 <input id="documentUploadInput" class="hide" type="file" accept="application/pdf,.pdf" multiple>
 <script>
-/* JOSHUA FIELD V22 — TECHNICIAN SCHEDULE CALENDAR + V21 FIXES */
+/* JOSHUA FIELD V23 — CLICKABLE SCHEDULE + V22 CALENDAR */
 const state={me:null,current:null,jobs:[],history:[],timecard:null,activeJob:null,photoJob:null,documentJob:null,postCheckoutJob:null,documentationMode:'',scheduleMode:'week',scheduleAnchor:new Date()};
 const $=id=>document.getElementById(id); const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function fmtDate(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
@@ -249,10 +249,18 @@ function scheduleEventsForDay(day){
     return s<end&&finish>start;
   });
 }
+function openScheduleJob(encodedKey){
+  const key=decodeURIComponent(String(encodedKey||''));
+  const active=(state.jobs||[]).find(x=>x.key===key);
+  if(active){openJob(key);return}
+  const historical=(state.history||[]).find(x=>x.key===key);
+  if(historical){openHistoryJob(key);return}
+  alert('Joshua could not find this scheduled work order. Refresh the Schedule and try again.');
+}
 function scheduleEventHtml(j){
   const address=fullAddress(j);
   const status=String(j.state||j.joshuaStatus||'scheduled').replace(/_/g,' ');
-  return `<button class="schedule-event" onclick="openJob('${esc(j.key)}')"><div class="schedule-event-time">${esc(scheduleTimeLabel(j))}</div><div class="schedule-event-title">${esc(j.locationName||j.customer||'Work Order')}</div><div class="schedule-event-meta">${j.trackingNumber?'#'+esc(j.trackingNumber)+' • ':''}${esc(scheduleSourceLabel(j))}${address?' • '+esc(address):''} • ${esc(status)}</div></button>`;
+  return `<button type="button" class="schedule-event" onclick="openScheduleJob('${esc(encodeURIComponent(j.key||''))}')"><div class="schedule-event-time">${esc(scheduleTimeLabel(j))}</div><div class="schedule-event-title">${esc(j.locationName||j.customer||'Work Order')}</div><div class="schedule-event-meta">${j.trackingNumber?'#'+esc(j.trackingNumber)+' • ':''}${esc(scheduleSourceLabel(j))}${address?' • '+esc(address):''} • ${esc(status)}</div></button>`;
 }
 function scheduleDayHtml(day){
   const events=scheduleEventsForDay(day),today=sameDate(day,new Date());
@@ -275,7 +283,7 @@ function monthCellHtml(day,month){
   const events=scheduleEventsForDay(day);
   const outside=day.getMonth()!==month,today=sameDate(day,new Date());
   const shown=events.slice(0,3);
-  return `<div class="month-cell ${outside?'outside':''} ${today?'today':''}"><div class="month-num">${day.getDate()}</div>${shown.map(j=>`<button class="month-event" onclick="openJob('${esc(j.key)}')" title="${esc(j.locationName||j.customer||'Work Order')}">${esc(scheduleTimeLabel(j))} ${esc(j.locationName||j.customer||'Job')}</button>`).join('')}${events.length>3?`<div class="month-more">+${events.length-3} more</div>`:''}</div>`;
+  return `<div class="month-cell ${outside?'outside':''} ${today?'today':''}"><div class="month-num">${day.getDate()}</div>${shown.map(j=>`<button type="button" class="month-event" onclick="openScheduleJob('${esc(encodeURIComponent(j.key||''))}')" title="${esc(j.locationName||j.customer||'Work Order')}">${esc(scheduleTimeLabel(j))} ${esc(j.locationName||j.customer||'Job')}</button>`).join('')}${events.length>3?`<div class="month-more">+${events.length-3} more</div>`:''}</div>`;
 }
 function renderScheduleMonth(){
   const anchor=new Date(state.scheduleAnchor||new Date()),year=anchor.getFullYear(),month=anchor.getMonth();
