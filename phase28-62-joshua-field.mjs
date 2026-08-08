@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V14 — Joshua Field + Sunday-Saturday Workweek + ServiceChannel + ClockShark
+ * Joshua Phase 28.62 V17 — Joshua Field + PDF Attachments + Sunday-Saturday Workweek + ServiceChannel + ClockShark
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -2689,11 +2689,137 @@ app.post("/api/field/history/:tracking/correction", async (request, reply) => {
   fs.writeFileSync(SERVER_PATH, server);
 }
 
+
+function patchFieldPdfAttachmentsV17() {
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_67_PDF_ATTACHMENTS_V1";
+  if (server.includes(marker)) return;
+
+  // Allow the existing JSON photo uploads plus base64 PDFs up to the Field limits.
+  server = server.replace(
+    'const app = Fastify({ logger: true });',
+    'const app = Fastify({ logger: true, bodyLimit: 25 * 1024 * 1024 });'
+  );
+
+  const viewAnchor = '  const photos = Array.isArray(item.fieldPhotos) ? item.fieldPhotos.slice(-20).reverse() : [];';
+  if (!server.includes(viewAnchor)) throw new Error("Joshua Field V17: job-view photo anchor not found.");
+  server = server.replace(
+    viewAnchor,
+    viewAnchor + '\n  const attachments = Array.isArray(item.fieldAttachments) ? item.fieldAttachments.slice(-100).reverse() : [];',
+    1
+  );
+
+  const viewReturnAnchor = '    materials,\n    photos\n  };';
+  if (!server.includes(viewReturnAnchor)) throw new Error("Joshua Field V17: job-view return anchor not found.");
+  server = server.replace(
+    viewReturnAnchor,
+    '    materials,\n    photos,\n    attachments\n  };',
+    1
+  );
+
+  const routeAnchor = 'app.get("/api/field/timecard", async (request, reply) => {';
+  if (!server.includes(routeAnchor)) throw new Error("Joshua Field V17: route insertion anchor not found.");
+
+  const routes = String.raw`
+/* JOSHUA_PHASE28_67_PDF_ATTACHMENTS_V1 */
+app.post("/api/field/jobs/:tracking/attachment", async (request, reply) => {
+  const auth = phase2862FieldAuth(request, reply);
+  if (!auth) return;
+  const resolved = phase2862ResolveWorkOrder(auth.data, request.params.tracking);
+  if (!resolved) return reply.code(404).send({ ok:false, error:"Work order not found." });
+  const [key, item] = resolved;
+  if (!phase2862JobAssignedTo(item, auth.key)) {
+    return reply.code(403).send({ ok:false, error:"This job is not assigned to you." });
+  }
+
+  const dataUrl = phase2862Text(request.body?.dataUrl);
+  const label = phase2862Text(request.body?.label || "PDF document").slice(0, 80);
+  const originalName = phase2862Text(request.body?.fileName || "document.pdf")
+    .replace(/[^\w.\- ()]+/g, "_")
+    .slice(0, 160) || "document.pdf";
+
+  const match = dataUrl.match(/^data:application\/pdf;base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) return reply.code(400).send({ ok:false, error:"A PDF document is required." });
+
+  const buffer = Buffer.from(match[1], "base64");
+  if (!buffer.length) return reply.code(400).send({ ok:false, error:"The PDF is empty." });
+  if (buffer.length > 15 * 1024 * 1024) {
+    return reply.code(413).send({ ok:false, error:"PDF is too large. Maximum size is 15 MB." });
+  }
+
+  const safeTracking = key.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const dir = path.join(phase2862FieldUploadRoot, safeTracking);
+  fs.mkdirSync(dir, { recursive:true });
+  const storedName = Date.now() + "-" + crypto.randomBytes(4).toString("hex") + ".pdf";
+  fs.writeFileSync(path.join(dir, storedName), buffer);
+
+  item.fieldAttachments = Array.isArray(item.fieldAttachments) ? item.fieldAttachments : [];
+  const attachment = {
+    id:"attachment-" + Date.now() + "-" + crypto.randomBytes(3).toString("hex"),
+    kind:"pdf",
+    mimeType:"application/pdf",
+    label,
+    fileName: originalName.toLowerCase().endsWith(".pdf") ? originalName : originalName + ".pdf",
+    sizeBytes: buffer.length,
+    technician:auth.key,
+    createdAt:new Date().toISOString(),
+    url:"/api/field/jobs/" + encodeURIComponent(key) + "/attachment/" + encodeURIComponent(storedName)
+  };
+  item.fieldAttachments.push(attachment);
+  item.fieldAttachments = item.fieldAttachments.slice(-100);
+  item.updatedAt = new Date().toISOString();
+  auth.data.workOrders[key] = item;
+
+  phase2862AddEvent(auth.data, {
+    type:"field_attachment",
+    level:"info",
+    trackingNumber:key,
+    technician:auth.key,
+    message:label + ": " + attachment.fileName
+  });
+  writeControlData(auth.data);
+  return reply.send({ ok:true, attachment, job:phase2862JobView(key, item, auth.data) });
+});
+
+app.get("/api/field/jobs/:tracking/attachment/:file", async (request, reply) => {
+  const auth = phase2862FieldAuth(request, reply);
+  if (!auth) return;
+  const resolved = phase2862ResolveWorkOrder(auth.data, request.params.tracking);
+  if (!resolved) return reply.code(404).send("Not found");
+  const [key, item] = resolved;
+  if (!phase2865TechCanViewJob(auth.data, key, item, auth.key)) {
+    return reply.code(403).send("Forbidden");
+  }
+
+  const fileName = path.basename(phase2862Text(request.params.file));
+  if (!/\.pdf$/i.test(fileName)) return reply.code(400).send("Invalid attachment");
+  const safeTracking = key.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(phase2862FieldUploadRoot, safeTracking, fileName);
+  if (!fs.existsSync(filePath)) return reply.code(404).send("Not found");
+
+  const attachment = (Array.isArray(item.fieldAttachments) ? item.fieldAttachments : [])
+    .find(row => phase2862Text(row?.url).endsWith("/" + encodeURIComponent(fileName)));
+  const displayName = phase2862Text(attachment?.fileName || "document.pdf")
+    .replace(/[\r\n"]/g, "_")
+    .slice(0, 160);
+
+  reply.header("Content-Disposition", 'inline; filename="' + displayName + '"');
+  return reply.type("application/pdf").send(fs.readFileSync(filePath));
+});
+
+`;
+  server = server.replace(routeAnchor, routes + routeAnchor, 1);
+
+  if (!server.includes(marker)) throw new Error("Joshua Field V17: PDF attachment patch marker not installed.");
+  fs.writeFileSync(SERVER_PATH, server);
+}
+
 patchClockSharkScheduleFieldDispatch();
 patchClockSharkCalendarAuthority();
 patchFieldScheduleHistoryV11();
 patchFieldServer();
 patchFieldTimeAndHistoryV11();
+patchFieldPdfAttachmentsV17();
 patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V12 Field active: separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
+console.log("Joshua Phase 28.62 V17 Field active: photos + PDF attachments + separate job/travel/lunch/break time + technician history + ClockShark calendar authority + ServiceChannel check-in/out.");
