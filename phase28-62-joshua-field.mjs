@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V20 — Joshua Field + Source Authority + Post-Checkout Documentation + PDF Attachments + Sunday-Saturday Workweek
+ * Joshua Phase 28.62 V21 — Joshua Field + Completed-State Guard + Source Authority + Clean Navigation
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -892,6 +892,8 @@ function phase2862CanonicalFieldState(item = {}) {
 
   const terminalInvoiceStates = new Set([
     "paid",
+    "field_complete",
+    "field_completed",
     "completed",
     "complete",
     "completed_confirmed",
@@ -920,6 +922,8 @@ function phase2862CanonicalFieldState(item = {}) {
 
   const blockedWorkflowStates = new Set([
     "paid",
+    "field_complete",
+    "field_completed",
     "completed",
     "complete",
     "completed_confirmed",
