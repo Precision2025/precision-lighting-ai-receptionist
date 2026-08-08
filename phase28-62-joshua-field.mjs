@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /*
- * Joshua Phase 28.62 V8 — Joshua Field + ServiceChannel API + ClockShark Schedule Dispatch
+ * Joshua Phase 28.62 V9 — Joshua Field + ServiceChannel API + ClockShark Calendar Authority
  * Technician-first PWA + secure field sessions + GPS time tracking + notes,
  * materials, help requests, photo capture, and technician timecards.
  */
@@ -292,6 +292,323 @@ function phase2863ClockSharkSyncFieldDispatch(data, state, { authoritativeSnapsh
     throw new Error("Joshua Field: ClockShark schedule patch marker was not installed.");
   }
   fs.writeFileSync(CLOCKSHARK_BOOTSTRAP_PATH, source);
+}
+
+
+function patchClockSharkCalendarAuthority() {
+  if (!fs.existsSync(CLOCKSHARK_BOOTSTRAP_PATH)) {
+    throw new Error("Joshua Field: ClockShark bootstrap file not found for calendar authority.");
+  }
+
+  let source = fs.readFileSync(CLOCKSHARK_BOOTSTRAP_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_64_CLOCKSHARK_ICAL_AUTHORITY_V1";
+  if (source.includes(marker)) return;
+
+  const anchor = "function phase21ClockSharkInboundSecret() {";
+  if (!source.includes(anchor)) {
+    throw new Error("Joshua Field: ClockShark calendar helper anchor not found.");
+  }
+
+  const helperCode = String.raw`/* JOSHUA_PHASE28_64_CLOCKSHARK_ICAL_AUTHORITY_V1 */
+function phase2864CalendarNorm(value = "") {
+  return phase21ClockSharkText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function phase2864CalendarTechnicianFromEnvKey(key = "") {
+  const match = String(key).match(/^CLOCKSHARK_CALENDAR_(.+)_URL$/i);
+  if (!match || !match[1] || match[1].toUpperCase() === "FEEDS_JSON") return "";
+  return match[1]
+    .toLowerCase()
+    .split("_")
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function phase2864ClockSharkCalendarFeeds() {
+  const feeds = [];
+  const add = (technicianName, url, key = "") => {
+    const tech = phase21ClockSharkText(technicianName);
+    const href = phase21ClockSharkText(url);
+    if (!tech || !/^https?:\/\//i.test(href)) return;
+    const identity = phase2864CalendarNorm(tech) + "|" + href;
+    if (feeds.some(item => item.identity === identity)) return;
+    feeds.push({ technicianName: tech, url: href, key: key || phase2864CalendarNorm(tech), identity });
+  };
+
+  const singleUrl = phase21ClockSharkText(process.env.CLOCKSHARK_CALENDAR_URL);
+  const singleTech = phase21ClockSharkText(process.env.CLOCKSHARK_CALENDAR_TECHNICIAN);
+  if (singleUrl && singleTech) add(singleTech, singleUrl, "single");
+
+  const jsonText = phase21ClockSharkText(process.env.CLOCKSHARK_CALENDAR_FEEDS_JSON);
+  if (jsonText) {
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [technicianName, url] of Object.entries(parsed)) add(technicianName, url, "json");
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "CLOCKSHARK_CALENDAR_FEEDS_JSON is invalid JSON");
+    }
+  }
+
+  for (const [key, value] of Object.entries(process.env)) {
+    const tech = phase2864CalendarTechnicianFromEnvKey(key);
+    if (tech) add(tech, value, key);
+  }
+  return feeds;
+}
+
+function phase2864IcsUnescape(value = "") {
+  return String(value || "")
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function phase2864IcsUnfold(text = "") {
+  const raw = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const lines = [];
+  for (const line of raw) {
+    if (/^[ \t]/.test(line) && lines.length) lines[lines.length - 1] += line.slice(1);
+    else lines.push(line);
+  }
+  return lines;
+}
+
+function phase2864IcsProperty(line = "") {
+  const index = line.indexOf(":");
+  if (index < 0) return null;
+  const left = line.slice(0, index);
+  const value = line.slice(index + 1);
+  const parts = left.split(";");
+  const name = String(parts.shift() || "").toUpperCase();
+  const params = {};
+  for (const part of parts) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    params[part.slice(0, eq).toUpperCase()] = part.slice(eq + 1).replace(/^"|"$/g, "");
+  }
+  return { name, params, value };
+}
+
+function phase2864ZonedLocalToIso(parts, timeZone = PHASE21_CLOCKSHARK_TIME_ZONE) {
+  const [year, month, day, hour = 0, minute = 0, second = 0] = parts.map(Number);
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return "";
+  let guess = Date.UTC(year, month - 1, day, hour, minute, second);
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const formatted = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hourCycle: "h23"
+      }).formatToParts(new Date(guess));
+      const map = Object.fromEntries(formatted.map(item => [item.type, item.value]));
+      const represented = Date.UTC(
+        Number(map.year), Number(map.month) - 1, Number(map.day),
+        Number(map.hour), Number(map.minute), Number(map.second)
+      );
+      const wanted = Date.UTC(year, month - 1, day, hour, minute, second);
+      guess += wanted - represented;
+    }
+    return new Date(guess).toISOString();
+  } catch (_) {
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second)).toISOString();
+  }
+}
+
+function phase2864IcsDate(value = "", params = {}) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{8}$/.test(text)) {
+    return text.slice(0, 4) + "-" + text.slice(4, 6) + "-" + text.slice(6, 8);
+  }
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/i);
+  if (!match) {
+    const parsed = new Date(text);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : "";
+  }
+  const parts = [match[1], match[2], match[3], match[4], match[5], match[6] || "0"];
+  if (match[7]) return new Date(Date.UTC(...[Number(parts[0]), Number(parts[1]) - 1, ...parts.slice(2).map(Number)])).toISOString();
+  return phase2864ZonedLocalToIso(parts, params.TZID || PHASE21_CLOCKSHARK_TIME_ZONE);
+}
+
+function phase2864ParseClockSharkIcs(text = "", technicianName = "", feedKey = "") {
+  const events = [];
+  let current = null;
+  for (const line of phase2864IcsUnfold(text)) {
+    if (line === "BEGIN:VEVENT") { current = {}; continue; }
+    if (line === "END:VEVENT") {
+      if (current) events.push(current);
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    const property = phase2864IcsProperty(line);
+    if (!property) continue;
+    if (!current[property.name]) current[property.name] = [];
+    current[property.name].push(property);
+  }
+
+  const out = [];
+  for (const event of events) {
+    const first = name => event[name]?.[0] || null;
+    const uid = phase21ClockSharkText(first("UID")?.value || first("RECURRENCE-ID")?.value);
+    const summary = phase2864IcsUnescape(first("SUMMARY")?.value || "");
+    const description = phase2864IcsUnescape(first("DESCRIPTION")?.value || "");
+    const location = phase2864IcsUnescape(first("LOCATION")?.value || "");
+    const dtStart = first("DTSTART");
+    const dtEnd = first("DTEND");
+    const startAt = phase2864IcsDate(dtStart?.value || "", dtStart?.params || {});
+    const endAt = phase2864IcsDate(dtEnd?.value || "", dtEnd?.params || {});
+    if (!uid || !summary || !startAt) continue;
+
+    let jobNumber = "";
+    let jobName = summary;
+    const separator = summary.match(/^(.+?)\s*\|\s*(.+)$/);
+    if (separator) {
+      jobNumber = phase21ClockSharkText(separator[1]);
+      jobName = phase21ClockSharkText(separator[2]);
+    }
+
+    // ClockShark descriptions often include the internal job code followed by task/notes.
+    // Preserve all text as notes while using the first short line as a fallback job number.
+    if (!jobNumber && description) {
+      const firstLine = description.split("\n").map(phase21ClockSharkText).find(Boolean) || "";
+      if (/^[A-Za-z0-9][A-Za-z0-9._-]{2,40}(?:\s*-\s*.+)?$/.test(firstLine)) {
+        jobNumber = phase21ClockSharkText(firstLine.split(/\s+-\s+/)[0]);
+      }
+    }
+
+    out.push({
+      scheduleId: "ics:" + phase2864CalendarNorm(technicianName) + ":" + uid,
+      id: "ics:" + phase2864CalendarNorm(technicianName) + ":" + uid,
+      employeeName: technicianName,
+      jobId: "",
+      jobNumber,
+      jobName,
+      trackingNumber: "",
+      startAt,
+      endAt,
+      task: "",
+      notes: [description, location ? "Location: " + location : ""].filter(Boolean).join("\n"),
+      source: "ClockShark Calendar",
+      calendarFeedKey: feedKey || ""
+    });
+  }
+  return out;
+}
+
+async function phase2864PullClockSharkCalendars() {
+  const feeds = phase2864ClockSharkCalendarFeeds();
+  if (!feeds.length) return { ok: false, skipped: true, error: "No ClockShark calendar feed is configured." };
+
+  const fetched = [];
+  const errors = [];
+  for (const feed of feeds) {
+    try {
+      const response = await fetch(feed.url, {
+        method: "GET",
+        headers: { accept: "text/calendar,text/plain;q=0.9,*/*;q=0.1" }
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const text = await response.text();
+      const schedules = phase2864ParseClockSharkIcs(text, feed.technicianName, feed.key);
+      fetched.push({ ...feed, schedules });
+    } catch (error) {
+      errors.push({ technicianName: feed.technicianName, error: error.message });
+    }
+  }
+
+  // Safety rule: a temporary calendar/network failure must never erase a tech's jobs.
+  if (errors.length) {
+    const data = readControlData();
+    const state = phase21ClockSharkEnsureData(data);
+    state.sync.calendarLastErrorAt = phase21ClockSharkNow();
+    state.sync.calendarLastError = errors.map(item => item.technicianName + ": " + item.error).join("; ").slice(0, 500);
+    writeControlData(data);
+    return { ok: false, error: state.sync.calendarLastError, feeds: feeds.length, failed: errors.length };
+  }
+
+  const data = readControlData();
+  const state = phase21ClockSharkEnsureData(data);
+  const authoritativeTechs = new Set(feeds.map(feed => phase2864CalendarNorm(feed.technicianName)));
+  const preserved = Object.values(state.schedules || {}).filter(schedule =>
+    !authoritativeTechs.has(phase2864CalendarNorm(schedule?.employeeName))
+  );
+  const fresh = fetched.flatMap(item => item.schedules);
+  const merged = [...preserved, ...fresh];
+
+  phase21ClockSharkProcessPayload(data, { schedules: merged }, "snapshot");
+  phase21ClockSharkRunReconciliation(data);
+  const syncedAt = phase21ClockSharkNow();
+  state.sync.calendarConfigured = true;
+  state.sync.calendarFeedCount = feeds.length;
+  state.sync.calendarScheduleCount = fresh.length;
+  state.sync.calendarLastSyncAt = syncedAt;
+  state.sync.calendarLastSuccessAt = syncedAt;
+  state.sync.calendarLastError = "";
+  writeControlData(data);
+  return { ok: true, feeds: feeds.length, schedules: fresh.length, totalAuthoritativeSchedules: merged.length, syncedAt };
+}
+`;
+
+  const escapedHelpers = phase2863EscapeForDoubleQuotedJsString(helperCode);
+  source = source.replace(anchor, escapedHelpers + "\\n\\n" + anchor);
+  if (!source.includes(marker)) throw new Error("Joshua Field: ClockShark calendar authority marker was not installed.");
+  fs.writeFileSync(CLOCKSHARK_BOOTSTRAP_PATH, source);
+}
+
+function patchClockSharkCalendarRuntimeSchedule() {
+  let server = fs.readFileSync(SERVER_PATH, "utf8");
+  const marker = "JOSHUA_PHASE28_64_CLOCKSHARK_ICAL_RUNTIME_V1";
+  if (server.includes(marker)) return;
+  const anchor = "const port = Number(process.env.PORT || 3000);";
+  if (!server.includes(anchor)) throw new Error("Joshua Field: server startup anchor not found for ClockShark calendar sync.");
+
+  const runtime = String.raw`/* JOSHUA_PHASE28_64_CLOCKSHARK_ICAL_RUNTIME_V1 */
+const phase2864ClockSharkCalendarSyncMinutes = Math.max(
+  1,
+  Number(process.env.CLOCKSHARK_CALENDAR_SYNC_MINUTES || 5)
+);
+
+setTimeout(() => {
+  if (typeof phase2864PullClockSharkCalendars === "function" && phase2864ClockSharkCalendarFeeds().length) {
+    phase2864PullClockSharkCalendars().catch(error =>
+      app.log.error(error, "Initial ClockShark calendar sync failed")
+    );
+  }
+}, 15 * 1000);
+
+setInterval(() => {
+  if (typeof phase2864PullClockSharkCalendars === "function" && phase2864ClockSharkCalendarFeeds().length) {
+    phase2864PullClockSharkCalendars().catch(error =>
+      app.log.error(error, "Scheduled ClockShark calendar sync failed")
+    );
+  }
+}, phase2864ClockSharkCalendarSyncMinutes * 60 * 1000);
+
+app.post("/api/control/clockshark/calendar-sync", async (request, reply) => {
+  if (!controlAuthorized(request)) return reply.code(401).send({ ok: false, error: "Unauthorized" });
+  if (typeof phase2864PullClockSharkCalendars !== "function") {
+    return reply.code(503).send({ ok: false, error: "ClockShark calendar authority is not loaded." });
+  }
+  try {
+    return reply.send(await phase2864PullClockSharkCalendars());
+  } catch (error) {
+    app.log.error(error, "Manual ClockShark calendar sync failed");
+    return reply.code(500).send({ ok: false, error: error.message });
+  }
+});
+`;
+  server = server.replace(anchor, runtime + "\n\n" + anchor);
+  fs.writeFileSync(SERVER_PATH, server);
 }
 
 function patchFieldServer() {
@@ -1886,6 +2203,8 @@ app.get("/api/field/timecard", async (request, reply) => {
 }
 
 patchClockSharkScheduleFieldDispatch();
+patchClockSharkCalendarAuthority();
 patchFieldServer();
+patchClockSharkCalendarRuntimeSchedule();
 await import("./phase28-50-office-notes-task-command-center.mjs");
-console.log("Joshua Phase 28.62 V8 Field active: ClockShark schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
+console.log("Joshua Phase 28.62 V9 Field active: ClockShark calendar authority + schedule dispatch + manual office override + GPS/timecards + O'Reilly phone IVR + direct ServiceChannel API for other ServiceChannel subscribers.");
